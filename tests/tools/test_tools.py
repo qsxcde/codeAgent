@@ -209,25 +209,28 @@ def test_bash_remove_inside_cwd_is_allowed(tmp_path, monkeypatch):
 def test_bash_cwd_param_uses_configured_directory(tmp_path, monkeypatch):
     """装配指定 cwd 时,bash 以该目录为工作目录(回归:P2-8)。"""
     monkeypatch.chdir("/")  # 启动目录设为根,避免与 cwd 混淆
-    out = _invoke(BashTool(cwd=str(tmp_path)), command="pwd")
-    assert str(tmp_path) in out
+    (tmp_path / "marker.txt").write_text("")  # 标记文件:cwd 生效则命令可见
+    out = _invoke(BashTool(cwd=str(tmp_path)), command="test -f marker.txt && echo CWD_OK")
+    assert "CWD_OK" in out and "命令失败" not in out
 
 
 def test_bash_cwd_defaults_to_startup_directory(tmp_path, monkeypatch):
     """未传 cwd 时回退进程启动目录(向后兼容,回归:P2-8)。"""
     monkeypatch.chdir(tmp_path)
-    out = _invoke(BashTool(), command="pwd")
-    assert str(tmp_path) in out
+    (tmp_path / "marker.txt").write_text("")
+    out = _invoke(BashTool(), command="test -f marker.txt && echo CWD_OK")
+    assert "CWD_OK" in out and "命令失败" not in out
 
 
 def test_make_tools_passes_cwd_to_bash(tmp_path):
     """make_tools(cfg) 从 cfg.cwd 读取并传给 bash 工具(回归:P2-8)。"""
     import asyncio
 
+    (tmp_path / "marker.txt").write_text("")
     tools = create_tools(type("Cfg", (), {"cwd": str(tmp_path)})())
     bash_tool = next(t for t in tools if t.name == "bash")
-    out = asyncio.run(bash_tool.ainvoke({"command": "pwd"}))
-    assert str(tmp_path) in out
+    out = asyncio.run(bash_tool.ainvoke({"command": "test -f marker.txt && echo CWD_OK"}))
+    assert "CWD_OK" in out and "命令失败" not in out
 
 
 def test_bash_non_rm_dangerous_still_blocked_by_patterns():
@@ -321,8 +324,8 @@ def test_bash_exit_code_one_marks_failure(monkeypatch):
 def test_bash_pipeline_grep_exit_one_not_failure(monkeypatch):
     """集成验证:管道末段 grep 无匹配(退出码 1)不作为命令失败。"""
     monkeypatch.chdir("/")
-    out = _invoke(BashTool(), command="ps aux | grep codeagent-zzz-nonexistent; exit ${PIPESTATUS[1]}")
-    assert "命令失败" not in out
+    out = _invoke(BashTool(), command="ps aux | grep codeagent-zzz-nonexistent")
+    assert "命令失败" not in out and "退出码: 1" in out
 
 
 def test_bash_grep_exit_one_not_failure(monkeypatch):
