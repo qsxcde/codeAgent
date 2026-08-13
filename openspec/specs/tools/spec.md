@@ -1,0 +1,240 @@
+# tools Specification
+
+## Purpose
+
+定义编程 Agent 的原子工具集能力:read / write / edit / bash / grep / find / ls 七工具的对外行为契约,以及工具层共享的路径解析、输出截断、并行写串行化、跨平台语义。
+
+## Requirements
+
+### Requirement: 工具注册与装配
+
+系统 SHALL 通过 `make_tools` 工厂装配七个原子工具,名称固定为 `read`、`write`、`edit`、`bash`、`grep`、`find`、`ls`。每个工具 SHALL 对外暴露稳定的名称、描述与输入参数 schema,供编排层绑定。
+
+#### Scenario: 工厂产出全部工具
+
+- **WHEN** 调用 `make_tools` 装配工具集
+- **THEN** 返回的工具列表中包含全部七个名称:read、write、edit、bash、grep、find、ls
+
+#### Scenario: 装配时注入工作目录
+
+- **WHEN** `make_tools` 收到的配置含 `cwd`
+- **THEN** 全部七个工具都以该 `cwd` 为相对路径解析基准
+
+### Requirement: read 文件读取
+
+`read` 工具 SHALL 读取文本文件内容并返回,支持 `offset`/`limit` 分页;大文件按字节与行双重上限截断并明确标记;二进制或非 UTF-8 文件 SHALL 返回可读前缀并说明截断。
+
+#### Scenario: 读取文本文件
+
+- **WHEN** 读取一个存在的文本文件
+- **THEN** 返回其文本内容,并在输出中标明总行数
+
+#### Scenario: 分页读取
+
+- **WHEN** 以 `offset`/`limit` 读取一个长文件
+- **THEN** 只返回指定行范围,并标记「已截断,可通过 offset 继续」及剩余行数
+
+#### Scenario: 读取二进制文件
+
+- **WHEN** 读取一个非 UTF-8 的二进制文件
+- **THEN** 返回可读前缀(限字节数)并明确说明文件为二进制
+
+#### Scenario: 读取不存在的文件
+
+- **WHEN** `read` 的目标路径不存在
+- **THEN** 返回明确错误,不抛未捕获异常
+
+### Requirement: write 文件写入
+
+`write` 工具 SHALL 创建新文件或完整覆盖已有文件;父目录不存在时 SHALL 自动创建;写入的文本 SHALL 使用 LF 换行;成功返回写入字节数。
+
+#### Scenario: 覆盖写文件
+
+- **WHEN** 向已存在文件写入新内容
+- **THEN** 文件内容被完整替换,返回写入字节数
+
+#### Scenario: 自动创建父目录
+
+- **WHEN** 写入路径的父目录不存在
+- **THEN** 父目录被递归创建,写入成功
+
+#### Scenario: 写入使用 LF 换行
+
+- **WHEN** 新建文件写入含换行的内容
+- **THEN** 落盘字节使用 LF 换行,不随平台换行约定改变
+
+### Requirement: edit 精确编辑
+
+`edit` 工具 SHALL 按 `old_string`→`new_string` 精确替换;`old_string` 在文件中出现多处且未指定 `replace_all` 时 SHALL 报错;找不到或 `old_string` 为空时 SHALL 报错;写回 SHALL 保留文件原有换行约定与 BOM。
+
+#### Scenario: 精确替换
+
+- **WHEN** 目标文件中 `old_string` 恰好出现一次
+- **THEN** 该处被替换为 `new_string`,其余内容不变
+
+#### Scenario: 匹配不唯一
+
+- **WHEN** `old_string` 出现多次且未设置 `replace_all`
+- **THEN** 返回「文本不唯一」错误,文件不变
+
+#### Scenario: 找不到匹配
+
+- **WHEN** 文件中不存在 `old_string`
+- **THEN** 返回「未找到匹配文本」错误,文件不变
+
+#### Scenario: 保留原始换行约定
+
+- **WHEN** 编辑一个使用 CRLF 换行或带 BOM 的文件
+- **THEN** 编辑后文件仍使用 CRLF 换行并保留 BOM,不改变未触碰区域
+
+### Requirement: bash 命令执行
+
+`bash` 工具 SHALL 在注入的工作目录执行 shell 命令并返回输出与退出码;默认超时 120 秒、上限 600 秒;超时或中断时 SHALL 终止整个命令进程树;输出按字节与行双上限截断并保留末尾;危险命令 SHALL 被拒绝并返回拒绝原因;grep 无匹配(退出码 1)SHALL 不视为失败;Windows 下无可用 bash 时 SHALL 返回可操作安装指引。
+
+#### Scenario: 正常执行
+
+- **WHEN** 执行一条成功的 shell 命令
+- **THEN** 返回输出、退出码 0 与耗时
+
+#### Scenario: 命令失败返回退出码
+
+- **WHEN** 执行一条退出码非零的命令
+- **THEN** 返回非零退出码与输出,失败信息对调用方可见
+
+#### Scenario: 危险命令被拒绝
+
+- **WHEN** 命令命中危险模式(如 `rm -rf /`)
+- **THEN** 命令不被执行,返回拒绝原因
+
+#### Scenario: 超时终止进程树
+
+- **WHEN** 命令超过指定超时(含其派生的后台子进程)
+- **THEN** 命令进程被终止并返回超时提示;派生进程树被尽力终止——Unix 经进程组全树击杀(含后台子进程),Windows 经 `taskkill /T` 击杀命令进程与直接子进程(MSYS 派生的后台孙进程受 taskkill 局限,尽力而为)
+
+#### Scenario: grep 无匹配豁免
+
+- **WHEN** 执行以 grep 结尾的管道且 grep 无匹配
+- **THEN** 退出码 1 不被视为失败,输出照常返回
+
+#### Scenario: 输出保留末尾
+
+- **WHEN** 命令输出超过截断上限
+- **THEN** 返回末尾部分并标记截断,错误信息(通常在末尾)可见
+
+#### Scenario: Windows 无 bash
+
+- **WHEN** 在未安装 bash 的 Windows 环境执行命令
+- **THEN** 返回带安装指引的可操作错误
+
+### Requirement: grep 内容搜索
+
+`grep` 工具 SHALL 在指定目录或文件中按正则或字面量搜索文本;返回匹配行并带 `path:行号: 内容` 格式;支持忽略大小写、glob 过滤、context 上下文行与结果上限;SHALL 跳过噪声目录(如 `.git`、`node_modules`);无匹配时 SHALL 明确说明。
+
+#### Scenario: 正则搜索
+
+- **WHEN** 以正则模式搜索目录
+- **THEN** 返回每条匹配的路径、行号与内容
+
+#### Scenario: 字面量搜索
+
+- **WHEN** 以 `literal` 模式搜索含正则元字符的字符串
+- **THEN** 按字面量精确匹配,不做正则解析
+
+#### Scenario: 上下文行
+
+- **WHEN** 指定 `context` 参数
+- **THEN** 每条匹配前后各带指定行数的上下文,上下文行与匹配行可区分
+
+#### Scenario: 跳过噪声目录
+
+- **WHEN** 搜索目录内含 `node_modules`、`.git` 等噪声目录
+- **THEN** 噪声目录内的文件不被搜到
+
+#### Scenario: 无匹配
+
+- **WHEN** 搜索无任何结果
+- **THEN** 返回「无匹配」的明确结果
+
+### Requirement: find 文件查找
+
+`find` 工具 SHALL 按 glob 模式查找文件(支持 `**` 递归);返回相对搜索根的路径列表;SHALL 跳过噪声目录;支持结果上限;返回路径 SHALL 使用统一的正斜杠表示。
+
+#### Scenario: 递归查找
+
+- **WHEN** 以 `**/*.py` 模式查找
+- **THEN** 返回所有匹配文件的路径,格式统一
+
+#### Scenario: 跳过噪声目录
+
+- **WHEN** 查找目录内含 `node_modules`、`.venv` 等噪声目录
+- **THEN** 噪声目录内的文件不出现
+
+#### Scenario: 无匹配
+
+- **WHEN** 查找无任何结果
+- **THEN** 返回「无匹配文件」的明确结果
+
+### Requirement: ls 目录列举
+
+`ls` 工具 SHALL 列出指定目录条目;目录条目 SHALL 带 `/` 后缀;条目 SHALL 大小写不敏感排序;支持结果上限;路径不存在或不是目录时 SHALL 报错。
+
+#### Scenario: 列举目录
+
+- **WHEN** 列举一个存在的目录
+- **THEN** 返回排序后的条目列表,目录条目带 `/` 后缀
+
+#### Scenario: 路径不存在
+
+- **WHEN** 列举一个不存在的路径
+- **THEN** 返回明确错误
+
+### Requirement: 路径解析
+
+所有工具 SHALL 以注入的 `cwd` 为基准解析相对路径;支持 `~` 展开;解析失败 SHALL 返回明确错误而非静默歧义。
+
+#### Scenario: 相对路径解析
+
+- **WHEN** 工具收到一个相对路径
+- **THEN** 该路径按注入的 cwd 解析,与进程当前目录无关
+
+#### Scenario: 家目录展开
+
+- **WHEN** 路径以 `~` 开头
+- **THEN** 展开为当前用户主目录下的对应路径
+
+### Requirement: 并行写串行化
+
+对同一文件的并发写操作 SHALL 被串行化,不丢更新;对不同文件的写操作 SHALL 不受影响可并行。
+
+#### Scenario: 同文件并发写不丢更新
+
+- **WHEN** 多个线程/调用并发对同一文件执行写类操作(如 `write` + `edit`)
+- **THEN** 操作按顺序逐个生效,最终文件内容与串行执行一致
+
+#### Scenario: 异文件并发写互不阻塞
+
+- **WHEN** 并发对不同文件写
+- **THEN** 两操作互不等待,均完成
+
+### Requirement: 输出截断
+
+工具输出 SHALL 按字节与行双重上限截断,截断时 SHALL 明确标记,不让调用方误以为看到全量。
+
+#### Scenario: 超限标记
+
+- **WHEN** 输出超过任一上限
+- **THEN** 输出被截断并带截断标记,说明被截断的事实
+
+### Requirement: 离线可测与平台无关
+
+工具 SHALL 通过注入的文件操作接口完成 I/O,不依赖真实文件系统即可离线测试;工具行为 SHALL 在 Windows / Linux / macOS 上一致(路径表示、换行、shell 行为)。
+
+#### Scenario: 注入操作接口离线测试
+
+- **WHEN** 测试注入一个替代的文件操作实现
+- **THEN** 工具逻辑可在无真实文件系统、无网络下运行并被断言
+
+#### Scenario: 跨平台输出一致
+
+- **WHEN** 同一输入在三个平台运行同一工具
+- **THEN** 返回结果不包含平台特有的路径表示或换行差异

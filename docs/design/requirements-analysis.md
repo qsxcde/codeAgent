@@ -269,7 +269,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | FR-3.4 | 拦截管道 | ~~pipeline 包住 ToolNode,支持拦截/审计~~ | P1 | ❌ 已删除(死代码,危险命令由 bash 黑名单承担) |
 | FR-3.5 | 工具执行确认 | bash / write 等敏感操作默认需确认 | P1 | 🔲 v0.2(见 FR-8) |
 | FR-3.6 | 工具结果事件化 | 工具调用/结果以事件流对外暴露 | P0 | ✅(tool_call / tool_result 事件) |
-| FR-3.7 | 上下文检索工具 | grep / search / 文件树等辅助工具 | P1 | 📝 |
+| FR-3.7 | 上下文检索工具 | grep / search / 文件树等辅助工具 | P1 | ✅ 已落地(atomic-tools-refactor:grep / find / ls 纯 Python 实现,2026-08-13) |
 | FR-3.8 | bash Windows 适配 | `_resolve_bash()` 探测链(Git for Windows / WSL),无 bash 时给可操作错误 | P0 | ✅(⚠️ 2026-08-13 实测:Windows Git Bash 下 4 项 bash 测试失败,疑为路径显示/`PIPESTATUS` 环境差异,见附录 B) |
 
 ### 4.5 FR-4 编排引擎

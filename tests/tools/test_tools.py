@@ -1,10 +1,21 @@
-"""tools 层测试:read / write / edit / bash + 注册表 + 拦截管道(全部离线)。"""
+"""tools 层测试:七个原子工具(read/write/edit/bash/grep/find/ls)+ 注册表 + 共享横切(全部离线)。"""
+
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from langchain_core.tools import BaseTool
 
 from codeagent.app.container import create_tools
-from codeagent.tools.atomic import BashTool, EditTool, ReadTool, WriteTool
+from codeagent.tools.atomic import (
+    BashTool,
+    EditTool,
+    FindTool,
+    GrepTool,
+    LsTool,
+    ReadTool,
+    WriteTool,
+)
 from codeagent.tools.atomic.bash import DANGEROUS_PATTERNS, _semantically_ok
 from codeagent.tools.base import AtomicTool
 
@@ -155,22 +166,19 @@ def test_edit_without_read_is_allowed(tmp_path):
 
 # ── bash ──────────────────────────────────────────────
 
-def test_bash_normal(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    out = _invoke(BashTool(), command="echo hello")
+def test_bash_normal(tmp_path):
+    out = _invoke(BashTool(cwd=str(tmp_path)), command="echo hello")
     assert "hello" in out
     assert "退出码: 0" in out
 
 
-def test_bash_timeout(monkeypatch):
-    monkeypatch.chdir("/")
-    out = _invoke(BashTool(), command="sleep 5", timeout=1)
+def test_bash_timeout(tmp_path):
+    out = _invoke(BashTool(cwd=str(tmp_path)), command="sleep 5", timeout=1)
     assert "超时" in out
 
 
-def test_bash_grep_no_match_is_ok(monkeypatch):
-    monkeypatch.chdir("/")
-    out = _invoke(BashTool(), command="echo '' | grep nothing-here || true")
+def test_bash_grep_no_match_is_ok(tmp_path):
+    out = _invoke(BashTool(cwd=str(tmp_path)), command="echo '' | grep nothing-here || true")
     assert "退出码" in out
 
 
@@ -198,11 +206,10 @@ def test_bash_dangerous_equivalent_forms_blocked(command):
         _invoke(BashTool(), command=command)
 
 
-def test_bash_remove_inside_cwd_is_allowed(tmp_path, monkeypatch):
+def test_bash_remove_inside_cwd_is_allowed(tmp_path):
     """cwd 子目录内的明确删除目标不被误拦截。"""
-    monkeypatch.chdir(tmp_path)
     (tmp_path / "sub").mkdir()
-    out = _invoke(BashTool(), command=f"rm -rf {tmp_path}/sub && echo done")
+    out = _invoke(BashTool(cwd=str(tmp_path)), command="rm -rf sub && echo done")
     assert "done" in out
 
 
@@ -337,12 +344,12 @@ def test_bash_grep_exit_one_not_failure(monkeypatch):
 
 # ── registry ──────────────────────────────────────────
 
-def test_make_tools_returns_four_base_tools():
+def test_make_tools_returns_seven_base_tools():
     tools = create_tools()
     assert isinstance(tools, list)
-    assert len(tools) == 4
+    assert len(tools) == 7
     names = {t.name for t in tools}
-    assert names == {"read", "write", "edit", "bash"}
+    assert names == {"read", "write", "edit", "bash", "grep", "find", "ls"}
     assert all(isinstance(t, BaseTool) for t in tools)
 
 
@@ -354,3 +361,194 @@ def test_make_tools_offline(tmp_path):
 
 def test_dangerous_patterns_nonempty():
     assert DANGEROUS_PATTERNS
+
+
+# ── read:注入 cwd / 字节上限 ─────────────────────────
+
+def test_read_relative_path_uses_injected_cwd(tmp_path):
+    """相对路径按注入 cwd 解析,与进程启动目录无关(design D2)。"""
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    out = _invoke(ReadTool(cwd=str(tmp_path)), file_path="a.txt")
+    assert "hello" in out
+
+
+def test_read_byte_cap_truncates(tmp_path):
+    """超长行按字节上限截断并标记(design D3 字节+行双上限)。"""
+    (tmp_path / "big.txt").write_text("x" * 100_000, encoding="utf-8")
+    out = _invoke(ReadTool(cwd=str(tmp_path)), file_path="big.txt")
+    assert "已截断" in out
+    assert len(out) < 100_000
+
+
+# ── write:恒写 LF ────────────────────────────────────
+
+def test_write_uses_lf_newlines(tmp_path):
+    """新建文件恒写 LF,不受平台换行翻译影响(design D5)。"""
+    _invoke(WriteTool(cwd=str(tmp_path)), file_path="lf.txt", content="a\nb\n")
+    assert (tmp_path / "lf.txt").read_bytes() == b"a\nb\n"
+
+
+# ── edit:CRLF/BOM 保留 / no-change / 内存注入 ──────────
+
+def test_edit_preserves_crlf_and_bom(tmp_path):
+    """编辑 CRLF+BOM 文件后,换行约定与 BOM 保留(design D5;spec「edit」)。"""
+    f = tmp_path / "crlf.txt"
+    f.write_bytes(b"\xef\xbb\xbfalpha\r\nbeta\r\n")
+    _invoke(EditTool(cwd=str(tmp_path)), file_path="crlf.txt", old_string="alpha", new_string="ALPHA")
+    assert f.read_bytes() == b"\xef\xbb\xbfALPHA\r\nbeta\r\n"
+
+
+def test_edit_no_change_rejected(tmp_path):
+    """替换结果与原文相同 → 报 no-change(design D5 判据)。"""
+    f = tmp_path / "e.txt"
+    f.write_text("abc", encoding="utf-8")
+    with pytest.raises(ValueError, match="未产生变更"):
+        _invoke(EditTool(cwd=str(tmp_path)), file_path="e.txt", old_string="abc", new_string="abc")
+
+
+def test_edit_with_injected_memory_fsops(memory_fsops):
+    """注入内存 FsOps:编辑完全离线可测(design D1 可测性收益)。"""
+    from codeagent.tools.shared import resolve_to_cwd
+
+    path = resolve_to_cwd("a.txt", "/w")  # 与工具同一路径解析,跨平台一致
+    memory_fsops.write_bytes(path, b"hello world")
+    tool = EditTool(cwd="/w", ops=memory_fsops)
+    out = _invoke(tool, file_path="a.txt", old_string="hello", new_string="hi")
+    assert "已替换" in out
+    assert memory_fsops.read_bytes(path) == b"hi world"
+
+
+# ── bash:树级击杀 / 保留尾部 ─────────────────────────
+
+def test_bash_timeout_terminates_command_process(tmp_path):
+    """超时后命令进程本身被终止,而非仅返回控制(design D6 树级击杀;spec「bash」)。
+
+    ``echo $$ > shell.pid`` 记录 bash 自身进程;超时后经新 bash ``kill -0`` 验证已死
+    (Unix 用 killpg、Windows 用 taskkill /T 均可靠击杀命令进程本身;MSYS 派生的
+    后台孙进程在 Windows 上是 taskkill 已知局限,见 design.md Risks)。
+    """
+    cmd = "sleep 30 & echo $$ > shell.pid; wait"
+    out = _invoke(BashTool(cwd=str(tmp_path)), command=cmd, timeout=8)
+    assert "超时" in out
+    pid = (tmp_path / "shell.pid").read_text().strip()
+    assert pid.isdigit()
+    check = _invoke(
+        BashTool(cwd=str(tmp_path)),
+        command=f"kill -0 {pid} 2>/dev/null && echo ALIVE || echo DEAD",
+    )
+    assert "DEAD" in check
+
+
+def test_bash_output_keeps_tail_on_truncation(tmp_path):
+    """超长输出保留末尾并标记截断(design D6 行为变化:保尾)。"""
+    out = _invoke(BashTool(cwd=str(tmp_path)), command="seq 1 40000")
+    assert "[输出已截断(保留末尾)]" in out
+    assert "40000" in out
+
+
+# ── ls ───────────────────────────────────────────────
+
+def test_ls_lists_directory_with_dir_suffix(tmp_path):
+    (tmp_path / "a.txt").write_text("")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / ".hidden").write_text("")
+    out = _invoke(LsTool(cwd=str(tmp_path)), path=".")
+    assert "a.txt" in out
+    assert "sub/" in out
+    assert ".hidden" not in out  # 默认不显示隐藏条目
+
+
+def test_ls_empty_dir(tmp_path):
+    out = _invoke(LsTool(cwd=str(tmp_path)), path=".")
+    assert "(空目录)" in out
+
+
+def test_ls_not_found(tmp_path):
+    with pytest.raises(ValueError, match="路径不存在"):
+        _invoke(LsTool(cwd=str(tmp_path)), path="nope")
+
+
+# ── find ─────────────────────────────────────────────
+
+def test_find_recursive_glob(tmp_path):
+    (tmp_path / "a.py").write_text("")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "b.py").write_text("")
+    out = _invoke(FindTool(cwd=str(tmp_path)), pattern="**/*.py")
+    assert "a.py" in out
+    assert "pkg/b.py" in out
+
+
+def test_find_skips_noise_dirs(tmp_path):
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "x.js").write_text("")
+    (tmp_path / "ok.py").write_text("")
+    out = _invoke(FindTool(cwd=str(tmp_path)), pattern="**/*")
+    assert "ok.py" in out
+    assert "node_modules" not in out
+
+
+def test_find_no_match(tmp_path):
+    out = _invoke(FindTool(cwd=str(tmp_path)), pattern="*.nope")
+    assert "无匹配文件" in out
+
+
+# ── grep ─────────────────────────────────────────────
+
+def test_grep_regex_output_format(tmp_path):
+    f = tmp_path / "src.py"
+    f.write_text("def foo():\n    pass\nx = foo()\n", encoding="utf-8")
+    out = _invoke(GrepTool(cwd=str(tmp_path)), pattern="foo")
+    assert "src.py:1: def foo():" in out  # 内容自带冒号
+    assert "src.py:3: x = foo()" in out
+
+
+def test_grep_literal(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("a.b\n", encoding="utf-8")
+    out = _invoke(GrepTool(cwd=str(tmp_path)), pattern="a.b", literal=True)
+    assert "a.txt:1: a.b" in out
+
+
+def test_grep_context_lines(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    out = _invoke(GrepTool(cwd=str(tmp_path)), pattern="line2", context=1)
+    assert "a.txt-1- line1" in out
+    assert "a.txt:2: line2" in out
+    assert "a.txt-3- line3" in out
+
+
+def test_grep_skips_noise_dirs(tmp_path):
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "x.js").write_text("secret", encoding="utf-8")
+    (tmp_path / "ok.py").write_text("secret", encoding="utf-8")
+    out = _invoke(GrepTool(cwd=str(tmp_path)), pattern="secret")
+    assert "ok.py" in out
+    assert "node_modules" not in out
+
+
+def test_grep_no_match(tmp_path):
+    out = _invoke(GrepTool(cwd=str(tmp_path)), pattern="zzz_nothing")
+    assert "无匹配" in out
+
+
+# ── 并行写串行化 ──────────────────────────────────────
+
+def test_parallel_writes_same_file_do_not_lose_updates(tmp_path):
+    """同文件并发 edit 被串行化,不丢更新(spec「并行写串行化」)。
+
+    无锁时两个线程都读到原文、各自写回会互相覆盖(丢一处更新);经
+    ``with_path_lock`` 串行化后,两次编辑按序生效,结果确定。
+    """
+    f = tmp_path / "shared.txt"
+    f.write_text("AAA BBB", encoding="utf-8")
+    tool = EditTool(cwd=str(tmp_path))
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = [
+            ex.submit(_invoke, tool, file_path="shared.txt", old_string="AAA", new_string="aaa"),
+            ex.submit(_invoke, tool, file_path="shared.txt", old_string="BBB", new_string="bbb"),
+        ]
+        for fut in futures:
+            fut.result()
+    assert f.read_text(encoding="utf-8") == "aaa bbb"

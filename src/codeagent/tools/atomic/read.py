@@ -1,17 +1,23 @@
-"""read 原子工具:读取文件内容,支持行范围分页与截断标记。"""
+"""read 原子工具:读取文件内容,支持行范围分页与字节+行双上限截断。
+
+重构(design):走注入的 ``FsOps`` + ``resolve_to_cwd``,分页与二进制前缀行为保留;
+输出经 ``truncate_head`` 统一字节/行双上限(对应 spec「read」)。
+"""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
+from codeagent.tools.shared import (
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_LINES,
+    resolve_to_cwd,
+    truncate_head,
+)
 
-__all__ = ["ReadTool"]
+__all__ = ["ReadTool", "DEFAULT_MAX_LINES", "BINARY_PREVIEW_BYTES"]
 
-#: 默认单次读取的行数上限,防止大文件撑爆上下文。
-DEFAULT_MAX_LINES = 2000
 #: 二进制/非 UTF-8 文件返回的可读前缀字节数。
 BINARY_PREVIEW_BYTES = 4096
 
@@ -28,14 +34,14 @@ class ReadTool(AtomicTool):
     Args = ReadArgs
 
     def _invoke(self, args: ReadArgs) -> str:
-        path = Path(args.file_path).expanduser()
-        if not path.exists():
+        path = resolve_to_cwd(args.file_path, self._cwd)
+        if not self._ops.exists(path):
             raise ValueError(f"文件不存在: {path}")
-        if not path.is_file():
+        if not self._ops.is_file(path):
             raise ValueError(f"不是文件: {path}")
 
         try:
-            raw = path.read_bytes()
+            raw = self._ops.read_bytes(path)
         except PermissionError:
             raise ValueError(f"没有读取权限: {path}")
         except OSError as exc:
@@ -61,10 +67,12 @@ class ReadTool(AtomicTool):
         limit = args.limit if args.limit is not None else DEFAULT_MAX_LINES
         limited = limit < total - start
         end = start + min(limit, total - start)
-        body = lines[start:end]
+        body = "\n".join(lines[start:end])
+        # 字节+行双上限(行上限与 limit 相同,已在上方切片;这里主要兜字节)
+        body, trunc = truncate_head(body, max_lines=limit, max_bytes=DEFAULT_MAX_BYTES)
 
         parts = [f"[{start + 1}-{end}/{total} 行]" if limited else f"[{total} 行]"]
-        parts.extend(body)
-        if limited:
+        parts.append(body)
+        if limited or trunc.truncated:
             parts.append(f"[已截断,共 {total} 行,可通过 offset={end} 继续读取]")
         return "\n".join(parts)
