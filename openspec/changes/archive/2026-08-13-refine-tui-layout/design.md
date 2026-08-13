@@ -39,6 +39,10 @@
 
 备选:受限宽度气泡(72% 终端)被用户否决——参考图是命令记录而非气泡。
 
+> 注:delta 语言不支持 scenario 重命名(验证器按 scenario 名精确匹配,见
+> `findMissingCurrentScenarios`),故 spec 中 scenario 名「用户消息背景块」作为
+> 锚点保留,内容更新为命令记录行行为。名称是历史标识符,非当前样式描述。
+
 ### D3: 思维链弱化(始终展开)
 
 `AssistantBlock.render` 输出:

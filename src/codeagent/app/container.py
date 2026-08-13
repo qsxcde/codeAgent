@@ -91,3 +91,76 @@ def create_agent_session(
     return AgentSession(graph, EventBus())
 
 
+def create_tui_app(
+    cfg: Any = None,
+    *,
+    backend: Any = None,
+    registry: Any = None,
+    reasoning_effort: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> Any:
+    """组合根:TUI 装配——session + 后端 + footer 的 model/effort(design D5)。
+
+    - footer 信息在装配时解析固化:``model:effort`` 内联后缀 > ``reasoning_effort``
+      > provider 配置默认;model:effort 解析唯一引用 ``split_model_pattern``;
+    - backend 缺省构造 TextualBackend(textual 延迟到此处 import,保持启动路径轻量);
+    - TUI 层不读配置/不跨层:model/effort 作为显式依赖注入 ``TuiApp``。
+    """
+    from codeagent.app.tui.components import FooterInfo
+    from codeagent.app.tui.view import TuiApp
+
+    session = create_agent_session(
+        cfg,
+        registry=registry,
+        checkpointer=None,
+        reasoning_effort=reasoning_effort,
+        provider=provider,
+        model=model,
+    )
+    if backend is None:
+        from codeagent.app.tui.textual_backend import TextualBackend
+
+        backend = TextualBackend()
+    return TuiApp(session, backend, footer=_resolve_footer_info(cfg, provider, model, reasoning_effort))
+
+
+def _resolve_footer_info(
+    cfg: Any,
+    provider: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+) -> Any:
+    """解析 footer 右端的 ``(model, effort)``(组合根专用,design D5)。
+
+    与 ``create_llm`` 同优先级:``model:effort`` 内联后缀 > ``reasoning_effort``
+    > provider 配置默认;默认 model 从 provider 的 ``*Config`` 类读取(其
+    BaseSettings 字段即生效配置,含 env 覆盖)。
+    """
+    import importlib
+
+    from codeagent.ai.model_pattern import split_model_pattern
+    from codeagent.ai.providers import PROVIDERS
+    from codeagent.app.config import Settings
+    from codeagent.app.tui.components import FooterInfo
+
+    provider = provider or getattr(cfg, "llm_provider", None) or Settings().llm_provider
+    base, inline = split_model_pattern(model) if model else (None, None)
+    effort = inline or reasoning_effort
+    model_id = base
+    factory = PROVIDERS.get(provider)
+    if factory is not None:
+        module = importlib.import_module(factory.__module__)
+        config_cls = next(
+            (v for n, v in vars(module).items() if n.endswith("Config") and isinstance(v, type)),
+            None,
+        )
+        if config_cls is not None:
+            defaults = config_cls()
+            if model_id is None:
+                model_id = defaults.model
+            if effort is None:
+                effort = defaults.reasoning_effort
+    return FooterInfo(model=model_id or "", effort=effort or "")
+
+

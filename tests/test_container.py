@@ -43,6 +43,74 @@ def test_create_agent_session_returns_session():
     assert hasattr(sess, "subscribe")
 
 
+class _StubBackend:
+    """最小 TuiBackend 实现(不 import textual,离线装配断言)。"""
+
+    def run(self) -> None:  # pragma: no cover - stub
+        pass
+
+    def transcript_size(self) -> tuple[int, int]:
+        return 60, 10
+
+    def render(self, lines) -> None:  # pragma: no cover - stub
+        pass
+
+    def set_status(self, line) -> None:  # pragma: no cover - stub
+        pass
+
+    def set_footer(self, line) -> None:  # pragma: no cover - stub
+        pass
+
+    def on_submit(self, handler) -> None:  # pragma: no cover - stub
+        pass
+
+    def on_interrupt(self, handler) -> None:  # pragma: no cover - stub
+        pass
+
+    def on_resize(self, handler) -> None:  # pragma: no cover - stub
+        pass
+
+    def on_click(self, handler) -> None:  # pragma: no cover - stub
+        pass
+
+    def exit_document(self, lines) -> None:  # pragma: no cover - stub
+        pass
+
+    def stop(self) -> None:  # pragma: no cover - stub
+        pass
+
+
+def test_create_tui_app_assembles_with_stub_backend():
+    """create_tui_app 装配 session + backend,不依赖 textual(design D5)。"""
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_tui_app
+
+        app = create_tui_app(provider="fake", backend=_StubBackend())
+    assert hasattr(app, "start")
+    assert app.model.footer.model == ""
+    assert app.model.footer.effort == ""
+
+
+def test_create_tui_app_resolves_footer_info():
+    """footer 的 model · effort 优先级:model 内联后缀 > provider 配置默认(design D5)。"""
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_tui_app
+
+        app = create_tui_app(provider="deepseek", model="deepseek-v4-pro:low", backend=_StubBackend())
+        assert app.model.footer.model == "deepseek-v4-pro"
+        assert app.model.footer.effort == "low"
+
+        app = create_tui_app(provider="deepseek", backend=_StubBackend())
+        assert app.model.footer.model == "deepseek-v4-flash"
+        assert app.model.footer.effort == "high"
+
+
 @pytest.mark.anyio
 async def test_real_provider_runs_through_graph():
     """真实 OpenAICompatClient 经 create_agent_graph 接入 LangGraph 可跑通(回归:#1 + 流式路径)。

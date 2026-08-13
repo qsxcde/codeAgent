@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Callable, Protocol
 
+from codeagent.app.tui.components import RichLine
+
 #: 提交处理器:收到输入框提交的文本。
 SubmitHandler = Callable[[str], None]
 #: 打断/退出处理器:运行中打断、空闲退出(由视图按运行态分派)。
@@ -33,14 +35,14 @@ class TuiBackend(Protocol):
     def transcript_size(self) -> tuple[int, int]:
         """返回 transcript 视口的 (宽度, 高度)。"""
 
-    def render(self, lines: list[str]) -> None:
+    def render(self, lines: list[RichLine]) -> None:
         """差分更新 transcript 区内容。"""
 
-    def set_status(self, text: str) -> None:
-        """更新状态栏文本。"""
+    def set_status(self, line: RichLine) -> None:
+        """更新状态栏内容(富样式行;design D5)。"""
 
-    def set_footer(self, text: str) -> None:
-        """更新底部提示文本。"""
+    def set_footer(self, line: RichLine) -> None:
+        """更新底部状态条内容(富样式行;design D5)。"""
 
     def on_submit(self, handler: SubmitHandler) -> None:
         """注册输入提交处理器。"""

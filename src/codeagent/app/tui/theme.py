@@ -19,7 +19,6 @@ __all__ = [
     "SUCCESS",
     "ERROR",
     "WARNING",
-    "USER_BG",
     "BORDER",
     "BORDER_MUTED",
 ]
@@ -34,11 +33,10 @@ TOOL_OUTPUT = "tool_output"  # 工具结果
 SUCCESS = "success"         # 成功(工具 ✓ / 空闲状态)
 ERROR = "error"             # 错误(工具 ✗ / 错误状态)
 WARNING = "warning"         # 警告(已取消 / 运行中状态)
-USER_BG = "user_bg"         # 用户消息背景
 BORDER = "border"           # 聚焦边框
 BORDER_MUTED = "border_muted"  # 失焦边框
 
-#: 标签 → 色值(hex;`user_bg` 是背景色,其余为前景色)。
+#: 标签 → 色值(hex;目前均为前景色,背景色由后端按需使用词表)。
 PALETTE: dict[str, str] = {
     TEXT: "#d4d4d4",
     ACCENT: "#00d7ff",
@@ -48,7 +46,6 @@ PALETTE: dict[str, str] = {
     SUCCESS: "#b5bd68",
     ERROR: "#cc6666",
     WARNING: "#ffff00",
-    USER_BG: "#343541",
     BORDER: "#00d7ff",
     BORDER_MUTED: "#505050",
 }

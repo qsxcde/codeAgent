@@ -16,7 +16,7 @@ import asyncio
 from typing import Any
 
 from codeagent.app.tui.backend import TuiBackend
-from codeagent.app.tui.components import TuiModel, ToolCallBlock
+from codeagent.app.tui.components import FooterInfo, TuiModel, ToolCallBlock
 
 #: 退出文档的兜底宽度(视口尺寸不可用时)。
 _DEFAULT_EXIT_WIDTH = 120
@@ -25,10 +25,19 @@ _DEFAULT_EXIT_WIDTH = 120
 class TuiApp:
     """把会话事件流驱动成组件渲染 + 输入/打断/退出的视图逻辑。"""
 
-    def __init__(self, session: Any, backend: TuiBackend) -> None:
+    def __init__(
+        self,
+        session: Any,
+        backend: TuiBackend,
+        footer: FooterInfo | None = None,
+    ) -> None:
         self._session = session
         self._backend = backend
         self.model = TuiModel()
+        if footer is not None:
+            # footer 右端的 model · effort 在装配时解析固化(design D5)。
+            self.model.footer.model = footer.model
+            self.model.footer.effort = footer.effort
         self._render_pending = False
         self._session.subscribe(self._on_event)
 
@@ -97,7 +106,9 @@ class TuiApp:
             return  # 尚未布局完成,等待下次 resize/事件
         lines = self.model.transcript.render(width, height)
         self._backend.render(lines)
+        # 状态栏与 footer 均传富样式行(design D5:修复此前 RichLine 被当 str 传)。
         self._backend.set_status(self.model.status.render(width)[0])
+        self._backend.set_footer(self.model.footer.render(width)[0])
 
     def _transcript_width(self) -> int:
         width, _ = self._backend.transcript_size()
