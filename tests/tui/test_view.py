@@ -1,24 +1,26 @@
 """tests/tui/test_view.py:TuiApp 视图逻辑(注入 stub 后端,不 import textual)。
 
-对应 spec「运行中打断」「空闲退出」「帧率达标」(渲染合并)。
+对应 spec「运行中打断」「空闲退出」「帧率达标」(渲染合并)、「工具调用点击展开」(点击路由)。
 """
 
 import asyncio
 from typing import Any
 
+from codeagent.app.tui.components import ToolCallBlock, rich_to_plain
 from codeagent.app.tui.view import TuiApp
 from codeagent.core.events import AgentEvent, EventType
 
 
 class StubBackend:
-    """记录渲染/状态/退出文档的假后端(替代 textual,离线断言)。"""
+    """记录渲染/状态/退出文档/点击的假后端(替代 textual,离线断言)。"""
 
     def __init__(self) -> None:
-        self.renders: list[list[str]] = []
+        self.renders: list[Any] = []
         self.statuses: list[str] = []
         self.submit = None
         self.interrupt = None
         self.resize = None
+        self.click = None
         self.exited: list[str] | None = None
 
     def run(self) -> None:  # pragma: no cover - stub
@@ -27,7 +29,7 @@ class StubBackend:
     def transcript_size(self) -> tuple[int, int]:
         return 60, 10
 
-    def render(self, lines: list[str]) -> None:
+    def render(self, lines) -> None:
         self.renders.append(list(lines))
 
     def set_status(self, text: str) -> None:
@@ -44,6 +46,9 @@ class StubBackend:
 
     def on_resize(self, handler) -> None:
         self.resize = handler
+
+    def on_click(self, handler) -> None:
+        self.click = handler
 
     def exit_document(self, lines: list[str]) -> None:
         self.exited = list(lines)
@@ -86,6 +91,7 @@ def _make_app() -> tuple[TuiApp, StubBackend, FakeSession]:
     backend.on_submit(app._submit)
     backend.on_interrupt(app._interrupt)
     backend.on_resize(app._schedule_render)
+    backend.on_click(app._click)
     return app, backend, session
 
 
@@ -100,8 +106,9 @@ def test_submit_starts_run_and_renders():
         await asyncio.sleep(0)
 
     asyncio.run(_run())
-    assert any("你: 你好" in "".join(lines) for lines in backend.renders)
-    assert "ok" in backend.renders[-1]
+    rendered_plain = ["".join(rich_to_plain(lines)) for lines in backend.renders]
+    assert any("你好" in text for text in rendered_plain)
+    assert "ok" in rendered_plain[-1]
     assert app.model.status.status == "IDLE"
 
 
@@ -122,7 +129,7 @@ def test_interrupt_idle_exits_with_doc():
     backend.interrupt()
     assert backend.exited is not None
     doc = "\n".join(backend.exited)
-    assert "你: hi" in doc
+    assert "hi" in doc
     assert "回复" in doc
 
 
@@ -152,3 +159,23 @@ def test_render_coalescing():
         assert len(backend.renders) - before == 1
 
     asyncio.run(_run())
+
+
+def test_click_toggles_tool_expand():
+    """点击工具行 → 切换折叠(spec「工具调用点击展开」;design D4)。"""
+    app, backend, session = _make_app()
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    app.model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "read", "args": {"file_path": "a.py"}, "id": "c1"}],
+        )
+    )
+    app.model.transcript.render(60, 10)  # 填充行→块映射
+    tool = next(b for b in app.model.transcript.blocks if isinstance(b, ToolCallBlock))
+    assert tool.expanded is False
+    row = next(i for i in range(10) if app.model.transcript.block_at(i) is tool)
+    backend.click(row)
+    assert tool.expanded is True
+    backend.click(row)
+    assert tool.expanded is False

@@ -1,5 +1,6 @@
 """tools 层测试:七个原子工具(read/write/edit/bash/grep/find/ls)+ 注册表 + 共享横切(全部离线)。"""
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -340,6 +341,34 @@ def test_bash_grep_exit_one_not_failure(monkeypatch):
     monkeypatch.chdir("/")
     out = _invoke(BashTool(), command="grep nothing-here /etc/hosts || true")
     assert "命令失败" not in out
+
+
+def test_bash_env_injects_no_color_and_lang():
+    """子进程环境注入 NO_COLOR=1 且保留 LANG(spec: bash 子进程环境注入)。"""
+    env = BashTool()._bash_env()
+    assert env["NO_COLOR"] == "1"
+    assert env["LANG"] == "en_US.UTF-8"
+
+
+def test_bash_env_is_copy_not_mutating_process_environ():
+    """_bash_env 返回 os.environ 副本,注入不污染进程级环境(design D4)。"""
+    before = dict(os.environ)
+    BashTool()._bash_env()
+    assert os.environ == before
+
+
+def test_bash_subprocess_sees_no_color(monkeypatch):
+    """集成验证:子进程能从环境读到 NO_COLOR(行为验证,平台无关)。"""
+    monkeypatch.chdir("/")
+    out = _invoke(BashTool(), command='test -n "$NO_COLOR" && echo SET')
+    assert "SET" in out and "退出码: 0" in out
+
+
+def test_bash_normal_command_unaffected_by_no_color(monkeypatch):
+    """NO_COLOR 注入不影响普通命令的输出与退出码。"""
+    monkeypatch.chdir("/")
+    out = _invoke(BashTool(), command="echo hi")
+    assert "hi" in out and "退出码: 0" in out
 
 
 # ── registry ──────────────────────────────────────────

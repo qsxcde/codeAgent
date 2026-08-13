@@ -233,7 +233,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | ID | 需求 | 说明 | 优先级 | 状态 |
 |---|---|---|---|---|
 | FR-1.1 | 自然语言对话 | 普通文本发送给 Agent,回复渲染到聊天区 | P0 | ✅ MVP TUI 已恢复(restore-tui,`--tui`);headless 保留(FR-1.9) |
-| FR-1.2 | 流式回复渲染 | `respond_stream` 增量渲染(text/tool_call/tool_result) | P0 | ✅ MVP 流式渲染(text_delta/thinking/tool_call/tool_result → 组件树) |
+| FR-1.2 | 流式回复渲染 | `respond_stream` 增量渲染(text/tool_call/tool_result) | P0 | ✅ MVP 流式渲染(text_delta/thinking/tool_call/tool_result → 组件树)+ 样式区分(tui-styling:思维灰不折叠 / 工具默认折叠点击展开) |
 | FR-1.3 | 斜杠命令体系 | `/help /clear /quit /status /provider /model /effort /tools /session` | P0 | 🔲 下一迭代(restore-tui 拆出;Editor 留扩展缝) |
 | FR-1.4 | 模糊命令补全 | 输入 `/` 弹出建议,↑/↓ 选择,回车填入输入框 | P0 | 🔲 下一迭代 |
 | FR-1.5 | 命令选择器 | provider / model / effort 三项,支持筛选与直接输入 | P0 | 🔲 下一迭代 |

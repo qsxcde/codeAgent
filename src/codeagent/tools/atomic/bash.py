@@ -315,9 +315,15 @@ class BashTool(AtomicTool):
         )
 
     def _bash_env(self) -> dict[str, str]:
-        """构造子进程环境:写侧强制 LANG 让 bash 输出 UTF-8 字节。"""
+        """构造子进程环境:写侧强制 LANG 让 bash 输出 UTF-8 字节;注入 NO_COLOR。
+
+        NO_COLOR=1 让尊重 no-color.org 约定的命令(如 conda libmamba-solver)跳过
+        tty 颜色探测:本工具以分离进程启动 `bash -lc`,无有效控制台句柄时
+        sys.stdout 为 None,conda 在 import 期调用 isatty() 会崩溃并污染 stderr。
+        """
         env = os.environ.copy()
         env["LANG"] = "en_US.UTF-8"
+        env["NO_COLOR"] = "1"
         return env
 
     def _exec(self, command: str, timeout: int, env: dict[str, str]) -> tuple[int, str, str, bool]:

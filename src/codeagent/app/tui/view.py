@@ -16,7 +16,7 @@ import asyncio
 from typing import Any
 
 from codeagent.app.tui.backend import TuiBackend
-from codeagent.app.tui.components import TuiModel
+from codeagent.app.tui.components import TuiModel, ToolCallBlock
 
 #: 退出文档的兜底宽度(视口尺寸不可用时)。
 _DEFAULT_EXIT_WIDTH = 120
@@ -39,7 +39,15 @@ class TuiApp:
         self._backend.on_submit(self._submit)
         self._backend.on_interrupt(self._interrupt)
         self._backend.on_resize(self._schedule_render)
+        self._backend.on_click(self._click)
         self._backend.run()
+
+    def _click(self, row: int) -> None:
+        """点击 transcript 某行:若命中工具块则切换折叠(design D4)。"""
+        block = self.model.transcript.block_at(row)
+        if isinstance(block, ToolCallBlock):
+            block.toggle_expand()
+            self._schedule_render()
 
     # -- 输入 / 打断 / 退出 ------------------------------------------------
 

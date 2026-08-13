@@ -20,6 +20,8 @@ SubmitHandler = Callable[[str], None]
 InterruptHandler = Callable[[], None]
 #: 尺寸变化处理器(含首次挂载),用于触发重新渲染。
 ResizeHandler = Callable[[], None]
+#: transcript 区点击处理器:参数为相对 transcript 顶部的行号(design D4,工具点击折叠)。
+ClickHandler = Callable[[int], None]
 
 
 class TuiBackend(Protocol):
@@ -48,6 +50,9 @@ class TuiBackend(Protocol):
 
     def on_resize(self, handler: ResizeHandler) -> None:
         """注册尺寸变化处理器(挂载时也会触发一次)。"""
+
+    def on_click(self, handler: ClickHandler) -> None:
+        """注册 transcript 区行点击处理器(相对行号;design D4)。"""
 
     def exit_document(self, lines: list[str]) -> None:
         """记录退出文档并退出 alt 屏;run() 返回后(主屏已恢复)打印该文档(design D5)。"""
