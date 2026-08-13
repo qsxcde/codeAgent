@@ -232,18 +232,18 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 
 | ID | 需求 | 说明 | 优先级 | 状态 |
 |---|---|---|---|---|
-| FR-1.1 | 自然语言对话 | 普通文本发送给 Agent,回复渲染到聊天区 | P0 | ⚠️ TUI 形态当前代码树已移除;headless 对话保留(FR-1.9) |
-| FR-1.2 | 流式回复渲染 | `respond_stream` 增量渲染(text/tool_call/tool_result) | P0 | ⚠️ 同上 |
-| FR-1.3 | 斜杠命令体系 | `/help /clear /quit /status /provider /model /effort /tools /session` | P0 | ⚠️ 同上 |
-| FR-1.4 | 模糊命令补全 | 输入 `/` 弹出建议,↑/↓ 选择,回车填入输入框 | P0 | ⚠️ 同上 |
-| FR-1.5 | 命令选择器 | provider / model / effort 三项,支持筛选与直接输入 | P0 | ⚠️ 同上 |
-| FR-1.6 | `//` 转义 | 发送以 `/` 开头的字面量内容 | P0 | ⚠️ 同上 |
-| FR-1.7 | 打断/取消 | 运行中可中断 agent 运行 | P0 | ✅ 会话层 `AgentSession.abort` 已落地(HEAD 中保留);TUI 入口移除 |
-| FR-1.8 | 键盘导航 | `Ctrl+L` 聚焦、`Ctrl+Q` 退出、Tab 补全、Esc 收起浮层 | P0 | ⚠️ TUI 移除 |
+| FR-1.1 | 自然语言对话 | 普通文本发送给 Agent,回复渲染到聊天区 | P0 | ✅ MVP TUI 已恢复(restore-tui,`--tui`);headless 保留(FR-1.9) |
+| FR-1.2 | 流式回复渲染 | `respond_stream` 增量渲染(text/tool_call/tool_result) | P0 | ✅ MVP 流式渲染(text_delta/thinking/tool_call/tool_result → 组件树) |
+| FR-1.3 | 斜杠命令体系 | `/help /clear /quit /status /provider /model /effort /tools /session` | P0 | 🔲 下一迭代(restore-tui 拆出;Editor 留扩展缝) |
+| FR-1.4 | 模糊命令补全 | 输入 `/` 弹出建议,↑/↓ 选择,回车填入输入框 | P0 | 🔲 下一迭代 |
+| FR-1.5 | 命令选择器 | provider / model / effort 三项,支持筛选与直接输入 | P0 | 🔲 下一迭代 |
+| FR-1.6 | `//` 转义 | 发送以 `/` 开头的字面量内容 | P0 | 🔲 下一迭代 |
+| FR-1.7 | 打断/取消 | 运行中可中断 agent 运行 | P0 | ✅ 会话层 `AgentSession.abort` + MVP TUI `Esc` 打断入口(运行中 Esc → abort) |
+| FR-1.8 | 键盘导航 | `Ctrl+L` 聚焦、`Ctrl+Q` 退出、Tab 补全、Esc 收起浮层 | P0 | ⚠️ 部分:Esc 打断/退出已落地;Ctrl+L/Tab/浮层导航下一迭代 |
 | FR-1.9 | Headless 模式 | 一次性 `--prompt` 与 stdin 逐行两种输入 | P0 | ✅ 当前唯一保留形态(`app/main.py`) |
 | FR-1.10 | 多轮上下文 | 同一会话内多轮对话携带上下文(会话维度 thread 累积) | P0 | ✅ |
 
-> **FR-1 状态说明**:TUI 在 2026-08 曾完成重设计(内容块树 + TranscriptView + 增量渲染,提交 d21ba41~e4deca2),但于 2026-08-13 在提交 876d106 中随模型层自研重构整体移除(`src/codeagent/tui/` 与 `tests/tui/` 全部删除,pyproject 同步移除 textual)。当前入口为 headless(`app/main.py`,`--prompt` / stdin 双路径),事件聚合语义为:text_delta 增量累积 → tool_call 前文本清零 → agent_message 兜底去重。**TUI 的恢复/重建需求登记为 FR-1.11(P1)**:重新提供交互式终端形态,事件语义复用现有 `AgentSession` 订阅接口。
+> **FR-1 状态说明**:TUI 在 2026-08 曾完成重设计(内容块树 + TranscriptView + 增量渲染,提交 d21ba41~e4deca2),但于 2026-08-13 在提交 876d106 中随模型层自研重构整体移除(`src/codeagent/tui/` 与 `tests/tui/` 全部删除,pyproject 同步移除 textual)。当前入口为 headless(`app/main.py`,`--prompt` / stdin 双路径),事件聚合语义为:text_delta 增量累积 → tool_call 前文本清零 → agent_message 兜底去重。**TUI 恢复于 2026-08-13 由 restore-tui 落地 MVP**(`app/tui/`:纯组件 render + TuiBackend 端口 + textual 后端,`--tui` 进入):对话/流式渲染/Esc 打断/状态栏/alt 屏/退出完整文档;斜杠命令体系、模糊补全、选择器、`//` 转义、Tab 补全、Ctrl+L 导航拆下一迭代(FR-1.3~1.6/1.8 部分)。
 
 ### 4.3 FR-2 模型配置与管理
 
@@ -754,7 +754,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | FR-1.7 | 打断/取消 | P0 | ✅ 会话层保留 | R; C | — |
 | FR-1.9 | Headless 模式 | P0 | ✅ 当前唯一形态 | R; C | — |
 | FR-1.10 | 多轮上下文 | P0 | ✅ | R; C | — |
-| FR-1.11 | TUI 形态恢复(新增) | P1 | 🔲 | C(缺口登记) | F-17b |
+| FR-1.11 | TUI 形态恢复(新增) | P1 | ✅(MVP,restore-tui 2026-08-13;斜杠命令等下一迭代) | C(缺口登记) | F-17b |
 | FR-2.1~2.7 | 模型配置与管理 | P0/P1/P2 | ✅(2.7 规划) | R §3.1 | — |
 | FR-2.8 | 模型客户端自研(ModelRuntime) | P0 | ✅ | B §1; C | — |
 | FR-2.9 | 注册表缓存 | P0 | ✅ | C | — |

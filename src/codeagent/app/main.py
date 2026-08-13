@@ -25,11 +25,19 @@ _EV_RUN_CANCELLED = "run_cancelled"
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="codeagent", description="基于 LangGraph 的编程 Agent")
     parser.add_argument("--prompt", default=None, help="一次性输入(不指定则从 stdin 逐行读取)")
+    parser.add_argument("--tui", action="store_true", help="启动交互式终端(TUI)")
     args = parser.parse_args(argv)
 
     from codeagent.app.config import ensure_config_files
 
     ensure_config_files()  # 首次启动自动生成 ~/.codeagent 配置模板(幂等,不覆盖用户配置)
+
+    if args.tui:
+        from codeagent.app.tui.main import run_tui
+
+        run_tui()
+        return
+
     session = container.create_agent_session()
 
     if args.prompt:

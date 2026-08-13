@@ -1,0 +1,154 @@
+"""tests/tui/test_view.py:TuiApp 视图逻辑(注入 stub 后端,不 import textual)。
+
+对应 spec「运行中打断」「空闲退出」「帧率达标」(渲染合并)。
+"""
+
+import asyncio
+from typing import Any
+
+from codeagent.app.tui.view import TuiApp
+from codeagent.core.events import AgentEvent, EventType
+
+
+class StubBackend:
+    """记录渲染/状态/退出文档的假后端(替代 textual,离线断言)。"""
+
+    def __init__(self) -> None:
+        self.renders: list[list[str]] = []
+        self.statuses: list[str] = []
+        self.submit = None
+        self.interrupt = None
+        self.resize = None
+        self.exited: list[str] | None = None
+
+    def run(self) -> None:  # pragma: no cover - stub
+        pass
+
+    def transcript_size(self) -> tuple[int, int]:
+        return 60, 10
+
+    def render(self, lines: list[str]) -> None:
+        self.renders.append(list(lines))
+
+    def set_status(self, text: str) -> None:
+        self.statuses.append(text)
+
+    def set_footer(self, text: str) -> None:
+        pass
+
+    def on_submit(self, handler) -> None:
+        self.submit = handler
+
+    def on_interrupt(self, handler) -> None:
+        self.interrupt = handler
+
+    def on_resize(self, handler) -> None:
+        self.resize = handler
+
+    def exit_document(self, lines: list[str]) -> None:
+        self.exited = list(lines)
+
+    def stop(self) -> None:  # pragma: no cover - stub
+        pass
+
+
+class FakeSession:
+    """假会话:订阅回调可按需触发事件;abort 记录调用。"""
+
+    def __init__(self) -> None:
+        self.subscribers: list[Any] = []
+        self.aborted = False
+
+    def subscribe(self, fn):
+        self.subscribers.append(fn)
+        return lambda: None
+
+    def run(self, text: str):
+        async def _run() -> None:
+            self._emit(AgentEvent(EventType.SESSION_STARTED, payload=text))
+            self._emit(AgentEvent(EventType.TEXT_DELTA, payload="ok"))
+            self._emit(AgentEvent(EventType.TURN_END))
+
+        return _run()
+
+    def abort(self) -> None:
+        self.aborted = True
+
+    def _emit(self, event: AgentEvent) -> None:
+        for fn in list(self.subscribers):
+            fn(event)
+
+
+def _make_app() -> tuple[TuiApp, StubBackend, FakeSession]:
+    backend = StubBackend()
+    session = FakeSession()
+    app = TuiApp(session, backend)
+    backend.on_submit(app._submit)
+    backend.on_interrupt(app._interrupt)
+    backend.on_resize(app._schedule_render)
+    return app, backend, session
+
+
+def test_submit_starts_run_and_renders():
+    """提交触发会话运行,事件驱动渲染(对应 spec「对话输入与回复渲染」)。"""
+    app, backend, session = _make_app()
+
+    async def _run() -> None:
+        backend.resize()
+        await asyncio.sleep(0)
+        backend.submit("你好")
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+    assert any("你: 你好" in "".join(lines) for lines in backend.renders)
+    assert "ok" in backend.renders[-1]
+    assert app.model.status.status == "IDLE"
+
+
+def test_interrupt_running_aborts():
+    """运行中 Esc → abort(对应 spec「运行中打断」)。"""
+    app, backend, session = _make_app()
+    app.model.running = True
+    backend.interrupt()
+    assert session.aborted is True
+
+
+def test_interrupt_idle_exits_with_doc():
+    """空闲 Esc → 退出并打印完整文档(对应 spec「空闲退出」「退出完整文档」)。"""
+    app, backend, session = _make_app()
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="hi"))
+    app.model.apply(AgentEvent(EventType.TEXT_DELTA, payload="回复"))
+    app.model.apply(AgentEvent(EventType.TURN_END))  # 结束本轮 → 空闲
+    backend.interrupt()
+    assert backend.exited is not None
+    doc = "\n".join(backend.exited)
+    assert "你: hi" in doc
+    assert "回复" in doc
+
+
+def test_run_cancelled_event_returns_idle():
+    """RUN_CANCELLED 事件 → 状态栏回 IDLE(对应 spec「状态栏实时反馈」)。"""
+    app, backend, _ = _make_app()
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    assert app.model.running is True
+    app.model.apply(AgentEvent(EventType.RUN_CANCELLED))
+    assert app.model.running is False
+    assert app.model.status.status == "IDLE"
+
+
+def test_render_coalescing():
+    """N 个增量事件合并成一次渲染(对应 spec「帧率达标」;design D4)。"""
+    app, backend, session = _make_app()
+
+    async def _run() -> None:
+        backend.resize()
+        await asyncio.sleep(0)
+        before = len(backend.renders)
+        # 同一循环迭代内连发多个增量
+        session._emit(AgentEvent(EventType.TEXT_DELTA, payload="a"))
+        session._emit(AgentEvent(EventType.TEXT_DELTA, payload="b"))
+        session._emit(AgentEvent(EventType.TEXT_DELTA, payload="c"))
+        await asyncio.sleep(0)
+        assert len(backend.renders) - before == 1
+
+    asyncio.run(_run())

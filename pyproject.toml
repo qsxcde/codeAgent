@@ -9,6 +9,7 @@ dependencies = [
     "langchain-core>=1.5.3",
     "langgraph>=1.2.10",
     "pydantic-settings>=2.14.2",
+    "textual>=2.1.0",
 ]
 
 [project.scripts]
