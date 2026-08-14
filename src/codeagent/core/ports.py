@@ -69,10 +69,11 @@ class AgentPorts:
     """编排层的外部端口集合(自研版)。
 
     - ``model``:模型端口(组合根适配 ai 层 ChatClient);
-    - ``tools``:工具列表(自研 AtomicTool 实例,直接 ``invoke``);
-    - ``store``:会话存储(可选;None 不持久化)。
+    - ``tools``:工具列表(自研 AtomicTool 实例,直接 ``invoke``)。
+
+    ``store`` 不在端口内:core 循环从不落盘(成功轮次才写由会话层负责),
+    会话存储只经 ``AgentSession`` 注入(session-manager change 清理死字段)。
     """
 
     model: ModelPort
     tools: list[Any]
-    store: Any | None = None

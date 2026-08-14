@@ -27,7 +27,6 @@ def _session(model: FakeClient, store=None, session_id: str | None = None) -> Ag
     ports = AgentPorts(
         model=ChatModelPort(model),
         tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
-        store=store,
     )
     return AgentSession(ports, EventBus(), store=store, session_id=session_id)
 

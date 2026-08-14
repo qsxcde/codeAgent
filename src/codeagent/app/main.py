@@ -23,9 +23,22 @@ _EV_RUN_CANCELLED = "run_cancelled"
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="codeagent", description="基于 LangGraph 的编程 Agent")
+    parser = argparse.ArgumentParser(prog="codeagent", description="基于自研编排的编程 Agent")
     parser.add_argument("--prompt", default=None, help="一次性输入(不指定则从 stdin 逐行读取)")
     parser.add_argument("--tui", action="store_true", help="启动交互式终端(TUI)")
+    parser.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="继续最近有活动的会话(无会话时新建)",
+    )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="恢复指定会话继续对话(会话 id 见 --list-sessions)",
+    )
+    parser.add_argument("--list-sessions", action="store_true", help="列出全部会话")
     args = parser.parse_args(argv)
 
     from codeagent.app.config import ensure_config_files
@@ -38,12 +51,42 @@ def main(argv: list[str] | None = None) -> None:
         run_tui()
         return
 
-    session = container.create_agent_session()
+    if args.list_sessions:
+        _list_sessions()
+        return
+
+    if args.continue_session or args.session:
+        # 会话入口:持久化到 ~/.codeagent/sessions/;恢复或继续既有会话。
+        # 默认(无这些参数)仍是一次性 headless,不落盘(既有行为不变)。
+        from codeagent.app.config import CONFIG_DIR
+        from codeagent.session.store import JsonFileStore
+
+        store = JsonFileStore(CONFIG_DIR / "sessions")
+        manager = container.create_session_manager(store=store)
+        if args.session:
+            session = manager.switch(args.session)
+        else:
+            session = manager.continue_recent()
+    else:
+        session = container.create_agent_session()
 
     if args.prompt:
         asyncio.run(_headless_once(session, args.prompt))
     else:
         asyncio.run(_headless_loop(session))
+
+
+def _list_sessions() -> None:
+    """打印会话列表(标识 / 时间 / 模型 / 标题;无会话时提示)。"""
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.session.store import JsonFileStore
+
+    refs = JsonFileStore(CONFIG_DIR / "sessions").list()
+    if not refs:
+        print("(无会话)")
+        return
+    for ref in refs:
+        print(f"{ref.id}\t{ref.timestamp}\t{ref.model or '-'}\t{ref.title or '(无标题)'}")
 
 
 async def _respond(session: Any, prompt: str) -> str:

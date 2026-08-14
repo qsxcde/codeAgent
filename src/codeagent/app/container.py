@@ -132,12 +132,15 @@ def create_agent_ports(
     cfg: Any = None,
     *,
     registry: Any = None,
-    store: Any = None,
     reasoning_effort: str | None = None,
     provider: str | None = None,
     model: str | None = None,
 ) -> AgentPorts:
-    """组合根:装配自研编排端口(模型端口 + 工具 + 可选会话存储)。"""
+    """组合根:装配自研编排端口(模型端口 + 工具)。
+
+    ``store`` 不进端口(core 循环不落盘);会话存储经 ``AgentSession`` /
+    ``SessionManager`` 注入(session-manager change,design D6)。
+    """
     from codeagent.ai.factory import create_llm
 
     client = create_llm(
@@ -150,7 +153,6 @@ def create_agent_ports(
     return AgentPorts(
         model=ChatModelPort(client),
         tools=create_tools(cfg),
-        store=store,
     )
 
 
@@ -178,7 +180,6 @@ def create_agent_session(
     ports = create_agent_ports(
         cfg,
         registry=registry,
-        store=store,
         reasoning_effort=reasoning_effort,
         provider=provider,
         model=model,
@@ -232,25 +233,58 @@ def create_tui_app(
     )
 
 
-def _resolve_footer_info(
+def create_session_manager(
+    cfg: Any = None,
+    *,
+    registry: Any = None,
+    store: Any = None,
+    reasoning_effort: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    recursion_limit: int | None = None,
+    tool_timeout: float | None = None,
+) -> Any:
+    """组合根:创建会话管理器(薄 Manager,design D1/D4)。
+
+    - ports 装配一次共享(模型端口 / 工具无状态,跨会话复用);
+    - store 注入后会话可持久化;header 的 model/effort 在创建时固化
+      (_resolve_model_effort 与 footer 同源解析,唯一引用 split_model_pattern);
+    - replace_ports 属 T-44(/provider /model 命令时按 Pi 式 model_change
+      entry 演进,design D4)。
+    """
+    from codeagent.session import SessionManager
+
+    ports = create_agent_ports(
+        cfg,
+        registry=registry,
+        reasoning_effort=reasoning_effort,
+        provider=provider,
+        model=model,
+    )
+    model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
+    return SessionManager(
+        ports,
+        store=store,
+        model=model_id,
+        effort=effort,
+        recursion_limit=recursion_limit or 50,
+        tool_timeout=tool_timeout,
+    )
+
+
+def _resolve_model_effort(
     cfg: Any,
     provider: str | None,
     model: str | None,
     reasoning_effort: str | None,
-) -> Any:
-    """解析底部状态栏装配数据:``(model, effort, cwd)``(组合根专用,design D5)。
-
-    与 ``create_llm`` 同优先级:``model:effort`` 内联后缀 > ``reasoning_effort``
-    > provider 配置默认;默认 model 从 provider 的 ``*Config`` 类读取(其
-    BaseSettings 字段即生效配置,含 env 覆盖);``cwd`` 取配置或当前工作目录。
-    """
+) -> tuple[str, str]:
+    """解析 model / effort(design D4):``model:effort`` 内联 > ``reasoning_effort``
+    > provider 配置默认(与 footer 状态栏同源,组合根专用)。"""
     import importlib
-    from pathlib import Path
 
     from codeagent.ai.model_pattern import split_model_pattern
     from codeagent.ai.providers import PROVIDERS
     from codeagent.app.config import Settings
-    from codeagent.app.tui.components import FooterInfo
 
     provider = provider or getattr(cfg, "llm_provider", None) or Settings().llm_provider
     base, inline = split_model_pattern(model) if model else (None, None)
@@ -269,6 +303,26 @@ def _resolve_footer_info(
                 model_id = defaults.model
             if effort is None:
                 effort = defaults.reasoning_effort
+    return model_id or "", effort or ""
+
+
+def _resolve_footer_info(
+    cfg: Any,
+    provider: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+) -> Any:
+    """解析底部状态栏装配数据:``(model, effort, cwd)``(组合根专用,design D5)。
+
+    与 ``create_llm`` 同优先级:``model:effort`` 内联后缀 > ``reasoning_effort``
+    > provider 配置默认(model/effort 解析委托 ``_resolve_model_effort``);
+    ``cwd`` 取配置或当前工作目录。
+    """
+    from pathlib import Path
+
+    from codeagent.app.tui.components import FooterInfo
+
+    model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
     cwd = getattr(cfg, "cwd", None) if cfg is not None else None
     cwd = str(Path(cwd or Path.cwd()).expanduser().resolve())
-    return FooterInfo(model=model_id or "", effort=effort or "", cwd=cwd)
+    return FooterInfo(model=model_id, effort=effort, cwd=cwd)

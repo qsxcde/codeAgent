@@ -1,14 +1,20 @@
 """session/store.py:JSONL 树形会话存储(append-only,消息唯一真相)。
 
-格式 v1(design D5,2026-08-14,self-built-orchestration):
+格式 v1(design D2~D4/D7,2026-08-14,self-built-orchestration + session-manager):
 - 一个会话 = 一个 JSONL 文件,逐 entry 追加,永不重写历史;
-- ``session`` header:version / id / parentSession / timestamp / cwd;
+- ``session`` header:version / id / parentSession / timestamp / cwd /
+  model / effort(model/effort 为可选字段,创建时即知,旧文件缺失向后兼容);
 - ``message`` entry:id / parentId / role / content / tool_calls / tool_call_id
   (parentId 显式因果链:回放 / 回滚 / 分叉基础);
+- ``meta`` entry:key / value(可变元数据,如显示名;append-only 下后写覆盖,
+  读侧取该键最近一次的值——对齐 Pi 的 ``session_info`` entry);
 - ``compaction`` entry(预留,服务后续压缩与 undo):summary + details
   (readFiles / modifiedFiles);
 - 写侧按路径锁串行化(本地锁表 ``_lock_for``),读侧按声明版本解析,
   不兼容版本明确报错。
+
+标题派生(design D3):显式命名(meta key="name")优先,否则取首条 user
+消息截断至 20 字符。扫描不能提前终止——meta 可能写在首条 user 消息之后。
 
 分层约束:session 可 import core(消息/事件),不 import ai / tools / config;
 存储后端经 hexagonal 缝注入(组合根装配 JsonFileStore,测试注入 MemoryStore)。
@@ -27,7 +33,18 @@ from codeagent.core.messages import Message, ToolCall
 
 CURRENT_VERSION = 1
 
-__all__ = ["CURRENT_VERSION", "JsonFileStore", "MemoryStore", "SessionRef", "SessionStore"]
+#: 派生标题截断长度(design D3)。
+TITLE_MAX = 20
+
+__all__ = [
+    "CURRENT_VERSION",
+    "CompactionEntry",
+    "JsonFileStore",
+    "MemoryStore",
+    "SessionRef",
+    "SessionStore",
+    "TITLE_MAX",
+]
 
 
 #: 文件路径 → 互斥锁(进程内写串行化;与 tools/shared/mutation_queue 同模式,
@@ -50,12 +67,19 @@ def _lock_for(path: str | Path) -> threading.Lock:
 
 @dataclass(frozen=True)
 class SessionRef:
-    """会话元数据(列表 / 切换入口用)。"""
+    """会话元数据(列表 / 切换入口用)。
+
+    - ``model`` / ``effort``:会话创建时的模型配置(header 记录,读侧透传);
+    - ``title``:派生标题(显式命名优先,否则首条用户消息截断)。
+    """
 
     id: str
     timestamp: str
     cwd: str
     parent_session: str | None = None
+    model: str = ""
+    effort: str = ""
+    title: str = ""
 
 
 @dataclass
@@ -76,6 +100,8 @@ class SessionStore(Protocol):
         *,
         parent_session: str | None = None,
         cwd: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
     ) -> SessionRef: ...
 
     def get(self, session_id: str) -> SessionRef | None: ...
@@ -88,9 +114,27 @@ class SessionStore(Protocol):
 
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> None: ...
 
+    def set_meta(self, session_id: str, key: str, value: Any) -> None: ...
+
+    def get_meta(self, session_id: str, key: str) -> Any | None: ...
+
 
 def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    """ISO 本地时间(毫秒精度,保证同秒创建的会话列表排序稳定)。"""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()) + f".{int(time.time() * 1000) % 1000:03d}"
+
+
+def _derive_title(name: str, first_user_content: str) -> str:
+    """标题派生(design D3):显式命名优先,否则首条用户消息截断。
+
+    截断只按字符数,不做语义切分——标题仅用于列表展示。
+    """
+    if name:
+        return name
+    text = " ".join(first_user_content.split())
+    if not text:
+        return ""
+    return text if len(text) <= TITLE_MAX else text[:TITLE_MAX] + "…"
 
 
 def _message_to_dict(m: Message) -> dict[str, Any]:
@@ -124,6 +168,17 @@ def _dict_to_message(d: dict[str, Any]) -> Message:
     )
 
 
+def _validate_header(entry: dict[str, Any], path: Path) -> None:
+    """header 校验:首 entry 必须是 session 且版本兼容(格式 v1)。"""
+    if entry.get("type") != "session":
+        raise ValueError(f"会话文件缺少 header: {path}")
+    version = entry.get("version")
+    if version != CURRENT_VERSION:
+        raise ValueError(
+            f"会话文件版本不兼容 {path}: version={version}, 期望 {CURRENT_VERSION}"
+        )
+
+
 class JsonFileStore:
     """文件后端:``~/.codeagent/sessions/<id>.jsonl``(目录可注入,测试用)。"""
 
@@ -139,6 +194,8 @@ class JsonFileStore:
         *,
         parent_session: str | None = None,
         cwd: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
     ) -> SessionRef:
         path = self._path(session_id)
         if path.exists():
@@ -149,8 +206,10 @@ class JsonFileStore:
             timestamp=_now(),
             cwd=cwd or str(Path.cwd()),
             parent_session=parent_session,
+            model=model or "",
+            effort=effort or "",
         )
-        header = {
+        header: dict[str, Any] = {
             "type": "session",
             "version": CURRENT_VERSION,
             "id": ref.id,
@@ -158,6 +217,11 @@ class JsonFileStore:
             "timestamp": ref.timestamp,
             "cwd": ref.cwd,
         }
+        # model/effort 可选字段:旧文件缺失时读侧 .get 默认空(向后兼容,D7)。
+        if model is not None:
+            header["model"] = model
+        if effort is not None:
+            header["effort"] = effort
         with _lock_for(path):
             path.write_text(json.dumps(header, ensure_ascii=False) + "\n", encoding="utf-8")
         return ref
@@ -166,24 +230,27 @@ class JsonFileStore:
         path = self._path(session_id)
         if not path.exists():
             return None
-        for entry in self._read_entries(path):
-            if entry.get("type") == "session":
-                return SessionRef(
-                    id=entry["id"],
-                    timestamp=entry.get("timestamp", ""),
-                    cwd=entry.get("cwd", ""),
-                    parent_session=entry.get("parentSession"),
-                )
-        return None
+        header, first_user, last_name = self._scan(path)
+        return SessionRef(
+            id=header.get("id", session_id),
+            timestamp=header.get("timestamp", ""),
+            cwd=header.get("cwd", ""),
+            parent_session=header.get("parentSession"),
+            model=header.get("model", ""),
+            effort=header.get("effort", ""),
+            title=_derive_title(last_name, first_user),
+        )
 
     def list(self) -> list[SessionRef]:
         refs: list[SessionRef] = []
         if not self._directory.exists():
             return refs
-        for path in sorted(self._directory.glob("*.jsonl")):
+        for path in self._directory.glob("*.jsonl"):
             ref = self.get(path.stem)
             if ref is not None:
                 refs.append(ref)
+        # 按时间升序(毫秒精度);同时间按 id 兜底,保证 continue_recent 确定性。
+        refs.sort(key=lambda r: (r.timestamp, r.id))
         return refs
 
     def load_messages(self, session_id: str) -> list[Message]:
@@ -210,6 +277,23 @@ class JsonFileStore:
         }
         self._append(session_id, record)
 
+    def set_meta(self, session_id: str, key: str, value: Any) -> None:
+        """写入可变元数据:作为 meta entry 追加(后写覆盖,读侧取最新)。"""
+        self._append(
+            session_id,
+            {"type": "meta", "key": key, "value": value, "timestamp": _now()},
+        )
+
+    def get_meta(self, session_id: str, key: str) -> Any | None:
+        path = self._path(session_id)
+        if not path.exists():
+            raise ValueError(f"会话不存在: {session_id}")
+        found: Any = None
+        for entry in self._read_entries(path):
+            if entry.get("type") == "meta" and entry.get("key") == key:
+                found = entry.get("value")
+        return found
+
     def _append(self, session_id: str, record: dict[str, Any]) -> None:
         path = self._path(session_id)
         if not path.exists():
@@ -232,14 +316,42 @@ class JsonFileStore:
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"会话文件损坏 {path}:{line_no}: {exc}") from exc
                 entries.append(entry)
-        if not entries or entries[0].get("type") != "session":
+        if not entries:
             raise ValueError(f"会话文件缺少 header: {path}")
-        version = entries[0].get("version")
-        if version != CURRENT_VERSION:
-            raise ValueError(
-                f"会话文件版本不兼容 {path}: version={version}, 期望 {CURRENT_VERSION}"
-            )
+        _validate_header(entries[0], path)
         return entries
+
+    def _scan(self, path: Path) -> tuple[dict[str, Any], str, str]:
+        """单遍流式扫描:header / 首条 user 消息 / 最新 meta name。
+
+        不能提前终止——meta name 可能写在首条 user 消息之后(后写覆盖),
+        提前终止会漏掉显式命名。内存 O(1),只保留需要的三个值。
+        """
+        header: dict[str, Any] | None = None
+        first_user = ""
+        last_name = ""
+        with _lock_for(path):
+            for line_no, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"会话文件损坏 {path}:{line_no}: {exc}") from exc
+                if header is None:
+                    _validate_header(entry, path)
+                    header = entry
+                elif entry.get("type") == "message" and not first_user:
+                    if entry.get("role") == "user":
+                        first_user = entry.get("content", "") or ""
+                elif entry.get("type") == "meta" and entry.get("key") == "name":
+                    if entry.get("value") is not None:
+                        last_name = str(entry["value"])
+        if header is None:
+            raise ValueError(f"会话文件缺少 header: {path}")
+        return header, first_user, last_name
 
 
 class MemoryStore:
@@ -249,6 +361,7 @@ class MemoryStore:
         self._sessions: dict[str, SessionRef] = {}
         self._messages: dict[str, list[Message]] = {}
         self._compactions: list[tuple[str, CompactionEntry]] = []
+        self._meta: dict[str, dict[str, Any]] = {}
 
     def create(
         self,
@@ -256,6 +369,8 @@ class MemoryStore:
         *,
         parent_session: str | None = None,
         cwd: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
     ) -> SessionRef:
         if session_id in self._sessions:
             raise ValueError(f"会话已存在: {session_id}")
@@ -264,16 +379,22 @@ class MemoryStore:
             timestamp=_now(),
             cwd=cwd or str(Path.cwd()),
             parent_session=parent_session,
+            model=model or "",
+            effort=effort or "",
         )
         self._sessions[session_id] = ref
         self._messages[session_id] = []
         return ref
 
     def get(self, session_id: str) -> SessionRef | None:
-        return self._sessions.get(session_id)
+        if session_id not in self._sessions:
+            return None
+        return self._ref_with_title(session_id)
 
     def list(self) -> list[SessionRef]:
-        return sorted(self._sessions.values(), key=lambda r: r.timestamp)
+        refs = [self._ref_with_title(sid) for sid in self._sessions]
+        refs.sort(key=lambda r: (r.timestamp, r.id))
+        return refs
 
     def load_messages(self, session_id: str) -> list[Message]:
         if session_id not in self._sessions:
@@ -287,3 +408,29 @@ class MemoryStore:
 
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> None:
         self._compactions.append((session_id, entry))
+
+    def set_meta(self, session_id: str, key: str, value: Any) -> None:
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        self._meta.setdefault(session_id, {})[key] = value
+
+    def get_meta(self, session_id: str, key: str) -> Any | None:
+        return self._meta.get(session_id, {}).get(key)
+
+    def _ref_with_title(self, session_id: str) -> SessionRef:
+        """返回带派生标题的 SessionRef(get/list 时派生,create 时为空)。"""
+        base = self._sessions[session_id]
+        name = self._meta.get(session_id, {}).get("name")
+        first_user = next(
+            (m.content for m in self._messages[session_id] if m.role == "user"),
+            "",
+        )
+        return SessionRef(
+            id=base.id,
+            timestamp=base.timestamp,
+            cwd=base.cwd,
+            parent_session=base.parent_session,
+            model=base.model,
+            effort=base.effort,
+            title=_derive_title(name or "", first_user),
+        )

@@ -1,10 +1,4 @@
-# sessions Specification
-
-## Purpose
-
-定义会话持久化能力:会话以 JSONL 树形文件落盘(append-only、显式父子关系),进程重启后会话可列出、可恢复继续对话,格式带版本策略以支持演进。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: JSONL 树形会话文件
 
@@ -44,19 +38,7 @@
 - **WHEN** 用户选择既有会话继续对话
 - **THEN** 该会话历史消息恢复,后续对话消息追加到同一文件,上下文连续
 
-### Requirement: 分叉基础与格式版本
-
-会话文件格式 SHALL 为未来分叉预留:会话头 SHALL 可记录父会话标识;文件 SHALL 带格式版本号,读侧 SHALL 按版本解析(未来格式演进可迁移)。
-
-#### Scenario: 父会话标识
-
-- **WHEN** 会话由既有会话分叉产生
-- **THEN** 其会话头记录父会话标识,消息父级链从分叉点延续
-
-#### Scenario: 版本化解析
-
-- **WHEN** 读取会话文件
-- **THEN** 解析器按文件声明的格式版本处理;版本不兼容时给出明确错误而非静默误读
+## ADDED Requirements
 
 ### Requirement: SessionManager 生命周期管理
 
