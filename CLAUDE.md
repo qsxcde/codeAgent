@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-基于 **LangGraph** 的编程 Agent(codeagent),采用 Pi-Agent 设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态)+ 端口-适配器(hexagonal)横切解耦。当前为 v0.1:CLI 可对话、可调用 read/write/edit/bash 工具,事件流可订阅。
+基于 **LangGraph** 的编程 Agent(codeagent),采用 Pi-Agent 设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态)+ 端口-适配器(hexagonal)横切解耦。当前为 v0.1:CLI(headless 默认 + `--tui` 交互式终端)可对话、可调用 read/write/edit/bash/grep/find/ls 七个工具,事件流可订阅。
 
-**注意:README.md 与 docs/design/architecture.md 已过时**(仍描述已移除的 TUI / cli.py / 304 测试 / test_decoupling.py)。2026-08-13 重构(提交 876d106)后的权威记录是 `docs/iteration/v0.1.md`。
+**注意:README.md 与 docs/design/architecture.md 已于 2026-08-14 校准至当前树**(此前曾描述已移除的 cli.py / 304 测试 / test_decoupling.py)。权威记录是 `docs/iteration/v0.1.md`(任务分解 + 变更记录 E1~E12)。
 
 ## 常用命令
 
@@ -15,7 +15,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 uv sync              # 安装项目依赖
 uv sync --group dev  # 开发环境(含 pytest)
-uv run codeagent --prompt "你好"          # 一次性输入(CLI 现只有 headless 形态,无 --headless 参数)
+uv run codeagent --prompt "你好"          # 一次性输入(headless 为默认形态,无 --headless 参数)
+uv run codeagent --tui                    # 交互式终端(alt 屏;Esc 运行中打断 / 空闲退出打印完整文档)
 echo "你好" | uv run codeagent            # 从 stdin 逐行读取
 uv run python -m codeagent --prompt "你好"
 uv run pytest -q                           # 全量测试
@@ -25,7 +26,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 配置:密钥写在固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下的 `.env`**(安全决策 H10,防止在任意仓库运行时被其 `.env` 劫持)。`LLM_PROVIDER` 选 provider(deepseek / openai / qwen / glm / kimi / minimax / fake)。
 
-**当前测试状态:204 项全绿**(2026-08-13 修复 bash 测试断言后验证)。新增代码请保证 `uv run pytest` 不引入新的失败。
+**当前测试状态:255 项全绿**(2026-08-14 实测)。新增代码请保证 `uv run pytest` 不引入新的失败。
 
 ## 架构与分层
 
@@ -48,7 +49,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 ### 模块职责
 
 - **`app/container.py` — 组合根**:全项目唯一跨层交汇点。装配链:`create_llm` + `make_tools` → `llm.bind_tools(tools)`(★ 工具/模型唯一交汇行)→ `to_langchain_runnable` 包装 → 组装 `AgentPorts(bound_model, tool_executor=ToolNode, checkpointer=InMemorySaver)` → `build_graph`。`create_agent_session()` 供 CLI 入口消费。
-- **`app/main.py` — CLI 入口**:解析 `--prompt` / stdin,订阅 `AgentSession` 事件流聚合成最终回复(TEXT_DELTA 累积、TOOL_CALL 前清零、AGENT_MESSAGE 兜底去重)。
+- **`app/main.py` — CLI 入口**:解析 `--prompt` / stdin / `--tui`,订阅 `AgentSession` 事件流聚合成最终回复(TEXT_DELTA 累积、TOOL_CALL 前清零、AGENT_MESSAGE 兜底去重);`--tui` 转交 `app/tui/main.py`。
 - **`core/` — 纯编排层**:模块顶层零副作用(不建模型、不发请求、不读 key),可被平台直接 import。`AgentPorts`(core 认识外部世界的唯一窗口);`build_graph` 纯组装 ReAct 循环;`should_continue` 只看 state 形状(最后一条消息有没有 tool_calls),不 import 任何具体工具。
 - **`session/` — 有状态会话**:`AgentSession.run()` 全异步,用 `graph.astream(stream_mode=["messages","updates"])` 运行并把过程翻译成 `AgentEvent` 经 `EventBus` 分发(**不返回值**,订阅方感知进度)。每个 session 分配稳定 `thread_id`,同一会话多轮对话靠 checkpointer 累积上下文。失败自动回滚本轮消息;`abort()` 中断当前 run;`replace_graph()` 换图保留 thread。
 - **`ai/` — 模型配置层,五层细分**:
@@ -57,7 +58,8 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
   - `protocol/`:框架无关协议(`ChatClient` / `ChatMessage` / `ToolCall` / `ChatResponse` / `StreamEvent`)。
   - `transport/`:`OpenAICompatClient`(httpx,重试/流式,thinking/usage 全量透传)。
   - `bridge/`:`to_langchain_runnable` 把自研客户端包装成 langchain Runnable,**只被组合根消费**,`ai/` 内部其它模块不 import 它。
-- **`tools/`**:`AtomicTool` 基类(无状态,子类实现 `_invoke` + 定义 `Args` pydantic schema,经 `to_langchain()` 转 `StructuredTool`)。`make_tools` 注册表产出 read/write/edit/bash。`BashTool` 带危险命令黑名单(字符串正则 + shlex 分词语义级检测 `rm -rf` 等价写法)、Git for Windows/WSL bash 探测链、默认 120s 超时(上限 600)、30k 输出截断。
+- **`tools/`**:`AtomicTool` 基类(无状态,子类实现 `_invoke` + 定义 `Args` pydantic schema,经 `to_langchain()` 转 `StructuredTool`)。`make_tools` 注册表产出七个工具:read / write / edit / bash / grep / find / ls;`shared/` 提供 `FsOps` 文件系统抽象缝(注入内存实现即可离线测)、路径/文本/截断/写串行化等共享设施。`BashTool` 带危险命令黑名单(字符串正则 + shlex 分词语义级检测 `rm -rf` 等价写法)、Git for Windows/WSL bash 探测链、默认 120s 超时(上限 600)、30k 输出截断。
+- **`app/tui/` — 交互式终端(MVP)**:`view.py`(TuiApp 视图逻辑)只依赖 `backend.py` 的 `TuiBackend` 端口;`components.py` 纯渲染组件树(样式标签段,引擎无关可离线测);`textual_backend.py` 是当前唯一引擎实现。装配经组合根 `create_tui_app`(footer 的 model/effort 解析固化),本包不读配置、不跨层。
 - **`resources/`、`extensions/`**:占位,延后(v0.2/v0.3)。
 
 ### 事件驱动
@@ -83,7 +85,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 - **文件行数双阈值(启发式,目标是内聚而非数字)**:
   - 超过 ~300 行 → code review 时必须能解释"为什么不拆";
   - 超过 ~500 行 → 应拆分或批准豁免;
-  - 拆必须按职责拆:为凑行数拆成互相 import 的小文件反而破坏内聚、增加耦合(现有最大的 `ai/transport/openai_compat.py` 323 行是高内聚的正当大文件,不是问题)。
+  - 拆必须按职责拆:为凑行数拆成互相 import 的小文件反而破坏内聚、增加耦合(现有最大的 `app/tui/components.py` 515 行是组件树,`ai/transport/openai_compat.py` 359 行,均为高内聚的正当大文件,不是问题)。
 - **低耦合**:
   - 跨层 import 只允许在 `app/container.py` / `app/main.py`(见上文"分层依赖规则");
   - 依赖抽象/端口而非具体实现(`AgentPorts`、`ChatClient`);

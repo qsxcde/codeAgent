@@ -306,7 +306,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 |---|---|---|---|---|
 | FR-6.1 | AgentEvent 类型 | 10 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage` | P0 | ✅(比 v0.1 报告多出 thinking_delta / run_cancelled / usage) |
 | FR-6.2 | 事件订阅接口 | 对外暴露可编程订阅(`EventBus.subscribe`,订阅方异常隔离) | P0 | ✅ |
-| FR-6.3 | 状态栏实时反馈 | TUI 运行态/错误态/取消态可视化 | P0 | ⚠️ 随 TUI 移除;事件本身保留 |
+| FR-6.3 | 状态栏实时反馈 | TUI 运行态/错误态/取消态可视化 | P0 | ✅(随 TUI 恢复:E9~E11 状态栏 + 状态色,运行/错误/取消可见) |
 | FR-6.4 | token 用量事件 | `usage` 事件透传模型 usage_metadata | P0 | ✅ 已落地 |
 | FR-6.5 | 思考过程事件 | `thinking_delta` 透传推理模型 reasoning_content | P0 | ✅ 已落地(自研蓝图"收益 1"的 thinking 缺口已闭合) |
 
@@ -548,7 +548,7 @@ class AgentSession:
 | 编号 | 指标 | 要求 | 验收口径 | 状态 |
 |---|---|---|---|---|
 | NFR-M1 | 分层解耦 | 跨层 import 仅发生在 `app/container.py` / `app/main.py` | 解耦扫描测试强制校验(⚠️ 当前缺失,列入 v0.2 验收) | ⚠️ 需恢复自动校验 |
-| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-13 实测 204 项测试(200 通过 + 4 项环境敏感失败,见附录 B) | ⚠️ 回归确认中 |
+| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-14 实测 255 项测试全绿(见附录 B) | ✅ |
 | NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentPorts` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
@@ -703,7 +703,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | R6 | 市场 | 无自研模型,受第三方 API 制约;头部放开多供应商则差异化压缩 | 中 | 中 | 强化"工程底座"定位;成本透明(F-22)对冲信任赤字 |
 | R7 | 进度 | 单人维护可持续性、社区获取不足 | 高 | 中 | 开发者指南(接入新 provider/工具)、文档与示例投入 |
 | R8 | 安全 | 工具误操作风险(rm/越界写) | 中 | 高 | 黑名单已落地;v0.2 确认环 + 文件边界白名单(上线前必须) |
-| R9 | 体验 | 无 TUI,交互形态倒退(相对竞品) | 确定 | 中 | v0.2 恢复 TUI,复用 AgentSession 事件接口 |
+| R9 | 体验 | 无 TUI,交互形态倒退(相对竞品) | 确定 | 中 | ✅ TUI 已恢复 MVP(2026-08-13,E9~E11,`app/tui/`);斜杠命令/模糊补全拆 v0.2 |
 
 ---
 
@@ -711,7 +711,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### 12.1 全局验收基线(每个版本发布前必须满足)
 
-1. **测试全绿**:`uv run pytest` 全量通过(当前 4 项环境敏感失败须先回归并修复或按环境归一化);核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
+1. **测试全绿**:`uv run pytest` 全量通过(当前 255 项全绿,2026-08-14 实测);核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
 2. **解耦判据**:解耦扫描测试(恢复后)强制校验跨层 import 仅出现在 `app/container.py` / `app/main.py`;
 3. **离线可体验**:无任何 API Key 时以 `fake` provider 完整跑通"对话→工具调用→事件流"闭环;
 4. **配置隔离**:全部配置类 `extra="ignore"`,防回归测试通过;
@@ -724,7 +724,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 - 安全权限:bash/write 敏感操作默认确认,未确认不执行;文件访问默认限定工作区,越界需显式确认;
 - 回滚 `/undo`:回滚到指定消息及对应文件变更;
 - AGENTS.md:全局→项目→子目录分层加载并注入系统提示词,越近优先级越高;
-- TUI 恢复:交互式终端形态可用,流式渲染 ≥ 30fps,斜杠命令/模糊补全/打断/键盘导航全部恢复;
+- TUI 增强:交互式终端 MVP 已恢复(2026-08-13,E9~E11),v0.2 补齐斜杠命令/模糊补全/选择器、Markdown 渲染与滚动交互;
 - 解耦扫描测试恢复并通过。
 
 ### 12.3 v0.3 验收(F-18~F-24)
@@ -750,9 +750,9 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 | ID | 需求 | 优先级 | 状态 | 出处 | 对应 F-xx |
 |---|---|---|---|---|---|
-| FR-1.1~1.6, 1.8 | TUI 对话/流式渲染/斜杠命令/模糊补全/选择器/转义/键盘 | P0 | ⚠️ 当前移除,恢复列 v0.2 | R §3.1; C | F-10, F-17b |
+| FR-1.1~1.6, 1.8 | TUI 对话/流式渲染/斜杠命令/模糊补全/选择器/转义/键盘 | P0 | ✅(MVP 已恢复:对话/流式渲染/键盘导航可用;斜杠命令/模糊补全/选择器/`//` 转义拆 v0.2) | R §3.1; C | F-10, F-17b |
 | FR-1.7 | 打断/取消 | P0 | ✅ 会话层保留 | R; C | — |
-| FR-1.9 | Headless 模式 | P0 | ✅ 当前唯一形态 | R; C | — |
+| FR-1.9 | Headless 模式 | P0 | ✅(headless 为默认形态;`--tui` 并行存在) | R; C | — |
 | FR-1.10 | 多轮上下文 | P0 | ✅ | R; C | — |
 | FR-1.11 | TUI 形态恢复(新增) | P1 | ✅(MVP,restore-tui 2026-08-13;斜杠命令等下一迭代) | C(缺口登记) | F-17b |
 | FR-2.1~2.7 | 模型配置与管理 | P0/P1/P2 | ✅(2.7 规划) | R §3.1 | — |
@@ -766,7 +766,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | FR-5.7 | 会话树/分叉 | P2 | 📝 | R | F-23 |
 | FR-5.8~5.9 | abort / replace_graph(新增) | P0 | ✅ | C | — |
 | FR-5.10 | steer / followup | P1 | 🔲 v0.2 | A §5.3; B 收益2 | — |
-| FR-6.1~6.5 | 可观测性与事件 | P0 | ✅(6.3 随 TUI 移除) | R; C | — |
+| FR-6.1~6.5 | 可观测性与事件 | P0 | ✅(6.3 随 TUI 恢复) | R; C | — |
 | FR-7.1~7.4 | 扩展与部署 | P2 | 🔲/📝 | R; G §5 | F-18~F-24 |
 | FR-8.1~8.4 | 安全与权限 | P0/P1 | ✅ 黑名单;其余 v0.2 | G §4.2 G7 | F-14 |
 
@@ -780,7 +780,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | NFR-R1~R5 | 可靠性 | abort 已落地;持久化 v0.2 | R §4.4 |
 | NFR-M1~M6 | 可维护性 | ⚠️ 解耦扫描测试缺失(列入 v0.2 验收) | R §4.5; C |
 | NFR-E1~E5 | 可扩展性 | 契约已落地 | R §4.6 |
-| NFR-C1~C4 | 兼容性 | ⚠️ Windows 4 项 bash 测试待回归 | R §4.7; C |
+| NFR-C1~C4 | 兼容性 | ✅ Windows 4 项 bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions) | R §4.7; C |
 | NFR-O1~O3 | 可观测性 | 10 类事件已落地 | R §4.8; C |
 
 ---
@@ -791,25 +791,26 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### B.1 已确认差异清单
 
-| # | 差异项 | requirements-analysis.md(v0.1, 08-10) | architecture.md(08-11) | GAP 分析(08-10) | 2026-08-13 实测(HEAD 5b137b4) |
+| # | 差异项 | requirements-analysis.md(v0.1, 08-10) | architecture.md(08-11) | GAP 分析(08-10) | 当前树实测(HEAD f0b29f2,2026-08-14) |
 |---|---|---|---|---|---|
-| 1 | 测试数量 | 219 全绿 | 304 全绿 | 219 全绿 | **204 项:200 通过 + 4 失败**(tests/tools/test_tools.py:bash cwd 参数 ×3 与管道 `PIPESTATUS` ×1;失败原因为 Windows Git Bash 路径显示 `/tmp` vs `C:\Temp` 与 PIPESTATUS 求值为空,判断为环境敏感,待回归确认) |
+| 1 | 测试数量 | 219 全绿 | 304 全绿 | 219 全绿 | **255 项全绿**(08-13 曾 204 项:200 通过 + 4 项 bash 环境敏感失败,已由 fix-bash-test-assertions 修复——3 项 cwd 断言改标记文件法、1 项 PIPESTATUS 命令精简) |
 | 2 | provider 数量 | 3(deepseek/openai/fake) | 6(+qwen/glm/kimi/minimax) | 3 | **7**(deepseek/openai/qwen/glm/kimi/minimax/fake,`PROVIDERS` 注册表确认) |
-| 3 | TUI 状态 | ✅ 已落地(SessionAgentClient 流式渲染) | ✅ 已落地 | ✅ 已落地 | ⚠️ **当前代码树无 `tui/`**,入口 `codeagent.app.main:main` 仅 headless(`--prompt` / stdin);TUI 曾重设计(d21ba41~e4deca2),后于提交 876d106(2026-08-13)整体移除 |
-| 4 | 目录结构 | 顶层 `cli.py/container.py/config.py/model_pattern.py` + `tui/` | 同左 | 同左 | `app/` 包(main/config/container);`model_pattern.py` 移入 `ai/`;顶层无 cli/container/config |
+| 3 | TUI 状态 | ✅ 已落地(SessionAgentClient 流式渲染) | ✅ 已落地 | ✅ 已落地 | ✅ **已恢复为 MVP**(`app/tui/`:view/components/backend 端口 + textual 后端,`--tui` 进入;E9~E11);斜杠命令/模糊补全/选择器拆 v0.2 |
+| 4 | 目录结构 | 顶层 `cli.py/container.py/config.py/model_pattern.py` + `tui/` | 同左 | 同左 | `app/` 包(main/config/container)+ `app/tui/`;`model_pattern.py` 移入 `ai/`;顶层无 cli/container/config |
 | 5 | 事件类型 | 7 类(无 thinking_delta/run_cancelled/usage) | 7 类 | 7 类 | **10 类**(新增 thinking_delta / run_cancelled / usage,core/events.py 确认) |
 | 6 | 会话接口 | run/subscribe/run_sync;abort 延后 | 同左 | 同左 | 新增 `abort()`、`replace_graph()` 已落地 |
 | 7 | 模型客户端 | langchain-openai 统一接入 | 同左 | 同左 | **自研落地**(协议/传输/桥接三层,pyproject 已移除 langchain-openai;langchain-core/langgraph 保留于编排侧) |
-| 8 | TUI 依赖 | textual 8.2.8 | textual | textual | **textual 已从 pyproject 移除** |
-| 9 | 解耦扫描测试 | test_decoupling.py 强制校验 | §9 判据 | 有 | **test_decoupling.py 不在当前代码树**(提交 876d106 移除,列入 v0.2 验收) |
+| 8 | TUI 依赖 | textual 8.2.8 | textual | textual | **textual 已恢复为运行依赖**(TUI MVP 需要;pyproject dependencies 含 `textual>=2.1.0`) |
+| 9 | 解耦扫描测试 | test_decoupling.py 强制校验 | §9 判据 | 有 | **test_decoupling.py 不在当前代码树**(2026-08-13 移除,计划 v0.2 按 `app/` 新分层重写) |
 | 10 | 拦截管道 | FR-3.4 ❌ 已删除 | 无 | F-02 ❌ 已删除 | 确认不存在(一致) |
+| 11 | 工具数量 | 4(read/write/edit/bash) | 同左 | 同左 | **7**(E8 补齐 grep/find/ls,纯 Python 落地,`tools/atomic/` + `tools/shared/` 确认) |
 
 ### B.2 校准口径约定(面向后续版本)
 
 1. 需求状态以"代码实测"为准,文档中保留历史口径并标注 ⚠️;
 2. 每次版本更新时,按 B.1 表格逐项复核并更新差异清单;
 3. 测试数量口径统一为"`uv run pytest` 实测结果 + 失败项环境说明";
-4. 若 TUI 恢复落地,FR-1.1~1.8 / NFR-U2~U3 状态由 ⚠️ 恢复为 ✅。
+4. TUI 已恢复落地(2026-08-13,E9~E11):FR-1.1~1.6/1.8、FR-6.3、NFR-U2~U3 状态已由 ⚠️ 恢复为 ✅;斜杠命令/模糊补全/选择器仍列 v0.2。
 
 ---
 
