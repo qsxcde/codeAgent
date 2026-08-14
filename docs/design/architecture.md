@@ -42,7 +42,7 @@
 - `session/` 会话层:bus + session(会话维度 thread 累积),`abort()` 运行中断、`replace_graph()` 换图保留 thread、失败自动回滚本轮消息。
 - 事件 10 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage`。
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(MVP,2026-08-13 恢复,08-14 主流形态改造:多行 composer、命令记录行、工具块折叠点击展开、单行状态栏 + 上下文用量条、Esc 打断/退出、alt 屏)。
-- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **260 全绿**(2026-08-14 实测)。
+- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **266 全绿**(2026-08-14 实测)。
 
 **待办(v0.2 起)**:
 1. 会话持久化(`SessionStore`)、`SessionManager`、上下文压缩(`compaction`)、`steer / followup`。
@@ -121,7 +121,7 @@ codeagent/
 │   └── extensions/                   # [扩展层]  ← 延后
 │       └── __init__.py               #   插件扩展占位
 │
-└── tests/                            # 按 src 模块镜像分包,260 全绿(2026-08-14 实测)
+└── tests/                            # 按 src 模块镜像分包,266 全绿(2026-08-14 实测)
     ├── conftest.py                   # _isolate_config_dir / fake_model / InMemoryFsOps 夹具
     ├── test_cli.py / test_config.py / test_container.py   # 应用层(拍平到根)
     ├── ai/                           # factory / fake_client / model_store / providers / sse / transport / bridge
@@ -340,7 +340,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 
 | 阶段 | 范围 | 产物 |
 |---|---|---|
-| **v0.1 最小可跑** | `config + container + ai + tools + core + session(session+bus) + app(main/tui)` | CLI/TUI 可对话、可调用七个工具,事件流可订阅。进度:✅ 全部落地:`config` ✅、`ai` ✅(自研客户端)、`tools` ✅(7 工具 hexagonal)、`core` ✅(全异步 ReAct)、`session` ✅(bus+session+abort)、`container` ✅(graph/session/tui)、TUI ✅(MVP 恢复)、headless ✅。测试 260 全绿(2026-08-14 实测)。 |
+| **v0.1 最小可跑** | `config + container + ai + tools + core + session(session+bus) + app(main/tui)` | CLI/TUI 可对话、可调用七个工具,事件流可订阅。进度:✅ 全部落地:`config` ✅、`ai` ✅(自研客户端)、`tools` ✅(7 工具 hexagonal)、`core` ✅(全异步 ReAct)、`session` ✅(bus+session+abort)、`container` ✅(graph/session/tui)、TUI ✅(MVP 恢复)、headless ✅。测试 266 全绿(2026-08-14 实测)。 |
 | **v0.2 会话完善** | `store(线性) + manager + compaction(手动) + 解耦扫描重写 + TUI 命令体系` | 会话可恢复、可切换、可压缩;斜杠命令/模糊补全恢复 |
 | **v0.3 资源扩展** | `resources/ + extensions/ + 分支 fork + langgraph.json` | 插件化、skills 按需加载、平台部署 |
 

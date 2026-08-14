@@ -64,10 +64,57 @@ TRUNCATION_MARKER = "\n...[输出已截断(保留末尾)]..."
 _bash_executable: str | None = None
 
 
-def _resolve_bash() -> str:
-    """探测可用的 bash 解释器:PATH 优先,Git for Windows 常见安装路径兜底。
+def _is_wsl_shim(path: str) -> bool:
+    """是否为 Windows 自带的 WSL 转发器(``%SystemRoot%\\System32\\bash.exe`` /
+    ``%LOCALAPPDATA%\\Microsoft\\WindowsApps\\bash.exe``)。
 
-    顺序:① `shutil.which("bash")`(覆盖 macOS/Linux 及显式将 Git\\bin 加入 PATH 的用户);
+    这两个文件不是真实 bash:它们把命令行转发给默认 WSL 发行版(后者是商店
+    应用执行别名)。Windows 进程环境变量默认不进入 Linux 环境、命令行经
+    wsl.exe 转发有长度限制,工具注入的 NO_COLOR/LANG 会失效、长命令报
+    Argument list too long——探测时必须跳过。
+    """
+    if os.name != "nt":
+        return False
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    local_appdata = os.environ.get("LOCALAPPDATA") or str(
+        Path.home() / "AppData" / "Local"
+    )
+    shims = {
+        os.path.normcase(os.path.join(system_root, "System32", "bash.exe")),
+        os.path.normcase(
+            os.path.join(local_appdata, "Microsoft", "WindowsApps", "bash.exe")
+        ),
+    }
+    return os.path.normcase(path) in shims
+
+
+def _all_which(name: str) -> list[str]:
+    """返回 PATH 中所有名为 ``name`` 的可执行文件(按 PATH 顺序,Windows 兼容 PATHEXT)。
+
+    ``shutil.which`` 只返回第一个命中——PATH 里 WSL 启动器排在 Git bash 前面时
+    会命中错误的 bash;这里遍历全部候选供调用方过滤(回归)。
+    """
+    exts: list[str] = [""]
+    if os.name == "nt":
+        exts = [e for e in os.environ.get("PATHEXT", "").lower().split(os.pathsep) if e] or [".exe"]
+    found: list[str] = []
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        for ext in exts:
+            candidate = os.path.join(directory, name + ext)
+            if os.path.isfile(candidate):
+                found.append(candidate)
+                break  # 同一目录只取一个(如 bash 与 bash.exe 并存)
+    return found
+
+
+def _resolve_bash() -> str:
+    """探测可用的 bash 解释器:真实 bash 优先,Git for Windows 常见安装路径兜底。
+
+    顺序:① 遍历 PATH 中全部 ``bash`` 候选,跳过 Windows 自带 WSL 启动器
+    (见 ``_is_wsl_shim``),取第一个真实 bash——覆盖 macOS/Linux、PATH 中
+    Git bash 排在 WSL 启动器之后等场景;
     ② 基于 PROGRAMFILES / PROGRAMFILES(X86) 环境变量构造的 Git for Windows 路径
     (避免硬编码盘符,补 X86 兜底 32 位安装)。全部失败时抛出带安装指引的 RuntimeError。
     """
@@ -75,7 +122,9 @@ def _resolve_bash() -> str:
     if _bash_executable is not None:
         return _bash_executable
 
-    candidates: list[str | None] = [shutil.which("bash")]
+    candidates: list[str | None] = [
+        p for p in _all_which("bash") if not _is_wsl_shim(p)
+    ]
     for var in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
         program_files = os.environ.get(var)
         if program_files:

@@ -364,6 +364,53 @@ def test_bash_subprocess_sees_no_color(monkeypatch):
     assert "SET" in out and "退出码: 0" in out
 
 
+def test_is_wsl_shim_marks_wsl_forwarders(monkeypatch):
+    """Windows 自带 WSL 转发器(System32 / WindowsApps 的 bash)被标记为 shim(回归)。
+
+    早期缺陷:仅排除 System32\\bash.exe,漏掉 WindowsApps 应用执行别名,
+    `_resolve_bash` 仍命中 WSL 转发器,导致子进程 env 注入(NO_COLOR/LANG)失效、
+    长命令报 Argument list too long、ps 语义与本地 bash 不一致。
+    """
+    from codeagent.tools.atomic.bash import _is_wsl_shim
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\me\AppData\Local")
+    if os.name == "nt":
+        assert _is_wsl_shim(r"C:\Windows\System32\bash.exe") is True
+        assert (
+            _is_wsl_shim(r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\bash.exe")
+            is True
+        )
+    # 真实 bash 路径在任何平台都不被标记
+    assert _is_wsl_shim("/usr/bin/bash") is False
+    assert _is_wsl_shim(r"D:\Git\bin\bash.exe") is False
+
+
+def test_all_which_returns_all_path_hits(tmp_path, monkeypatch):
+    """PATH 中多个同名可执行文件全部返回(回归:shutil.which 只取第一个,会命中 WSL shim)。"""
+    from codeagent.tools.atomic.bash import _all_which
+
+    d1, d2 = tmp_path / "a", tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+    name = "bash.exe" if os.name == "nt" else "bash"
+    (d1 / name).write_text("")
+    (d2 / name).write_text("")
+    if os.name == "nt":
+        monkeypatch.setenv("PATHEXT", ".EXE;.COM;")
+    monkeypatch.setenv("PATH", f"{d1}{os.pathsep}{d2}")
+    assert len(_all_which("bash")) == 2
+
+
+def test_resolve_bash_skips_wsl_shim():
+    """_resolve_bash 解析结果不是 WSL 转发器(回归:此前命中 system32\\bash.exe)。"""
+    from codeagent.tools.atomic.bash import _is_wsl_shim, _resolve_bash
+
+    resolved = _resolve_bash()
+    assert Path(resolved).exists()
+    assert not _is_wsl_shim(resolved)
+
+
 def test_bash_normal_command_unaffected_by_no_color(monkeypatch):
     """NO_COLOR 注入不影响普通命令的输出与退出码。"""
     monkeypatch.chdir("/")
