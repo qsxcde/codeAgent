@@ -17,11 +17,11 @@
 
 ### 当前能力(v0.1)
 
-- **交互式 TUI**(`--tui` 进入):终端操作记录界面——单行 composer 输入框、用户消息命令记录行、Agent 流式增量渲染、思维链弱化展示、工具调用块默认折叠可点击展开、状态栏 + 底部双端状态条(model · effort)、Esc 运行中打断 / 空闲退出并打印完整文档。
+- **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频“思考中”提示、人类可读的工具摘要及可展开 edit/write 意图差异、模型/思考强度/工作目录状态栏、Esc 运行中打断 / 空闲退出并打印完整文档。
 - **Headless CLI**(默认形态):`--prompt` 一次性输入或 stdin 逐行读取,事件聚合输出最终回复。
 - **模型配置层**:每 provider 一个文件(配置 + 工厂自包含),内置模型目录 + `models.json` 按 id upsert 合并,支持思考强度(`model:effort`)与运行时换图(`replace_graph`)。
 - **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls 七个工具;bash 带危险命令黑名单、树级进程击杀、默认 120s 超时、输出保尾截断。
-- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试(当前 255 passed)。
+- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试(当前 260 passed)。
 
 ## 项目环境设置
 
@@ -91,7 +91,7 @@ uv run codeagent --tui
 | 普通文本 | 发送给 Agent,经 ReAct 循环执行(read/write/edit/bash/grep/find/ls)后流式回复 |
 | `Esc`(运行中) | 打断当前回复(RUN_CANCELLED 回状态栏) |
 | `Esc`(空闲) | 退出,并打印本次会话完整文档 |
-| 点击工具调用块 | 折叠 / 展开(参数摘要 ↔ 全文) |
+| 点击工具调用块 | 折叠 / 展开；edit/write 显示红绿意图差异，其它工具显示完整结果 |
 
 ### Headless(默认形态)
 
@@ -109,7 +109,7 @@ echo "你好" | uv run codeagent
 ### 运行测试
 
 ```bash
-uv run pytest -q        # 当前 255 passed(全量离线,以实际运行结果为准)
+uv run pytest -q        # 当前 260 passed(全量离线,以实际运行结果为准)
 ```
 
 ## 项目结构
@@ -161,7 +161,7 @@ codeagent/
     │
     └── resources/ extensions/   # [资源/扩展层] 🔲 占位,延后 v0.2/v0.3
 
-tests/                          # 按 src 模块镜像分包,255 个测试全绿(离线)
+tests/                          # 按 src 模块镜像分包,260 个测试全绿(离线)
 ├── conftest.py                 #   _isolate_config_dir / fake_model / InMemoryFsOps 夹具
 ├── test_cli.py / test_config.py / test_container.py   # 应用层(拍平到根)
 ├── ai/                         #   factory / fake_client / model_store / providers / sse / transport / bridge

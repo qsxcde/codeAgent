@@ -41,9 +41,6 @@ class TuiBackend(Protocol):
     def set_status(self, line: RichLine) -> None:
         """更新状态栏内容(富样式行;design D5)。"""
 
-    def set_footer(self, line: RichLine) -> None:
-        """更新底部状态条内容(富样式行;design D5)。"""
-
     def on_submit(self, handler: SubmitHandler) -> None:
         """注册输入提交处理器。"""
 

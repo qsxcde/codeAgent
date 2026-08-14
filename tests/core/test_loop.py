@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 
 import pytest
@@ -130,6 +129,9 @@ def test_multi_tool_call_single_failure_keeps_success(tmp_path):
     # 失败 call 携带自身错误,且错误文本不污染成功 call
     assert "[工具执行出错]" in by_id["c-bad"].content
     assert "文件不存在" in by_id["c-bad"].content
+    # 错误标记契约:失败 ToolMessage 携带 additional_kwargs.error,成功的不带
+    assert by_id["c-bad"].additional_kwargs.get("error") is True
+    assert not by_id["c-ok"].additional_kwargs.get("error")
     # 图继续回 agent 完成后续回复
     assert out["messages"][-1].content == "继续"
 
@@ -152,6 +154,7 @@ def test_unknown_tool_generates_error_and_does_not_break_graph():
     tool_msgs = [m for m in out["messages"] if type(m).__name__ == "ToolMessage"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0].tool_call_id == "c-x"
+    assert tool_msgs[0].additional_kwargs.get("error") is True
     assert "未知工具" in tool_msgs[0].content
     assert "nonexistent_tool" in tool_msgs[0].content
     assert out["messages"][-1].content == "已处理未知工具"

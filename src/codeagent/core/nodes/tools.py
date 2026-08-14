@@ -71,6 +71,9 @@ async def _execute_one(executor: Any, call: dict[str, Any], config=None) -> Tool
             content=f"[工具执行出错] 未知工具: {name}",
             tool_call_id=call_id,
             name=name,
+            # 错误标记:翻译层(TUI/CLI)据此区分成功/失败,不依赖解析内容文案
+            # (契约:错误 ToolMessage 一律携带 additional_kwargs.error=True)。
+            additional_kwargs={"error": True},
         )
     try:
         result = await tool.ainvoke(call.get("args") or {}, config=config)
@@ -79,6 +82,7 @@ async def _execute_one(executor: Any, call: dict[str, Any], config=None) -> Tool
             content=f"[工具执行出错] {exc}",
             tool_call_id=call_id,
             name=name,
+            additional_kwargs={"error": True},
         )
     return ToolMessage(content=str(result), tool_call_id=call_id, name=name)
 
@@ -97,9 +101,16 @@ def _error_messages(state: dict[str, Any], exc: Exception) -> dict[str, Any]:
                         content=error_content,
                         tool_call_id=call.get("id") or "",
                         name=call.get("name"),
+                        additional_kwargs={"error": True},
                     )
                 )
             break
     if not tool_msgs:
-        tool_msgs = [ToolMessage(content=error_content, tool_call_id="")]
+        tool_msgs = [
+            ToolMessage(
+                content=error_content,
+                tool_call_id="",
+                additional_kwargs={"error": True},
+            )
+        ]
     return {"messages": tool_msgs}

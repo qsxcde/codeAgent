@@ -122,7 +122,11 @@ def create_tui_app(
         from codeagent.app.tui.textual_backend import TextualBackend
 
         backend = TextualBackend()
-    return TuiApp(session, backend, footer=_resolve_footer_info(cfg, provider, model, reasoning_effort))
+    return TuiApp(
+        session,
+        backend,
+        footer=_resolve_footer_info(cfg, provider, model, reasoning_effort),
+    )
 
 
 def _resolve_footer_info(
@@ -131,13 +135,14 @@ def _resolve_footer_info(
     model: str | None,
     reasoning_effort: str | None,
 ) -> Any:
-    """解析 footer 右端的 ``(model, effort)``(组合根专用,design D5)。
+    """解析底部状态栏装配数据:``(model, effort, cwd)``(组合根专用,design D5)。
 
     与 ``create_llm`` 同优先级:``model:effort`` 内联后缀 > ``reasoning_effort``
     > provider 配置默认;默认 model 从 provider 的 ``*Config`` 类读取(其
-    BaseSettings 字段即生效配置,含 env 覆盖)。
+    BaseSettings 字段即生效配置,含 env 覆盖);``cwd`` 取配置或当前工作目录。
     """
     import importlib
+    from pathlib import Path
 
     from codeagent.ai.model_pattern import split_model_pattern
     from codeagent.ai.providers import PROVIDERS
@@ -161,6 +166,8 @@ def _resolve_footer_info(
                 model_id = defaults.model
             if effort is None:
                 effort = defaults.reasoning_effort
-    return FooterInfo(model=model_id or "", effort=effort or "")
+    cwd = getattr(cfg, "cwd", None) if cfg is not None else None
+    cwd = str(Path(cwd or Path.cwd()).expanduser().resolve())
+    return FooterInfo(model=model_id or "", effort=effort or "", cwd=cwd)
 
 

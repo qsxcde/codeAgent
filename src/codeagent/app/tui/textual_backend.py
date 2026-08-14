@@ -3,10 +3,10 @@
 设计(design D1/D2/D5/D6):
 - 把组件产出的 ``RichLine``(样式标签段)渲染为 Rich ``Text``(标签→色值,
   含 ``user_bg`` 背景)——用 Text 对象而非 markup 字符串,规避字面量 ``[`` 被解析;
-- 布局重构为终端 Dock(design D1):transcript → TopSeparator → 单行 composer →
-  BottomSeparator → 状态栏 → 双端 footer;composer 固定高度一行,上下细分隔线,
-  聚焦仅换 ``❯`` 提示符颜色(不再整框高亮);
-- ``set_status`` / ``set_footer`` 契约升级为 ``RichLine``(design D5);
+- 布局重构为终端 Dock(design D1):transcript → TopSeparator → 多行 composer →
+  BottomSeparator → 单行状态栏;composer 为多行输入(1~4 行自动增高,超出内部
+  滚动),Enter 提交、Shift+Enter 换行、Tab 切换焦点(Esc 冒泡到应用层打断/退出);
+- ``set_status`` 契约升级为 ``RichLine``(design D5);
 - transcript 区点击 → ``on_click(相对行号)``,经 ``TuiApp`` 查 ``block_at`` 实现
   工具折叠切换(design D4);Esc / Ctrl+Q 走应用层键事件(design D5)。
 """
@@ -16,19 +16,20 @@ from __future__ import annotations
 from rich.style import Style
 from rich.text import Text
 from textual.app import App
-from textual.containers import Horizontal
+from textual.binding import Binding
+from textual.containers import HorizontalGroup, VerticalGroup
 from textual.events import Click, Resize
-from textual.widgets import Input, Label, Rule, Static
+from textual.message import Message
+from textual.widgets import Label, Static, TextArea
 
 from codeagent.app.tui.backend import (
     ClickHandler,
     InterruptHandler,
     ResizeHandler,
     SubmitHandler,
-    TuiBackend,
 )
 from codeagent.app.tui.components import RichLine
-from codeagent.app.tui.theme import ACCENT, BORDER_MUTED, PALETTE
+from codeagent.app.tui.theme import PALETTE
 
 
 def _color(tag: str | None) -> str | None:
@@ -55,6 +56,36 @@ def rich_to_text(lines: list[RichLine]) -> Text:
     return text
 
 
+class InputSubmitted(Message):
+    """多行输入区提交消息(Enter)。"""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+
+class _InputArea(TextArea):
+    """多行输入区:Enter 提交、Shift+Enter 换行(主流 agent TUI composer 形态)。
+
+    - ``tab_behavior`` 保持默认 focus:Esc 不被吞,可冒泡到应用层打断/退出;
+    - 提交后清空文本,placeholder 重新显示。
+    """
+
+    BINDINGS = [
+        Binding("enter", "submit", "发送", show=False, priority=True),
+        Binding("shift+enter", "insert_newline", "换行", show=False, priority=True),
+    ]
+
+    def action_submit(self) -> None:
+        text = self.text
+        if text.strip():
+            self.post_message(InputSubmitted(text))
+        self.text = ""
+        self.move_cursor(self.document.end)
+
+    def action_insert_newline(self) -> None:
+        self.insert("\n")
+
 class _Transcript(Static):
     """显示组件渲染行、转发点击的 transcript widget。"""
 
@@ -62,39 +93,55 @@ class _Transcript(Static):
         self._backend._notify_click(event.y)
 
 
-class _Composer(Horizontal):
-    """单行 composer:``❯`` prompt + Input 同行(design D1)。
+class _Composer(VerticalGroup):
+    """Codex 风格 composer:无边框的深灰输入条。
 
-    - 固定高度 1 行,不再占剩余布局;上下由 Top/BottomSeparator 细线区隔;
-    - Input 去掉默认边框(无边框高亮),聚焦态只换 prompt 颜色。
+    - 高度自适应:行数 1..MAX_HEIGHT,超出后内部滚动(不占剩余布局);
+    - 默认只显示 ``›``、占位文字和光标，不显示外框或快捷键说明;
+    - Enter 提交 / Shift+Enter 换行(见 ``_InputArea``)。
     """
+
+    #: 输入区最大高度(行);超出后 TextArea 内部滚动。
+    MAX_HEIGHT = 4
 
     def __init__(self, placeholder: str = "") -> None:
         super().__init__()
-        self.styles.height = 1
-        self.prompt = Label("❯", id="prompt")
+        self.styles.height = 3
+        self.styles.background = "#2b2b2b"
+        self.styles.padding = (1, 0)
+        self.input_row = HorizontalGroup(id="composer-input-row")
+        self.prompt = Label("›", id="prompt")
         self.prompt.styles.width = 2
-        self.prompt.styles.color = _color(BORDER_MUTED) or "gray"
-        self.input = Input(placeholder=placeholder, id="input")
-        # Input 官方 compact 变体:无边框 + 高度 1(composer 上下由分隔线区隔,D1)。
-        self.input.compact = True
+        self.prompt.styles.color = "#8a8a8a"
+        self.input = _InputArea(
+            compact=True,
+            highlight_cursor_line=False,
+            placeholder=placeholder,
+            id="input",
+        )
+        self.input.soft_wrap = True
+        self.input.show_line_numbers = False
+        self.input.styles.height = 1
+        self.input.styles.background = "#2b2b2b"
 
     def compose(self):
-        yield self.prompt
-        yield self.input
+        with self.input_row:
+            yield self.prompt
+            yield self.input
 
-    def on_focus(self) -> None:
-        self.prompt.styles.color = _color(ACCENT) or "cyan"
-
-    def on_blur(self) -> None:
-        self.prompt.styles.color = _color(BORDER_MUTED) or "gray"
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """高度自适应:行数 1..MAX_HEIGHT,超出后内部滚动(主流 composer 形态)。"""
+        lines = min(self.MAX_HEIGHT, max(1, event.text_area.document.line_count))
+        event.text_area.styles.height = lines
+        # 默认一行文字上下各留一行空白；内容增长时保留同样的呼吸空间。
+        self.styles.height = lines + 2
 
 
 class _TextualApp(App):
-    """承载 transcript / 单行 composer / 状态栏 / 双端 footer 的 textual App。
+    """承载 transcript / 多行 composer / 单行状态栏的 textual App。
 
-    纵向 Dock(design D1):transcript(1fr)→ 细分隔线 → composer(1 行)→
-    细分隔线 → 状态栏 → footer。状态栏与 footer 各占一行,位于分隔线之下。
+    纵向 Dock:transcript(1fr)→ 无边框 composer(1~4 行)→ 单行状态栏。
+    状态栏为单行会话元信息(模型、思考强度与工作目录)。
     """
 
     BINDINGS = [
@@ -108,21 +155,13 @@ class _TextualApp(App):
         self.transcript = _Transcript("", markup=False)
         self.transcript._backend = backend
         self.transcript.styles.height = "1fr"  # transcript 占满剩余纵向空间
-        self.top_sep = Rule(orientation="horizontal")
-        self.top_sep.styles.color = _color(BORDER_MUTED) or "gray"
-        self.composer = _Composer(placeholder="输入消息,Enter 发送;Esc 打断/退出")
-        self.bottom_sep = Rule(orientation="horizontal")
-        self.bottom_sep.styles.color = _color(BORDER_MUTED) or "gray"
+        self.composer = _Composer(placeholder="输入消息...")
         self.status = Label("", id="status")
-        self.footer = Label("", id="footer")
 
     def compose(self):
         yield self.transcript
-        yield self.top_sep
         yield self.composer
-        yield self.bottom_sep
         yield self.status
-        yield self.footer
 
     def on_mount(self) -> None:
         self.composer.input.focus()
@@ -135,9 +174,8 @@ class _TextualApp(App):
     def action_interrupt_or_exit(self) -> None:
         self._backend._notify_interrupt()
 
-    def on_input_submitted(self, message: Input.Submitted) -> None:
-        self._backend._notify_submit(message.value)
-        self.composer.input.value = ""
+    def on_input_submitted(self, message: InputSubmitted) -> None:
+        self._backend._notify_submit(message.text)
 
 
 class TextualBackend:
@@ -172,9 +210,6 @@ class TextualBackend:
 
     def set_status(self, line: RichLine) -> None:
         self._app.status.update(_line_to_text(line))
-
-    def set_footer(self, line: RichLine) -> None:
-        self._app.footer.update(_line_to_text(line))
 
     def on_submit(self, handler: SubmitHandler) -> None:
         self._submit_handler = handler

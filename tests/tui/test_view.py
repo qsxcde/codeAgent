@@ -37,9 +37,6 @@ class StubBackend:
     def set_status(self, line) -> None:
         self.statuses.append(line)
 
-    def set_footer(self, line) -> None:
-        self.footers.append(line)
-
     def on_submit(self, handler) -> None:
         self.submit = handler
 
@@ -111,17 +108,25 @@ def test_submit_starts_run_and_renders():
     rendered_plain = ["".join(rich_to_plain(lines)) for lines in backend.renders]
     assert any("你好" in text for text in rendered_plain)
     assert "ok" in rendered_plain[-1]
-    assert app.model.status.status == "IDLE"
-    # 状态栏与 footer 均以富样式行传递(design D5)
+    assert app.model.running is False
+    # 状态栏以富样式行传递(design D5)。
     assert backend.statuses and all(isinstance(s, list) for s in backend.statuses)
-    assert backend.footers and "● ready" in "".join(s.text for s in backend.footers[-1])
+    assert "ready" not in "".join(s.text for s in backend.statuses[-1])
 
 
 def test_footer_rich_line_seeded_and_passed():
-    """footer 的 model · effort 经装配注入并以富样式传给后端(spec「双端底部状态条」)。"""
+    """装配数据(model/effort/cwd)经注入进状态栏并以富样式传给后端(design D5)。"""
     backend = StubBackend()
     session = FakeSession()
-    app = TuiApp(session, backend, footer=FooterInfo(model="qwen3.8-max", effort="high"))
+    app = TuiApp(
+        session,
+        backend,
+        footer=FooterInfo(
+            model="qwen3.8-max",
+            effort="high",
+            cwd="/workspace",
+        ),
+    )
     backend.on_resize(app._schedule_render)
 
     async def _run() -> None:
@@ -129,10 +134,12 @@ def test_footer_rich_line_seeded_and_passed():
         await asyncio.sleep(0)
 
     asyncio.run(_run())
-    assert backend.footers, "footer 未渲染"
-    plain = "".join(s.text for s in backend.footers[-1])
-    assert "● ready" in plain
-    assert "qwen3.8-max · high" in plain
+    assert backend.statuses, "状态栏未渲染"
+    plain = "".join(s.text for s in backend.statuses[-1])
+    assert "qwen3.8-max high · /workspace" in plain
+    # 状态栏注入模型名与工作目录(回归:此前 status.model 无注入点)
+    assert app.model.status.model == "qwen3.8-max"
+    assert app.model.status.cwd == "/workspace"
 
 
 def test_interrupt_running_aborts():
@@ -157,15 +164,13 @@ def test_interrupt_idle_exits_with_doc():
 
 
 def test_run_cancelled_event_returns_idle():
-    """RUN_CANCELLED 事件 → 状态栏回 IDLE(对应 spec「状态栏实时反馈」)。"""
+    """RUN_CANCELLED 事件 → 运行态回空闲(对应 spec「运行中打断」)。"""
     app, backend, _ = _make_app()
     app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
     assert app.model.running is True
-    assert app.model.footer.status_text == "running"
     app.model.apply(AgentEvent(EventType.RUN_CANCELLED))
     assert app.model.running is False
-    assert app.model.status.status == "IDLE"
-    assert app.model.footer.status_text == "ready"
+    assert app.model.activity_visible is False
 
 
 def test_render_coalescing():
@@ -182,6 +187,22 @@ def test_render_coalescing():
         session._emit(AgentEvent(EventType.TEXT_DELTA, payload="c"))
         await asyncio.sleep(0)
         assert len(backend.renders) - before == 1
+
+    asyncio.run(_run())
+
+
+def test_activity_timer_runs_only_while_visible():
+    """活动提示有独立 UI 定时器，正文到达后立即停止。"""
+    app, _, session = _make_app()
+
+    async def _run() -> None:
+        session._emit(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+        await asyncio.sleep(0)
+        task = app._activity_task
+        assert task is not None and not task.done()
+        session._emit(AgentEvent(EventType.TEXT_DELTA, payload="reply"))
+        await asyncio.sleep(0)
+        assert app._activity_task is None
 
     asyncio.run(_run())
 

@@ -26,7 +26,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 配置:密钥写在固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下的 `.env`**(安全决策 H10,防止在任意仓库运行时被其 `.env` 劫持)。`LLM_PROVIDER` 选 provider(deepseek / openai / qwen / glm / kimi / minimax / fake)。
 
-**当前测试状态:255 项全绿**(2026-08-14 实测)。新增代码请保证 `uv run pytest` 不引入新的失败。
+**当前测试状态:260 项全绿**(2026-08-14 实测,清理 TUI 死代码后)。注:另有 3 项 bash 环境敏感测试待回归(ARG_MAX / Git bash ps 语义 / NO_COLOR,见审查记录)。新增代码请保证 `uv run pytest` 不引入新的失败。
 
 ## 架构与分层
 
@@ -101,7 +101,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 - **离线可测是最高原则**(NFR-M2):核心编排层零网络、零密钥即可运行;新模块应能不联网、不碰其它模块、注入 `FakeClient` 即可测通。覆盖目标:核心编排层 100% 离线可测,总体覆盖率 ≥ 80%。
 - **目录按层镜像,不逐文件 1:1**:`src/<layer>/` 对应 `tests/<layer>/`,层内文件按被测单元命名(`tests/ai/test_bridge.py` ↔ `ai/bridge/langchain.py`)。例外:`tools/` 单文件 `test_tools.py` 覆盖整个工具包(内聚优先);`app/` 层测试拍平到 `tests/` 根(`test_config.py` / `test_container.py` / `test_cli.py`)。镜像纯为可导航性,测试代码可跨层 import。
-- **夹具集中在 `tests/conftest.py`**:`_isolate_config_dir`(autouse,把 `CONFIG_DIR` 重定向到临时目录,防污染真实 `~/.codeagent`)、`fake_model`、`settings`。离线测试注入 `FakeClient` 或 mock `create_llm`。
+- **夹具集中在 `tests/conftest.py`**:`_isolate_config_dir`(autouse,把 `CONFIG_DIR` 重定向到临时目录,防污染真实 `~/.codeagent`)、`memory_fsops`(内存 FsOps,注入测试用)。离线测试注入 `FakeClient` 或 mock `create_llm`。
 - **`FakeClient` 是编排测试的核心注入点**(`ai/providers/fake.py`,实现 `ChatClient` 协议):`response` 固定文本 / `responses` 按序返回 / `steps` 脚本化多轮 ReAct(含 tool_calls)/ `thinking` / `usage` / `call_history` 断言。异常路径用其**子类覆盖 `_generate`** 抛错,不重写协议层。
 - **桩对象代替真实依赖测节点级行为**:`_StubTool` / `_StubExecutor`(并行+config 透传)、`StubGraph` / `SimpleGraph`(run 的 recursion_limit、abort、usage)。桩只实现被测代码用到的接口。
 - **断言行为/结果,不断言实现细节**:消息序列断言 `types == [...]`、事件类型断言 `EventType.X in seen`,验证"图走完的路径"而非中间表示;多 tool_calls 结果按 `tool_call_id` 分组断言。

@@ -15,10 +15,10 @@ import textual/终端;禁止 import session/ai/tools。
 
 from __future__ import annotations
 
-import json
+import difflib
 import re
-import textwrap
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -26,12 +26,20 @@ from typing import Any
 from codeagent.core.events import AgentEvent, EventType
 from codeagent.app.tui.theme import (
     ACCENT,
+    ACTIVITY,
+    ASSISTANT_PROMPT,
     DIM,
+    DIFF_ADD,
+    DIFF_CONTEXT,
+    DIFF_REMOVE,
     ERROR,
     SUCCESS,
+    STATUS_MODEL,
+    STATUS_PATH,
     TEXT,
-    THINKING,
     TOOL_OUTPUT,
+    USER_BG,
+    USER_PROMPT,
     WARNING,
 )
 
@@ -41,14 +49,13 @@ __all__ = [
     "Component",
     "UserBlock",
     "AssistantBlock",
+    "ActivityBlock",
     "ToolCallBlock",
     "ErrorBlock",
     "CancelledBlock",
     "Transcript",
-    "StatusLine",
+    "StatusBar",
     "FooterInfo",
-    "FooterLine",
-    "Editor",
     "TuiModel",
 ]
 
@@ -74,19 +81,52 @@ def _plain(text: str, fg: str = TEXT) -> RichLine:
     return [_seg(text, fg=fg)]
 
 
+def _cell_width(text: str) -> int:
+    """终端 cell 宽度:CJK 等宽/全角字符按 2 格计,其余按 1 格。
+
+    终端按 cell 渲染,而 Python ``len()`` 按字符数——中文等宽字符占 2 cell,
+    直接用 len 做换行/截断/背景填充会导致中文行超宽被终端裁掉、背景补齐错位
+    (回归)。组合字符/emoji ZWJ 等按 1 格近似,MVP 可接受。
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
 def _wrap(text: str, width: int) -> list[str]:
-    """按宽度换行(保留空白、断长词),兼容极窄终端。"""
+    """按终端 cell 宽度换行(保留空白、断长词),兼容极窄终端。
+
+    与 textwrap 的差异:宽度按 cell 计算(CJK 双宽),断行优先落在字符边界,
+    行首尾空白丢弃(近似 textwrap 的 drop_whitespace 语义)。
+    """
     width = max(1, width)
     lines: list[str] = []
     for para in text.split("\n"):
         if not para:
             lines.append("")
             continue
-        if len(para) <= width:
+        if _cell_width(para) <= width:
             lines.append(para)
             continue
-        wrapped = textwrap.wrap(para, width, break_long_words=True, replace_whitespace=False)
-        lines.extend(wrapped or [para[:width]])
+        lines.extend(_wrap_para(para, width))
+    return lines
+
+
+def _wrap_para(para: str, width: int) -> list[str]:
+    """按 cell 宽度逐字符累积换行;断点处的空白不落入行首。"""
+    lines: list[str] = []
+    current = ""
+    current_w = 0
+    for ch in para:
+        ch_w = _cell_width(ch)
+        if current_w + ch_w > width:
+            lines.append(current.rstrip())
+            # 断点落在空白时,空白不成为新行首(近似 drop_whitespace)
+            current = "" if ch == " " else ch
+            current_w = 0 if ch == " " else ch_w
+        else:
+            current += ch
+            current_w += ch_w
+    if current:
+        lines.append(current.rstrip())
     return lines
 
 
@@ -101,8 +141,52 @@ def rich_to_plain(lines: list[RichLine]) -> list[str]:
 
 
 def _truncate(text: str, limit: int) -> str:
-    """按字符数截断,超长追加省略号。"""
-    return text if len(text) <= limit else text[:limit] + "…"
+    """按终端 cell 宽度截断(CJK 双宽),超长追加省略号。"""
+    if limit <= 0:
+        return ""
+    if _cell_width(text) <= limit:
+        return text
+    result = ""
+    used = 0
+    for ch in text:
+        ch_w = _cell_width(ch)
+        if used + ch_w > max(0, limit - 1):  # 预留省略号 1 cell
+            break
+        result += ch
+        used += ch_w
+    return result + "…"
+
+
+def _truncate_spans(segs: RichLine, width: int) -> RichLine:
+    """按终端 cell 宽度逐段截断(保留各段样式),超宽段加省略号,溢出段丢弃。
+
+    用于状态栏等"多段样式单行":截断不能像纯文本那样整行重上色,
+    否则丢失状态色 / dim 的区分(回归)。
+    """
+    if width <= 0:
+        return []
+    result: RichLine = []
+    remaining = width
+    for seg in segs:
+        if remaining <= 0:
+            break
+        text = seg.text
+        seg_w = _cell_width(text)
+        if seg_w <= remaining:
+            result.append(seg)
+            remaining -= seg_w
+        else:
+            keep = ""
+            used = 0
+            for ch in text:
+                ch_w = _cell_width(ch)
+                if used + ch_w > max(0, remaining - 1):  # 预留省略号 1 cell
+                    break
+                keep += ch
+                used += ch_w
+            result.append(_seg(keep + "…", fg=seg.fg, bg=seg.bg))
+            remaining = 0
+    return result
 
 
 class Component:
@@ -113,26 +197,31 @@ class Component:
 
 
 class UserBlock(Component):
-    """用户消息块:命令记录行(`❯` accent + 文本 text),无背景(design D2)。
-
-    从全宽背景块改为低对比命令记录:不带 ``USER_BG`` 补齐,靠 `❯` 前缀与
-    agent 正文在视觉上区分(参考 Claude Code 用户输入行)。
-    """
+    """用户消息块:低对比提示符与连续的满宽深灰背景。"""
 
     def __init__(self, prompt: str) -> None:
         self.prompt = prompt
 
     def render(self, width: int) -> list[RichLine]:
-        return [[_seg("❯ ", fg=ACCENT), _seg(self.prompt, fg=TEXT)]]
+        width = max(1, width)
+        body_width = max(1, width - 2)
+        lines: list[RichLine] = []
+        for index, text in enumerate(_wrap(self.prompt, body_width)):
+            prefix = "› " if index == 0 else "  "
+            rendered: RichLine = [
+                _seg(prefix, fg=USER_PROMPT, bg=USER_BG),
+                _seg(text, fg=TEXT, bg=USER_BG),
+            ]
+            # 按 cell 宽度补齐背景(CJK 双宽;回归:len() 对中文行多算 padding)
+            padding = max(0, width - _cell_width(prefix) - _cell_width(text))
+            if padding:
+                rendered.append(_seg(" " * padding, bg=USER_BG))
+            lines.append(rendered)
+        return lines
 
 
 class AssistantBlock(Component):
-    """助手回复块:thinking(弱化,始终展开)+ body(text)。
-
-    思维链弱化(design D3):元信息标题(耗时/工具数,dim)+ 每行 `│ ` 竖线 +
-    THINKING 灰缩进内容;耗时经 ``clock`` 测量:首个 thinking 增量记开始、
-    首个正文 token 记结束,两端齐备才显示 ``Thought for Ns``,否则仅「思考」。
-    """
+    """助手回复块:保留推理累积，但只渲染用户可见正文。"""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
@@ -140,7 +229,6 @@ class AssistantBlock(Component):
         self._body_parts: list[str] = []
         self.thinking_started: float | None = None
         self.thinking_ended: float | None = None
-        self.tool_count = 0
 
     def append_thinking(self, text: str) -> None:
         if self.thinking_started is None:
@@ -160,58 +248,36 @@ class AssistantBlock(Component):
     def body(self) -> str:
         return "".join(self._body_parts)
 
-    def _meta(self) -> str:
-        """思考元信息标题(design D3):``Thought for 3s · 1 tool call``。
+    def render(self, width: int) -> list[RichLine]:
+        if not self.body:
+            return []
+        inner = max(1, width - 2)
+        lines: list[RichLine] = []
+        for index, text in enumerate(_wrap(self.body, inner)):
+            prefix = "• " if index == 0 else "  "
+            lines.append([_seg(prefix, fg=ASSISTANT_PROMPT), _seg(text, fg=TEXT)])
+        return lines
 
-        思考未结束(尚无正文 token)时只显示「思考」,流式过程中先出现、
-        正文到达后补上耗时与工具数。
-        """
-        if self.thinking_started is None or self.thinking_ended is None:
-            return "思考"
-        title = f"Thought for {self.thinking_ended - self.thinking_started:.0f}s"
-        if self.tool_count:
-            unit = "tool call" if self.tool_count == 1 else "tool calls"
-            title += f" · {self.tool_count} {unit}"
-        return title
+
+class ActivityBlock(Component):
+    """不写入历史的轻量等待提示，由 ``TuiModel`` 控制可见性。"""
+
+    _FRAMES = (" ·", " ··", " ···")
+
+    def __init__(self, frame: int = 0) -> None:
+        self.frame = frame
 
     def render(self, width: int) -> list[RichLine]:
-        lines: list[RichLine] = []
-        if self.thinking:
-            # 思维链不折叠:元信息标题(dim)+ `│ ` 竖线缩进内容(thinking 灰)。
-            lines.append(_plain(self._meta(), fg=DIM))
-            inner = max(1, width - 2)
-            for text in _wrap(self.thinking, inner):
-                lines.append([_seg("│ ", fg=DIM), _seg(text, fg=THINKING)])
-        if self.body:
-            lines.extend(_wrap_rich(self.body, width, fg=TEXT))
-        elif self._thinking_parts:
-            lines.append(_plain("…", fg=DIM))
-        return lines
+        suffix = self._FRAMES[self.frame % len(self._FRAMES)]
+        return [[_seg("• ", fg=ASSISTANT_PROMPT), _seg(f"思考中{suffix}", fg=ACTIVITY)]]
 
 
 #: 工具参数摘要的最大字符数(超长命令截断)。
 _MAX_ARG_SUMMARY = 60
 
 
-def _summarize_args(name: str, args: dict[str, Any]) -> str:
-    """工具专用参数摘要:裸 JSON → 人类可读单行(design D4;不改工具 schema)。
-
-    read/write/edit/ls → 文件路径;bash → 命令;grep → `pattern in path`;
-    find → 模式;未知工具回退 JSON。
-    """
-    if name in ("read", "write", "edit", "ls"):
-        text = str(args.get("file_path", ""))
-    elif name == "bash":
-        text = str(args.get("command", ""))
-    elif name == "grep":
-        pattern = str(args.get("pattern", ""))
-        path = str(args.get("path", ""))
-        text = f"{pattern} in {path}" if path else pattern
-    elif name == "find":
-        text = str(args.get("pattern", ""))
-    else:
-        text = json.dumps(args, ensure_ascii=False)
-    return _truncate(text, _MAX_ARG_SUMMARY)
+def _tool_path(args: dict[str, Any]) -> str:
+    return str(args.get("file_path") or args.get("path") or "")
 
 
 def _summarize_result(name: str, result: str) -> str | None:
@@ -240,16 +306,12 @@ def _summarize_result(name: str, result: str) -> str | None:
 
 
 class ToolCallBlock(Component):
-    """工具调用块:折叠符 + 状态图标 + 工具名 + 参数摘要;结果摘要;默认折叠。
+    """Codex 风格工具摘要与可展开的执行结果/意图差异。"""
 
-    header 重构(design D4):``▶/▼`` 折叠提示(dim)+ 状态图标 + accent 名 +
-    工具专用参数摘要(dim);结果返回后折叠态尾附结果摘要;展开显示完整结果。
-    构造收结构化 ``args: dict``(工具 schema 原样,摘要由 ``_summarize_args`` 收敛)。
-    """
-
-    def __init__(self, name: str, args: dict[str, Any]) -> None:
+    def __init__(self, name: str, args: dict[str, Any], call_id: str | None = None) -> None:
         self.name = name
         self.args = args
+        self.call_id = call_id
         self.status = "pending"  # pending | done | error
         self.result = ""
         self.expanded = False
@@ -260,6 +322,68 @@ class ToolCallBlock(Component):
 
     def toggle_expand(self) -> None:
         self.expanded = not self.expanded
+
+    def _summary(self) -> str:
+        path = _tool_path(self.args)
+        pending = {
+            "read": f"Reading {path}",
+            "edit": f"Editing {path}",
+            "write": f"Writing {path}",
+            "bash": "Running command",
+        }
+        completed = {
+            "read": f"Read {path}",
+            "edit": self._edit_summary(path),
+            "write": self._write_summary(path),
+        }
+        if self.status == "pending":
+            return pending.get(self.name, f"Running {self.name}")
+        if self.status == "error":
+            return f"Failed {self.name}"
+        if self.name == "bash":
+            result = _summarize_result(self.name, self.result)
+            return f"Ran command ({result or 'completed'})"
+        return completed.get(self.name, f"Ran {self.name}")
+
+    def _edit_summary(self, path: str) -> str:
+        old = str(self.args.get("old_string", "")).splitlines()
+        new = str(self.args.get("new_string", "")).splitlines()
+        return f"Edited {path} (+{len(new)} -{len(old)})"
+
+    def _write_summary(self, path: str) -> str:
+        additions = len(str(self.args.get("content", "")).splitlines())
+        return f"Wrote {path} (+{additions})"
+
+    def _intent_diff(self, width: int) -> list[RichLine]:
+        """渲染请求携带的变更意图，不读取磁盘也不伪称最终文件差异。"""
+        if self.name == "edit":
+            before = str(self.args.get("old_string", "")).splitlines()
+            after = str(self.args.get("new_string", "")).splitlines()
+        elif self.name == "write":
+            before = []
+            after = str(self.args.get("content", "")).splitlines()
+        else:
+            return []
+
+        lines: list[RichLine] = [[_seg("intent diff", fg=DIM)]]
+        emitted = 0
+        limit = 80
+        matcher = difflib.SequenceMatcher(a=before, b=after)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            entries: list[tuple[str, str, str]] = []
+            if tag == "equal":
+                entries.extend((" ", value, DIFF_CONTEXT) for value in before[i1:i2])
+            else:
+                entries.extend(("-", value, DIFF_REMOVE) for value in before[i1:i2])
+                entries.extend(("+", value, DIFF_ADD) for value in after[j1:j2])
+            for marker, value, bg in entries:
+                if emitted >= limit:
+                    lines.append([_seg("… 差异内容已截断", fg=DIM)])
+                    return lines
+                content = _truncate(value, max(1, width - 2))
+                lines.append([_seg(f"{marker} {content}", fg=TEXT, bg=bg)])
+                emitted += 1
+        return lines
 
     def render(self, width: int) -> list[RichLine]:
         icon, icon_tag = {
@@ -272,15 +396,14 @@ class ToolCallBlock(Component):
             _seg(" "),
             _seg(icon, fg=icon_tag),
             _seg(" "),
-            _seg(self.name, fg=ACCENT),
-            _seg(f" {_summarize_args(self.name, self.args)}", fg=DIM),
+            _seg(self._summary(), fg=ERROR if self.status == "error" else ACCENT),
         ]
-        summary = _summarize_result(self.name, self.result)
-        if summary:
-            header.append(_seg(f" · {summary}", fg=DIM))
         lines = [header]
-        if self.expanded and self.result:
-            lines.extend(_wrap_rich(self.result, width, fg=TOOL_OUTPUT))
+        if self.expanded:
+            if self.name in {"edit", "write"} and self.status == "done":
+                lines.extend(self._intent_diff(width))
+            if self.result:
+                lines.extend(_wrap_rich(self.result, width, fg=TOOL_OUTPUT))
         return lines
 
 
@@ -322,20 +445,46 @@ class Transcript(Component):
     def blocks(self) -> list[Component]:
         return list(self._blocks)
 
+    def _rows(
+        self, width: int, transient: Component | None = None
+    ) -> tuple[list[RichLine], list[Component | None]]:
+        """构造内容行与点击映射；块间空行、瞬态行均不命中点击。"""
+        rows: list[RichLine] = []
+        owners: list[Component | None] = []
+        persistent: list[tuple[Component, list[RichLine]]] = []
+        for block in self._blocks:
+            rendered = block.render(width)
+            if rendered:
+                persistent.append((block, rendered))
+        for index, (block, rendered) in enumerate(persistent):
+            if index:
+                rows.append([])
+                owners.append(None)
+            rows.extend(rendered)
+            owners.extend([block] * len(rendered))
+        if transient is not None:
+            rendered = transient.render(width)
+            if rendered:
+                if rows:
+                    rows.append([])
+                    owners.append(None)
+                rows.extend(rendered)
+                owners.extend([None] * len(rendered))
+        return rows, owners
+
     def all_rich(self, width: int) -> list[RichLine]:
         """以无界高度渲染全部块(供退出文档 / 视口裁剪)。"""
-        lines: list[RichLine] = []
-        for block in self._blocks:
-            lines.extend(block.render(width))
-        return lines
+        return self._rows(width)[0]
 
     def all_lines(self, width: int) -> list[str]:
         """以无界高度渲染全部块的纯文本(退出文档,design D6)。"""
         return rich_to_plain(self.all_rich(width))
 
-    def render(self, width: int, height: int) -> list[RichLine]:
+    def render(
+        self, width: int, height: int, transient: Component | None = None
+    ) -> list[RichLine]:
         """按视口高度渲染可见行(含跟随/滚动裁剪);同步维护行→块映射。"""
-        all_rich = self.all_rich(width)
+        all_rich, all_blocks = self._rows(width, transient)
         total = len(all_rich)
         height = max(0, height)
         max_start = max(0, total - height)
@@ -344,14 +493,7 @@ class Transcript(Component):
         start = max_start if self.follow else min(self._scroll_top, max_start)
         self._scroll_top = start
         visible = all_rich[start : start + height]
-        # 行→块映射:把每块渲染的连续行标记为所属块。
-        self._line_blocks = []
-        for block in self._blocks:
-            block_lines = len(block.render(width))
-            for _ in range(block_lines):
-                if len(self._line_blocks) >= total:
-                    break
-                self._line_blocks.append(block)
+        self._line_blocks = all_blocks[:total][start : start + height]
         return visible
 
     def block_at(self, relative_y: int) -> Component | None:
@@ -371,68 +513,38 @@ class Transcript(Component):
         self._scroll_top = 0
 
 
-class StatusLine(Component):
-    """状态栏:状态色(运行 warning / 空闲 success / 错误 error)+ 模型与用量 dim。"""
+class StatusBar(Component):
+    """Codex 风格单行状态栏:模型、思考强度与工作目录左对齐显示。"""
 
     def __init__(self) -> None:
-        self.status = "IDLE"  # IDLE | RUNNING | ERROR
         self.model = ""
-        self.usage = ""
-
-    _STATUS_TAG = {"RUNNING": WARNING, "IDLE": SUCCESS, "ERROR": ERROR}
+        self.effort = ""
+        self.cwd = ""
 
     def render(self, width: int) -> list[RichLine]:
-        segs: RichLine = [_seg(f"[{self.status}] ", fg=self._STATUS_TAG.get(self.status, DIM))]
+        line: RichLine = [_seg("  ", fg=DIM)]
         if self.model:
-            segs.append(_seg(f"{self.model} ", fg=DIM))
-        if self.usage:
-            segs.append(_seg(self.usage, fg=DIM))
-        text = "".join(s.text for s in segs)
-        line = text[: width if width > 0 else len(text)]
-        return [[_seg(line, fg=self._STATUS_TAG.get(self.status, DIM))]]
+            line.append(_seg(self.model, fg=STATUS_MODEL))
+        if self.effort:
+            line.append(_seg(f" {self.effort}", fg=STATUS_MODEL))
+        if self.cwd:
+            if self.model or self.effort:
+                line.append(_seg(" · ", fg=DIM))
+            line.append(_seg(self.cwd, fg=STATUS_PATH))
+        return [_truncate_spans(line, max(1, width))]
 
 
 @dataclass(frozen=True)
 class FooterInfo:
-    """底部状态条右端的模型信息(装配时解析固化,design D5)。"""
+    """底部状态栏装配数据(装配时解析固化,design D5)。
+
+    - ``model`` / ``effort``:状态栏中的模型与思考强度;
+    - ``cwd``:状态栏显示的工作目录。
+    """
 
     model: str = ""
     effort: str = ""
-
-
-class FooterLine(Component):
-    """底部状态条:左端状态/快捷键 + 右端 model · effort(design D5)。
-
-    双端在同一 RichLine 内由空格反推实现右对齐:右端超宽时优先截断右侧。
-    """
-
-    def __init__(self) -> None:
-        self.status_text = "ready"  # ready | running | error
-        self.keys = "Esc 退出"
-        self.model = ""
-        self.effort = ""
-
-    def render(self, width: int) -> list[RichLine]:
-        width = max(1, width)
-        left = f"● {self.status_text} · {self.keys}"
-        right = " · ".join(x for x in (self.model, self.effort) if x)
-        # 右端超宽时优先截断右侧(design D5),保证左端快捷键始终可见。
-        right = right[: max(0, width - len(left) - 1)]
-        if not right:
-            return [_plain(_truncate(left, width), fg=DIM)]
-        gap = width - len(left) - len(right)
-        return [[_seg(left, fg=DIM), _seg(" " * gap), _seg(right, fg=DIM)]]
-
-
-class Editor(Component):
-    """输入框的纯渲染表示(MVP:真实编辑由后端 Input 承担;补全/命令缝预留,design D6)。"""
-
-    def __init__(self) -> None:
-        self.text = ""
-
-    def render(self, width: int) -> list[RichLine]:
-        line = f"▍ {self.text}"
-        return [_plain(line[: width if width > 0 else len(line)])]
+    cwd: str = ""
 
 
 class TuiModel:
@@ -444,12 +556,22 @@ class TuiModel:
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self.transcript = Transcript()
-        self.status = StatusLine()
-        self.footer = FooterLine()
+        self.status = StatusBar()
         self.running = False
         self._clock = clock
         self._assistant: AssistantBlock | None = None
         self._pending_tools: list[ToolCallBlock] = []
+        self._pending_tools_by_id: dict[str, ToolCallBlock] = {}
+        self.activity_visible = False
+        self.activity_frame = 0
+
+    def render(self, width: int, height: int) -> list[RichLine]:
+        transient = ActivityBlock(self.activity_frame) if self.activity_visible else None
+        return self.transcript.render(width, height, transient=transient)
+
+    def advance_activity(self) -> None:
+        if self.activity_visible:
+            self.activity_frame += 1
 
     def _ensure_assistant(self) -> AssistantBlock:
         if self._assistant is None:
@@ -463,53 +585,59 @@ class TuiModel:
             self.transcript.append(UserBlock(str(event.payload)))
             self._assistant = None
             self._pending_tools.clear()
+            self._pending_tools_by_id.clear()
             self.running = True
-            self.status.status = "RUNNING"
-            self.footer.status_text = "running"
+            self.activity_visible = True
+            self.activity_frame = 0
         elif ev_type == EventType.THINKING_DELTA:
             self._ensure_assistant().append_thinking(str(event.payload or ""))
+            self.activity_visible = True
         elif ev_type == EventType.TEXT_DELTA:
             self._ensure_assistant().append_text(str(event.payload or ""))
+            self.activity_visible = False
         elif ev_type == EventType.AGENT_MESSAGE:
             assistant = self._ensure_assistant()
             if not assistant.body:
                 assistant.append_text(str(event.payload or ""))
+            self.activity_visible = False
         elif ev_type == EventType.TOOL_CALL:
             for call in event.payload or []:
                 name = call.get("name", "?") if isinstance(call, dict) else "?"
                 args = call.get("args", {}) if isinstance(call, dict) else {}
                 if not isinstance(args, dict):
                     args = {}
-                block = ToolCallBlock(name, args)
+                call_id = str(call.get("id")) if isinstance(call, dict) and call.get("id") else None
+                block = ToolCallBlock(name, args, call_id=call_id)
                 self.transcript.append(block)
                 self._pending_tools.append(block)
-                # 思考元信息里计数工具数(design D3)。
-                if self._assistant is not None:
-                    self._assistant.tool_count += 1
+                if call_id:
+                    self._pending_tools_by_id[call_id] = block
+            self.activity_visible = False
+            self._assistant = None
         elif ev_type == EventType.TOOL_RESULT:
-            # payload 是 ToolMessage.content,不带 tool_call_id;MVP 按 FIFO 归属
-            # 最近的 pending 块(并行工具顺序可能不完全精确,已知局限)。
-            if self._pending_tools:
-                self._pending_tools.pop(0).set_result(str(event.payload or ""))
+            metadata = event.metadata or {}
+            call_id = metadata.get("tool_call_id")
+            block = self._pending_tools_by_id.pop(str(call_id), None) if call_id else None
+            if block is not None:
+                if block in self._pending_tools:
+                    self._pending_tools.remove(block)
+            elif self._pending_tools:
+                block = self._pending_tools.pop(0)
+                if block.call_id:
+                    self._pending_tools_by_id.pop(block.call_id, None)
+            if block is not None:
+                block.set_result(str(event.payload or ""), error=bool(metadata.get("error")))
+            if not self._pending_tools:
+                self.activity_visible = True
         elif ev_type == EventType.TURN_END:
             self.running = False
-            self.status.status = "IDLE"
-            self.footer.status_text = "ready"
             self._assistant = None
+            self.activity_visible = False
         elif ev_type == EventType.ERROR:
             self.transcript.append(ErrorBlock(str(event.payload or "发生错误")))
             self.running = False
-            self.status.status = "ERROR"
-            self.footer.status_text = "error"
+            self.activity_visible = False
         elif ev_type == EventType.RUN_CANCELLED:
             self.transcript.append(CancelledBlock())
             self.running = False
-            self.status.status = "IDLE"
-            self.footer.status_text = "ready"
-        elif ev_type == EventType.USAGE:
-            usage: dict[str, Any] = event.payload or {}
-            self.status.usage = (
-                f"↑{usage.get('input_tokens', 0)} "
-                f"↓{usage.get('output_tokens', 0)} "
-                f"思考{usage.get('reasoning_tokens', 0)}"
-            )
+            self.activity_visible = False

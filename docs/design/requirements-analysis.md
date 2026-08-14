@@ -548,7 +548,7 @@ class AgentSession:
 | 编号 | 指标 | 要求 | 验收口径 | 状态 |
 |---|---|---|---|---|
 | NFR-M1 | 分层解耦 | 跨层 import 仅发生在 `app/container.py` / `app/main.py` | 解耦扫描测试强制校验(⚠️ 当前缺失,列入 v0.2 验收) | ⚠️ 需恢复自动校验 |
-| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-14 实测 255 项测试全绿(见附录 B) | ✅ |
+| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-14 实测 260 项测试全绿(见附录 B) | ✅ |
 | NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentPorts` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
@@ -711,7 +711,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### 12.1 全局验收基线(每个版本发布前必须满足)
 
-1. **测试全绿**:`uv run pytest` 全量通过(当前 255 项全绿,2026-08-14 实测);核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
+1. **测试全绿**:`uv run pytest` 全量通过(当前 260 项全绿,2026-08-14 实测);核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
 2. **解耦判据**:解耦扫描测试(恢复后)强制校验跨层 import 仅出现在 `app/container.py` / `app/main.py`;
 3. **离线可体验**:无任何 API Key 时以 `fake` provider 完整跑通"对话→工具调用→事件流"闭环;
 4. **配置隔离**:全部配置类 `extra="ignore"`,防回归测试通过;
@@ -793,7 +793,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 | # | 差异项 | requirements-analysis.md(v0.1, 08-10) | architecture.md(08-11) | GAP 分析(08-10) | 当前树实测(HEAD f0b29f2,2026-08-14) |
 |---|---|---|---|---|---|
-| 1 | 测试数量 | 219 全绿 | 304 全绿 | 219 全绿 | **255 项全绿**(08-13 曾 204 项:200 通过 + 4 项 bash 环境敏感失败,已由 fix-bash-test-assertions 修复——3 项 cwd 断言改标记文件法、1 项 PIPESTATUS 命令精简) |
+| 1 | 测试数量 | 219 全绿 | 304 全绿 | 219 全绿 | **260 项全绿**(08-13 曾 204 项:200 通过 + 4 项 bash 环境敏感失败,已由 fix-bash-test-assertions 修复——3 项 cwd 断言改标记文件法、1 项 PIPESTATUS 命令精简;08-14 TUI 修复、主流形态改造与 P2 死代码清理后;另有 3 项 bash 环境敏感失败待回归) |
 | 2 | provider 数量 | 3(deepseek/openai/fake) | 6(+qwen/glm/kimi/minimax) | 3 | **7**(deepseek/openai/qwen/glm/kimi/minimax/fake,`PROVIDERS` 注册表确认) |
 | 3 | TUI 状态 | ✅ 已落地(SessionAgentClient 流式渲染) | ✅ 已落地 | ✅ 已落地 | ✅ **已恢复为 MVP**(`app/tui/`:view/components/backend 端口 + textual 后端,`--tui` 进入;E9~E11);斜杠命令/模糊补全/选择器拆 v0.2 |
 | 4 | 目录结构 | 顶层 `cli.py/container.py/config.py/model_pattern.py` + `tui/` | 同左 | 同左 | `app/` 包(main/config/container)+ `app/tui/`;`model_pattern.py` 移入 `ai/`;顶层无 cli/container/config |

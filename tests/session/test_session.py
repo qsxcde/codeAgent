@@ -207,14 +207,48 @@ def test_tool_events_emitted(tmp_path):
         ]
     )
     sess = _session(model)
-    seen: list[str] = []
-    sess.subscribe(lambda e: seen.append(e.type))
+    seen = []
+    sess.subscribe(seen.append)
 
     asyncio.run(sess.run("读"))
-    assert EventType.TOOL_CALL in seen
-    assert EventType.TOOL_RESULT in seen
-    assert EventType.TEXT_DELTA in seen
-    assert EventType.TURN_END in seen
+    assert EventType.TOOL_CALL in [event.type for event in seen]
+    result = next(event for event in seen if event.type == EventType.TOOL_RESULT)
+    assert result.metadata["tool_call_id"] == "c1"
+    assert result.metadata["tool_name"] == "read"
+    assert EventType.TEXT_DELTA in [event.type for event in seen]
+    assert EventType.TURN_END in [event.type for event in seen]
+
+
+def test_tool_error_flagged_in_metadata(tmp_path):
+    """工具执行失败时 TOOL_RESULT 事件 metadata 携带 error 标志(回归)。
+
+    早期缺陷:core 节点层生成的错误 ToolMessage 无错误标记,session 不透传,
+    TUI 无法区分成功/失败,工具失败永远显示成功图标。
+    """
+    model = FakeClient(
+        steps=[
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "name": "read",
+                        "args": {"file_path": str(tmp_path / "missing.txt")},
+                        "id": "c1",
+                        "type": "tool_call",
+                    }
+                ],
+            },
+            {"content": "完成"},
+        ]
+    )
+    sess = _session(model)
+    seen = []
+    sess.subscribe(seen.append)
+
+    asyncio.run(sess.run("读"))
+    result = next(event for event in seen if event.type == EventType.TOOL_RESULT)
+    assert result.metadata["error"] is True
+    assert "[工具执行出错]" in str(result.payload)
 
 
 def test_run_emits_error_event_on_graph_failure():

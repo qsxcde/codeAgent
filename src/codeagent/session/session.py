@@ -171,8 +171,20 @@ class AgentSession:
 
     def _emit_for_message(self, node: str, msg: Any) -> None:
         if isinstance(msg, ToolMessage):
+            metadata: dict[str, Any] = {"node": node}
+            tool_call_id = getattr(msg, "tool_call_id", None)
+            tool_name = getattr(msg, "name", None)
+            if tool_call_id:
+                metadata["tool_call_id"] = tool_call_id
+            if tool_name:
+                metadata["tool_name"] = tool_name
+            # 错误标志透传:core 节点层在错误 ToolMessage 的 additional_kwargs
+            # 标记 error,翻译层原样透传到事件 metadata,订阅方(TUI)据此
+            # 区分成功/失败状态(契约,不依赖解析内容文案)。
+            if (getattr(msg, "additional_kwargs", None) or {}).get("error"):
+                metadata["error"] = True
             self._bus.emit(
-                AgentEvent(EventType.TOOL_RESULT, payload=msg.content, metadata={"node": node})
+                AgentEvent(EventType.TOOL_RESULT, payload=msg.content, metadata=metadata)
             )
         else:
             self._emit_usage_if_any(msg, node)

@@ -3,8 +3,8 @@
 职责(design D3/D4/D5):
 - 订阅 ``AgentSession``,事件回调只调 ``TuiModel.apply`` 变更组件状态,再
   ``_schedule_render`` 合并渲染(每循环迭代最多一次,≥30fps);
-- ``Esc`` 按运行态分派:运行中 → ``session.abort()``(RUN_CANCELLED 回状态栏
-  IDLE);空闲 → 退出并打印完整文档(design D5);
+- ``Esc`` 按运行态分派:运行中 → ``session.abort()``;空闲 → 退出并打印完整文档;
+- 活动提示(思考中)由 ``_animate_activity`` 低频驱动帧动画,不触发模型/工具请求;
 - 只依赖 ``TuiBackend`` 端口(不 import textual),可注入 stub 后端离线测试。
 
 分层约束:本模块可 import session/core/backend,禁止 import 具体引擎。
@@ -35,10 +35,12 @@ class TuiApp:
         self._backend = backend
         self.model = TuiModel()
         if footer is not None:
-            # footer 右端的 model · effort 在装配时解析固化(design D5)。
-            self.model.footer.model = footer.model
-            self.model.footer.effort = footer.effort
+            # 底部状态栏装配数据在组合根解析固化(design D5):模型名/思考强度/工作目录。
+            self.model.status.model = footer.model
+            self.model.status.effort = footer.effort
+            self.model.status.cwd = footer.cwd
         self._render_pending = False
+        self._activity_task: asyncio.Task[None] | None = None
         self._session.subscribe(self._on_event)
 
     # -- 生命周期 ----------------------------------------------------------
@@ -78,6 +80,7 @@ class TuiApp:
             self._exit()
 
     def _exit(self) -> None:
+        self._stop_activity_timer()
         width = self._transcript_width()
         self._backend.exit_document(self.model.transcript.all_lines(width))
 
@@ -85,7 +88,41 @@ class TuiApp:
 
     def _on_event(self, event: Any) -> None:
         self.model.apply(event)
+        self._sync_activity_timer()
         self._schedule_render()
+
+    def _sync_activity_timer(self) -> None:
+        """只在瞬态活动提示可见时刷新 UI，不触发任何模型或工具请求。"""
+        if not self.model.activity_visible:
+            self._stop_activity_timer()
+            return
+        if self._activity_task is not None and not self._activity_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._activity_task = loop.create_task(self._animate_activity())
+
+    def _stop_activity_timer(self) -> None:
+        task = self._activity_task
+        self._activity_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _animate_activity(self) -> None:
+        try:
+            while self.model.activity_visible:
+                await asyncio.sleep(0.45)
+                if not self.model.activity_visible:
+                    break
+                self.model.advance_activity()
+                self._schedule_render()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if self._activity_task is asyncio.current_task():
+                self._activity_task = None
 
     def _schedule_render(self) -> None:
         """合并渲染请求:同一循环迭代内到达的事件合并成一次渲染(design D4)。"""
@@ -104,11 +141,10 @@ class TuiApp:
         width, height = self._backend.transcript_size()
         if width <= 0 or height <= 0:
             return  # 尚未布局完成,等待下次 resize/事件
-        lines = self.model.transcript.render(width, height)
+        lines = self.model.render(width, height)
         self._backend.render(lines)
-        # 状态栏与 footer 均传富样式行(design D5:修复此前 RichLine 被当 str 传)。
+        # 单行底部状态栏:模型、思考强度与工作目录(富样式行,design D5)。
         self._backend.set_status(self.model.status.render(width)[0])
-        self._backend.set_footer(self.model.footer.render(width)[0])
 
     def _transcript_width(self) -> int:
         width, _ = self._backend.transcript_size()

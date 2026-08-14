@@ -1,17 +1,19 @@
 """tests/tui/test_components.py:组件树 + TuiModel 事件映射 + 样式标签断言。
 
-对应 spec「消息样式区分」(标签可离线断言)、「用户消息命令记录行」「思考过程独立展示」
-「工具调用过程可见」「工具调用点击展开」「双端底部状态条」「alt 屏渲染与滚动」。
+对应 spec「消息样式区分」(标签可离线断言)、「用户消息背景块」「思考活动反馈」
+「工具调用过程可见」「工具调用点击展开」「状态栏会话元信息」「alt 屏渲染与滚动」。
 """
+
+import unicodedata
 
 from codeagent.app.tui.components import (
     AssistantBlock,
+    ActivityBlock,
     CancelledBlock,
     ErrorBlock,
     FooterInfo,
-    FooterLine,
     Span,
-    StatusLine,
+    StatusBar,
     ToolCallBlock,
     Transcript,
     TuiModel,
@@ -20,12 +22,19 @@ from codeagent.app.tui.components import (
 )
 from codeagent.app.tui.theme import (
     ACCENT,
+    ACTIVITY,
+    ASSISTANT_PROMPT,
     DIM,
     ERROR,
+    DIFF_ADD,
+    DIFF_REMOVE,
     SUCCESS,
+    STATUS_MODEL,
+    STATUS_PATH,
     TEXT,
-    THINKING,
     TOOL_OUTPUT,
+    USER_BG,
+    USER_PROMPT,
     WARNING,
 )
 from codeagent.core.events import AgentEvent, EventType
@@ -41,47 +50,62 @@ class _FakeClock:
         return self._values.pop(0)
 
 
-def test_user_block_command_line():
-    """用户消息命令记录行:`❯` accent + 文本 text,无背景(design D2;spec「用户消息背景块」)。"""
+def _cells(text: str) -> int:
+    """测试用:终端 cell 宽度(CJK 等宽/全角按 2 格,与组件层一致)。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def test_user_block_is_full_width_background():
+    """用户消息每行均为连续的深灰背景，并带低对比提示符。"""
     lines = UserBlock("hi").render(10)
-    assert lines[0][0].fg == ACCENT and lines[0][0].text == "❯ "
+    assert lines[0][0].fg == USER_PROMPT and lines[0][0].text == "› "
     assert lines[0][1].fg == TEXT and lines[0][1].text == "hi"
-    # 不再补齐背景:所有 span 无背景
-    assert all(span.bg is None for span in lines[0])
+    assert all(span.bg == USER_BG for span in lines[0])
+    assert len("".join(span.text for span in lines[0])) == 10
 
 
-def test_assistant_thinking_expanded_and_styled():
-    """思维链不折叠:元信息标题 dim + `│ ` 竖线 + thinking 灰内容(spec「思考过程独立展示」)。"""
+def test_user_block_padding_by_cell_width():
+    """中文用户消息背景按 cell 宽度补齐(回归:len() 按 1 计导致背景缺一段)。"""
+    lines = UserBlock("你好").render(8)  # "› " 2 cell + "你好" 4 cell → 补齐 2 空格
+    assert lines[0][2].text == "  " and lines[0][2].bg == USER_BG
+    assert all(span.bg == USER_BG for span in lines[0])
+    assert _cells("".join(s.text for s in lines[0])) == 8  # 背景铺满整行
+
+
+def test_assistant_hides_thinking_and_renders_bullet_body():
+    """推理仍累积，但聊天区只显示圆点前缀的正文。"""
     block = AssistantBlock(clock=_FakeClock(0.0, 1.0))
     block.append_thinking("让我想想")
     block.append_text("正文")
     lines = block.render(60)
-    assert lines[0][0].fg == DIM and lines[0][0].text == "Thought for 1s"
-    assert any(line[0].text == "│ " for line in lines)
-    assert any(span.fg == THINKING for line in lines for span in line)
-    assert any(span.fg == TEXT for line in lines for span in line)
-    # 不折叠:thinking 完整渲染
-    assert any("让我想想" in span.text for line in lines for span in line)
+    assert lines[0][0].fg == ASSISTANT_PROMPT and lines[0][0].text == "• "
+    assert any(span.fg == TEXT and span.text == "正文" for line in lines for span in line)
+    assert "让我想想" not in "".join(span.text for line in lines for span in line)
 
 
-def test_assistant_thinking_meta_streaming():
-    """思考未结束时仅「思考」,正文到达后补耗时(design D3)。"""
+def test_assistant_without_body_renders_nothing():
     block = AssistantBlock(clock=_FakeClock(2.0, 5.0))
     block.append_thinking("a")
-    assert block.render(60)[0][0].text == "思考"
+    assert block.render(60) == []
     block.append_text("b")
-    assert block.render(60)[0][0].text == "Thought for 3s"
+    assert rich_to_plain(block.render(60)) == ["• b"]
 
 
-def test_assistant_thinking_meta_with_tool_count():
-    """元信息含工具数,复数形式正确(design D3)。"""
-    block = AssistantBlock(clock=_FakeClock(1.0, 4.0))
-    block.append_thinking("a")
-    block.append_text("b")
-    block.tool_count = 2
-    assert block.render(60)[0][0].text == "Thought for 3s · 2 tool calls"
-    block.tool_count = 1
-    assert block.render(60)[0][0].text == "Thought for 3s · 1 tool call"
+def test_assistant_wraps_cjk_by_cell_width():
+    """中文字符按 2 cell 计宽:换行位置不超视口(回归:len() 按 1 计导致中文行
+    实际超宽被终端裁掉)。"""
+    block = AssistantBlock()
+    block.append_text("一二三四五六七八九十")  # 10 字符 = 20 cell
+    lines = block.render(12)  # inner = 10 cell → 每行最多 5 个中文字符
+    texts = ["".join(s.text for s in line) for line in lines]
+    assert texts == ["• 一二三四五", "  六七八九十"]
+    assert all(_cells(text) <= 12 for text in texts)  # 每行不超视口
+
+
+def test_activity_block_has_low_frequency_frames():
+    assert rich_to_plain(ActivityBlock(0).render(60)) == ["• 思考中 ·"]
+    assert rich_to_plain(ActivityBlock(2).render(60)) == ["• 思考中 ···"]
+    assert ActivityBlock(1).render(60)[0][1].fg == ACTIVITY
 
 
 def test_tool_call_folded_by_default():
@@ -93,7 +117,7 @@ def test_tool_call_folded_by_default():
     header = lines[0]
     assert header[0].text == "▶" and header[0].fg == DIM
     assert header[2].text == "✓" and header[2].fg == SUCCESS
-    assert any(s.fg == ACCENT and s.text == "read" for s in header)
+    assert any(s.fg == ACCENT and s.text == "Read a.py" for s in header)
     assert any("a.py" in s.text for s in header)
     # 参数摘要,非 JSON
     assert "{" not in "".join(s.text for s in header)
@@ -117,12 +141,39 @@ def test_tool_call_error_icon():
     assert header[2].fg == ERROR and header[2].text == "✗"
 
 
-def test_tool_call_args_summary():
-    """参数摘要:bash 命令直显,不含 JSON 键名(design D4)。"""
+def test_tool_result_error_metadata_marks_error_status():
+    """TOOL_RESULT 事件 metadata 带 error 时工具块进入失败态(回归:契约断裂)。
+
+    早期缺陷:session 不透传错误标志,TUI 的 error 判定恒为 False,
+    工具失败永远显示 ✓ 成功图标而非 ✗。
+    """
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {"command": "false"}, "id": "c1"}],
+        )
+    )
+    tool = next(b for b in model.transcript.blocks if isinstance(b, ToolCallBlock))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_RESULT,
+            payload="[工具执行出错] 退出码 1",
+            metadata={"tool_call_id": "c1", "error": True},
+        )
+    )
+    assert tool.status == "error"
+    header = tool.render(60)[0]
+    assert header[2].text == "✗" and header[2].fg == ERROR
+    assert "Failed bash" in "".join(s.text for s in header)
+
+
+def test_tool_call_has_human_readable_pending_summary():
     block = ToolCallBlock("bash", {"command": "uv run pytest -q"})
     plain = "".join(s.text for s in block.render(60)[0])
-    assert "uv run pytest -q" in plain
-    assert "{" not in plain and "command" not in plain
+    assert "Running command" in plain
+    assert "{" not in plain and "uv run pytest -q" not in plain
 
 
 def test_tool_call_result_summary():
@@ -131,18 +182,29 @@ def test_tool_call_result_summary():
     bash.set_result("退出码: 0(耗时 12.3s)\nstdout: ok")
     assert "exit 0 · 12.3s" in "".join(s.text for s in bash.render(60)[0])
 
-    write = ToolCallBlock("write", {})
+    write = ToolCallBlock("write", {"file_path": "a.py", "content": "one\ntwo"})
     write.set_result("已写入 a.py(120 字节)")
-    assert "120 B" in "".join(s.text for s in write.render(60)[0])
+    assert "Wrote a.py (+2)" in "".join(s.text for s in write.render(60)[0])
 
-    edit = ToolCallBlock("edit", {})
+    edit = ToolCallBlock("edit", {"file_path": "a.py", "old_string": "old", "new_string": "new"})
     edit.set_result("已替换 2 处: a.py")
-    assert "2 处" in "".join(s.text for s in edit.render(60)[0])
+    assert "Edited a.py (+1 -1)" in "".join(s.text for s in edit.render(60)[0])
 
     other = ToolCallBlock("grep", {})
     other.set_result("第一行\n第二行")
     plain = "".join(s.text for s in other.render(60)[0])
-    assert "第一行" in plain and "第二行" not in plain  # 折叠态仅摘要
+    assert "Ran grep" in plain
+
+
+def test_edit_tool_expand_shows_intent_diff_with_colored_rows():
+    block = ToolCallBlock(
+        "edit", {"file_path": "a.py", "old_string": "old", "new_string": "new"}
+    )
+    block.set_result("已替换 1 处: a.py")
+    block.toggle_expand()
+    lines = block.render(60)
+    assert any(span.text == "- old" and span.bg == DIFF_REMOVE for line in lines for span in line)
+    assert any(span.text == "+ new" and span.bg == DIFF_ADD for line in lines for span in line)
 
 
 def test_error_and_cancelled_spans():
@@ -150,38 +212,50 @@ def test_error_and_cancelled_spans():
     assert CancelledBlock().render(60)[0][0].fg == WARNING
 
 
-def test_status_line_status_colors():
-    """状态栏状态色:运行 warning(design D3;spec「状态栏状态色」)。"""
-    status = StatusLine()
-    status.status = "RUNNING"
-    status.model = "deepseek"
-    status.usage = "↑10 ↓5"
-    line = status.render(60)[0]
-    assert line[0].fg == WARNING and "[RUNNING]" in line[0].text
-    assert "deepseek" in line[0].text and "↑10" in line[0].text
-
-
-def test_footer_line_two_sides_right_aligned():
-    """footer 双端:左状态/快捷键 + 右 model · effort,整行宽右对齐(design D5;spec「双端底部状态条」)。"""
-    footer = FooterLine()
-    footer.model = "qwen3.8-max"
-    footer.effort = "high"
-    line = footer.render(40)[0]
-    assert "● ready · Esc 退出" in line[0].text
-    assert line[-1].text == "qwen3.8-max · high"
-    assert len("".join(s.text for s in line)) == 40  # 右对齐:补齐到整行宽
-
-
-def test_footer_line_truncates_right_on_narrow_width():
-    """宽度不足时右端优先截断,左端快捷键保持可见(design D5)。"""
-    footer = FooterLine()
-    footer.model = "a-very-long-model-name"
-    footer.effort = "high"
-    line = footer.render(20)[0]
+def test_status_bar_renders_codex_session_metadata():
+    """状态栏只显示模型、思考强度和工作目录，不显示状态点或快捷键。"""
+    bar = StatusBar()
+    bar.model = "gpt-5.6-terra"
+    bar.effort = "high"
+    bar.cwd = "/mnt/c/Windows/System32"
+    line = bar.render(60)[0]
     plain = "".join(s.text for s in line)
-    assert len(plain) == 20
-    assert "● ready · Esc 退出" in plain
-    assert "a-very-long-model-name" not in plain
+    assert plain == "  gpt-5.6-terra high · /mnt/c/Windows/System32"
+    assert line[1].fg == STATUS_MODEL
+    assert line[-1].fg == STATUS_PATH
+    assert "ready" not in plain and "Esc" not in plain and "●" not in plain
+
+
+def test_status_bar_truncates_session_metadata():
+    """窄终端截断右侧路径，模型信息仍保持在左侧。"""
+    bar = StatusBar()
+    bar.model = "gpt-5.6-terra"
+    bar.effort = "high"
+    bar.cwd = "/a/very/long/working/directory"
+    line = bar.render(24)[0]
+    plain = "".join(s.text for s in line)
+    assert len(plain) == 24
+    assert plain.startswith("  gpt-5.6-terra")
+    assert plain.endswith("…")
+
+
+def test_status_bar_truncates_cjk_metadata():
+    """含中文的状态栏按 cell 宽度截断且不超宽(回归:len() 截断导致超限)。"""
+    bar = StatusBar()
+    bar.model = "深度思考模型"
+    line = bar.render(10)[0]
+    plain = "".join(s.text for s in line)
+    assert plain.endswith("…")
+    assert _cells(plain) <= 10
+
+
+def test_truncate_cjk_by_cell_width():
+    """_truncate 按 cell 宽度截断并预留省略号(回归:len() 截断后中文行仍超宽)。"""
+    from codeagent.app.tui.components import _truncate
+
+    assert _truncate("很" * 31, 60) == "很" * 29 + "…"
+    assert _cells(_truncate("很" * 31, 60)) <= 60
+    assert _truncate("hello world", 8) == "hello w…"
 
 
 def test_transcript_follow_end():
@@ -214,8 +288,28 @@ def test_block_at_maps_line_to_block():
     transcript.append(tool)
     transcript.render(60, 10)
     assert transcript.block_at(0) is user
-    assert transcript.block_at(1) is tool
+    assert transcript.block_at(1) is None
+    assert transcript.block_at(2) is tool
     assert transcript.block_at(99) is None
+
+
+def test_block_at_maps_after_scroll():
+    """上滚后 block_at 仍命中视口行对应的块(回归:此前映射不随滚动偏移)。
+
+    早期缺陷:行→块映射从内容第 0 行开始、不随 start 偏移,上滚后点击
+    工具块会命中错误的块(refine-tui-layout 遗留)。
+    """
+    transcript = Transcript()
+    blocks = [UserBlock(f"m{i}") for i in range(20)]
+    for b in blocks:
+        transcript.append(b)
+    transcript.render(60, 10)  # follow:start=10,视口显示行 10..19
+    transcript.scroll(5)      # 上滚 5 行
+    transcript.render(60, 10)  # start=5,视口显示行 5..14
+    assert transcript.block_at(0) is blocks[12]
+    assert transcript.block_at(2) is blocks[13]
+    assert transcript.block_at(8) is blocks[16]
+    assert transcript.block_at(10) is None
 
 
 def test_model_full_turn_fold_hides_result_until_expand():
@@ -235,28 +329,45 @@ def test_model_full_turn_fold_hides_result_until_expand():
     tool = next(b for b in model.transcript.blocks if isinstance(b, ToolCallBlock))
     plain = "\n".join(model.transcript.all_lines(60))
     assert "你好,世界" in plain
-    assert "read" in plain  # header 可见
-    assert "第一行" in plain  # 折叠态:结果摘要可见
-    assert "第二行" not in plain  # 折叠态:完整结果隐藏
+    assert "Read a.py" in plain  # header 可见
+    assert "第一行" not in plain  # 折叠态不展示原始结果
     # 展开后完整结果可见
     tool.toggle_expand()
     plain = "\n".join(model.transcript.all_lines(60))
     assert "第二行" in plain
 
 
-def test_footer_info_seeds_model_footer():
-    """FooterInfo 装配数据注入 TuiModel.footer(design D5)。"""
+def test_model_activity_lifecycle_and_out_of_order_tool_results():
     model = TuiModel()
-    info = FooterInfo(model="qwen3.8-max", effort="high")
-    model.footer.model = info.model
-    model.footer.effort = info.effort
-    plain = "".join(s.text for s in model.footer.render(40)[0])
-    assert "qwen3.8-max · high" in plain
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    assert model.activity_visible is True
+    model.apply(AgentEvent(EventType.THINKING_DELTA, payload="secret"))
+    assert "secret" not in "\n".join(model.transcript.all_lines(60))
+    model.apply(AgentEvent(EventType.TOOL_CALL, payload=[
+        {"name": "read", "args": {"file_path": "a.py"}, "id": "a"},
+        {"name": "read", "args": {"file_path": "b.py"}, "id": "b"},
+    ]))
+    assert model.activity_visible is False
+    model.apply(AgentEvent(EventType.TOOL_RESULT, payload="result-b", metadata={"tool_call_id": "b"}))
+    tools = [block for block in model.transcript.blocks if isinstance(block, ToolCallBlock)]
+    assert tools[0].result == "" and tools[1].result == "result-b"
+    assert model.activity_visible is False
+    model.apply(AgentEvent(EventType.TOOL_RESULT, payload="result-a", metadata={"tool_call_id": "a"}))
+    assert model.activity_visible is True
+    model.apply(AgentEvent(EventType.TEXT_DELTA, payload="done"))
+    assert model.activity_visible is False
 
 
-def test_editor_renders_text():
-    from codeagent.app.tui.components import Editor
-
-    editor = Editor()
-    editor.text = "hi"
-    assert rich_to_plain(editor.render(60)) == ["▍ hi"]
+def test_footer_info_seeds_status_bar():
+    """FooterInfo 装配数据(model/effort/cwd)注入状态栏(design D5)。"""
+    model = TuiModel()
+    info = FooterInfo(
+        model="qwen3.8-max",
+        effort="high",
+        cwd="/workspace",
+    )
+    model.status.model = info.model
+    model.status.effort = info.effort
+    model.status.cwd = info.cwd
+    plain = "".join(s.text for s in model.status.render(60)[0])
+    assert "qwen3.8-max high · /workspace" in plain

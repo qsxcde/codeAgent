@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import patch
 
 import httpx
@@ -58,9 +57,6 @@ class _StubBackend:
     def set_status(self, line) -> None:  # pragma: no cover - stub
         pass
 
-    def set_footer(self, line) -> None:  # pragma: no cover - stub
-        pass
-
     def on_submit(self, handler) -> None:  # pragma: no cover - stub
         pass
 
@@ -90,12 +86,14 @@ def test_create_tui_app_assembles_with_stub_backend():
 
         app = create_tui_app(provider="fake", backend=_StubBackend())
     assert hasattr(app, "start")
-    assert app.model.footer.model == ""
-    assert app.model.footer.effort == ""
+    # fake provider 无 Config 类:状态栏 model/effort 为空,但 cwd 仍注入
+    assert app.model.status.model == ""
+    assert app.model.status.effort == ""
+    assert app.model.status.cwd != ""
 
 
 def test_create_tui_app_resolves_footer_info():
-    """footer 的 model · effort 优先级:model 内联后缀 > provider 配置默认(design D5)。"""
+    """状态栏装配数据的 model · effort 优先级:model 内联后缀 > provider 配置默认(design D5)。"""
     with patch("codeagent.ai.factory.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
@@ -103,12 +101,12 @@ def test_create_tui_app_resolves_footer_info():
         from codeagent.app.container import create_tui_app
 
         app = create_tui_app(provider="deepseek", model="deepseek-v4-pro:low", backend=_StubBackend())
-        assert app.model.footer.model == "deepseek-v4-pro"
-        assert app.model.footer.effort == "low"
+        assert app.model.status.model == "deepseek-v4-pro"
+        assert app.model.status.effort == "low"
 
         app = create_tui_app(provider="deepseek", backend=_StubBackend())
-        assert app.model.footer.model == "deepseek-v4-flash"
-        assert app.model.footer.effort == "high"
+        assert app.model.status.model == "deepseek-v4-flash"
+        assert app.model.status.effort == "high"
 
 
 @pytest.mark.anyio

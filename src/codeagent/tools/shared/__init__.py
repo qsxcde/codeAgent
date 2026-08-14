@@ -6,7 +6,7 @@
 from codeagent.tools.shared.fsops import FsOps, LocalFsOps
 from codeagent.tools.shared.ignore import NOISE_DIRS, prune_noise_dirs
 from codeagent.tools.shared.mutation_queue import with_path_lock
-from codeagent.tools.shared.paths import format_posix, normalize_path, resolve_to_cwd
+from codeagent.tools.shared.paths import normalize_path, resolve_to_cwd
 from codeagent.tools.shared.textfile import (
     detect_line_ending,
     normalize_to_lf,
@@ -29,7 +29,6 @@ __all__ = [
     "NOISE_DIRS",
     "TruncationResult",
     "detect_line_ending",
-    "format_posix",
     "normalize_path",
     "normalize_to_lf",
     "prune_noise_dirs",

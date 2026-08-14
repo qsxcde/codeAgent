@@ -4,10 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from codeagent.ai.providers import FakeClient
-from codeagent.app.config import Settings
-from codeagent.tools.shared import LocalFsOps
-
 
 class InMemoryFsOps:
     """内存版 FsOps:零文件系统依赖,供注入测试(design D1 的可测性收益)。
@@ -52,12 +48,6 @@ class InMemoryFsOps:
 
 
 @pytest.fixture
-def tmp_fsops() -> LocalFsOps:
-    """基于真实文件系统的 FsOps(配合 tmp_path 路径使用)。"""
-    return LocalFsOps()
-
-
-@pytest.fixture
 def memory_fsops() -> InMemoryFsOps:
     """内存版 FsOps,完全离线,供注入测试。"""
     return InMemoryFsOps()
@@ -74,15 +64,3 @@ def _isolate_config_dir(tmp_path, monkeypatch):
     import codeagent.app.config as config_mod
 
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path / ".codeagent")
-
-
-@pytest.fixture
-def fake_model() -> FakeClient:
-    """离线假模型,默认返回固定文本。"""
-    return FakeClient(response="测试回复")
-
-
-@pytest.fixture
-def settings() -> Settings:
-    """不读 `.env`,保持测试确定性(用环境变量或默认值)。"""
-    return Settings(_env_file=None)

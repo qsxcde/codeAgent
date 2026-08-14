@@ -14,13 +14,19 @@ __all__ = [
     "TEXT",
     "ACCENT",
     "DIM",
-    "THINKING",
     "TOOL_OUTPUT",
     "SUCCESS",
     "ERROR",
     "WARNING",
-    "BORDER",
-    "BORDER_MUTED",
+    "STATUS_MODEL",
+    "STATUS_PATH",
+    "USER_BG",
+    "USER_PROMPT",
+    "ASSISTANT_PROMPT",
+    "ACTIVITY",
+    "DIFF_ADD",
+    "DIFF_REMOVE",
+    "DIFF_CONTEXT",
 ]
 
 # -- 样式标签(受控词表) ---------------------------------------------------
@@ -28,24 +34,36 @@ __all__ = [
 TEXT = "text"               # 正文(Agent 回答)
 ACCENT = "accent"           # 强调:工具名、输入 ❯、聚焦边框
 DIM = "dim"                 # 次级:思维标题、参数、footer
-THINKING = "thinking"       # 思维内容
 TOOL_OUTPUT = "tool_output"  # 工具结果
 SUCCESS = "success"         # 成功(工具 ✓ / 空闲状态)
 ERROR = "error"             # 错误(工具 ✗ / 错误状态)
 WARNING = "warning"         # 警告(已取消 / 运行中状态)
-BORDER = "border"           # 聚焦边框
-BORDER_MUTED = "border_muted"  # 失焦边框
+STATUS_MODEL = "status_model"  # 状态栏模型/思考强度
+STATUS_PATH = "status_path"    # 状态栏工作目录
+USER_BG = "user_bg"            # 用户消息整行背景
+USER_PROMPT = "user_prompt"    # 用户消息提示符
+ASSISTANT_PROMPT = "assistant_prompt"  # 助手正文提示符
+ACTIVITY = "activity"          # 等待动画
+DIFF_ADD = "diff_add"          # 差异新增行背景
+DIFF_REMOVE = "diff_remove"    # 差异删除行背景
+DIFF_CONTEXT = "diff_context"  # 差异上下文
 
 #: 标签 → 色值(hex;目前均为前景色,背景色由后端按需使用词表)。
 PALETTE: dict[str, str] = {
     TEXT: "#d4d4d4",
     ACCENT: "#00d7ff",
     DIM: "#666666",
-    THINKING: "#808080",
     TOOL_OUTPUT: "#808080",
     SUCCESS: "#b5bd68",
     ERROR: "#cc6666",
     WARNING: "#ffff00",
-    BORDER: "#00d7ff",
-    BORDER_MUTED: "#505050",
+    STATUS_MODEL: "#f0d9a7",
+    STATUS_PATH: "#b5e8ae",
+    USER_BG: "#262626",
+    USER_PROMPT: "#8a8a8a",
+    ASSISTANT_PROMPT: "#c8c8c8",
+    ACTIVITY: "#8a8a8a",
+    DIFF_ADD: "#183d27",
+    DIFF_REMOVE: "#472225",
+    DIFF_CONTEXT: "#303030",
 }

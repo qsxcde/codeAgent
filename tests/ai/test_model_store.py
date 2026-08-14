@@ -1,7 +1,6 @@
 """model_store / model_spec 数据层测试:H12 类型校验、H13 编码容错、H14 不可变、H15 副本。"""
 
 import json
-from pathlib import Path
 
 import pytest
 
