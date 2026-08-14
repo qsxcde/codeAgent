@@ -1,10 +1,11 @@
-"""组合根测试:假 provider 注入,create_agent_graph 零网络。
+"""组合根测试:假 provider 注入,自研端口/会话装配零网络。
 
 只验证组装与分层约束,不触发任何真实 LLM/网络请求。
 """
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
 import httpx
@@ -13,20 +14,19 @@ import pytest
 from codeagent.ai.transport.openai_compat import OpenAICompatClient
 
 
-def test_create_agent_graph_returns_compiled_graph():
-    """用 fake provider 注入,零网络构建编译后的图。"""
+def test_create_agent_ports_returns_ports():
+    """用 fake provider 注入,零网络装配自研端口(模型端口 + 工具)。"""
     with patch("codeagent.ai.factory.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
-        from codeagent.app.container import create_agent_graph
+        from codeagent.app.container import create_agent_ports
+        from codeagent.core.ports import AgentPorts
 
-        graph = create_agent_graph()
-    # 编译后的图具备 invoke / astream 能力
-    assert hasattr(graph, "invoke")
-    assert hasattr(graph, "astream")
-    # 默认注入了内存 checkpointer(可 aget_state)
-    assert hasattr(graph, "aget_state")
+        ports = create_agent_ports()
+    assert isinstance(ports, AgentPorts)
+    assert len(ports.tools) == 7
+    assert ports.model.model_id == "fake-model"
 
 
 def test_create_agent_session_returns_session():
@@ -40,6 +40,8 @@ def test_create_agent_session_returns_session():
         sess = create_agent_session()
     assert hasattr(sess, "run")
     assert hasattr(sess, "subscribe")
+    assert hasattr(sess, "abort")
+    assert hasattr(sess, "steer")
 
 
 class _StubBackend:
@@ -110,12 +112,12 @@ def test_create_tui_app_resolves_footer_info():
 
 
 @pytest.mark.anyio
-async def test_real_provider_runs_through_graph():
-    """真实 OpenAICompatClient 经 create_agent_graph 接入 LangGraph 可跑通(回归:#1 + 流式路径)。
+async def test_real_provider_runs_through_loop():
+    """真实 OpenAICompatClient 经自研循环可跑通(回归:#1 + 流式路径)。
 
-    早期缺陷:`bind_tools` 返回裸客户端(无 ainvoke),agent 节点调用 `bound_model.ainvoke`
-    抛 AttributeError。现 agent 节点改走 `astream` 消费流式增量,这里用 httpx.MockTransport
-    同时覆盖 `stream` 路径(不再只 patch `post`),断言图能正常产出 AIMessage。
+    早期缺陷:`bind_tools` 返回裸客户端(无 ainvoke),langgraph agent 节点调用
+    ``bound_model.ainvoke`` 抛 AttributeError。自研循环直接消费流式事件,
+    这里用 httpx.MockTransport 覆盖 stream 路径,断言事件序列与消息产出。
     """
     llm = OpenAICompatClient(
         base_url="https://api.deepseek.com",
@@ -134,26 +136,19 @@ async def test_real_provider_runs_through_graph():
     )
     mock_async_client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(10.0))
 
-    from codeagent.app.container import create_agent_graph
-    from langchain_core.messages import AIMessage
+    from codeagent.app.container import create_agent_ports
+    from codeagent.core import EventType, run_turn
 
-    final = None
+    events = []
     with patch("codeagent.ai.factory.create_llm", return_value=llm), patch(
         "codeagent.ai.transport.openai_compat.httpx.AsyncClient",
         return_value=mock_async_client,
     ):
-        graph = create_agent_graph()
-        async for item in graph.astream(
-            {"messages": []},
-            config={"configurable": {"thread_id": "t1"}},
-            stream_mode=["updates"],
-        ):
-            # 多 stream_mode(list 形式)时 item 为 (mode, payload) 元组
-            update = item[1] if isinstance(item, tuple) else item
-            for node, state_update in update.items():
-                for msg in state_update.get("messages", []):
-                    if isinstance(msg, AIMessage):
-                        final = msg
+        ports = create_agent_ports()
+        history = await run_turn(ports, events.append, "hi", history=[])
+        await ports.model._client.aclose()
 
-    assert final is not None
-    assert final.content == "ok"
+    types = [e.type for e in events]
+    assert EventType.TEXT_DELTA in types
+    assert history[-1].role == "assistant"
+    assert history[-1].content == "ok"

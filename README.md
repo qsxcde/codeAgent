@@ -13,7 +13,7 @@
 - **可感知**:会话运行过程以事件流对外暴露,CLI、TUI、Web、测试都能订阅,而不是只拿一个最终返回值。
 - **可测试**:核心编排层零网络、零密钥即可运行(注入 `FakeClient` 离线假模型)。
 
-设计参考:[earendil-works/pi](https://github.com/earendil-works/pi) 的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。架构设计见 [`docs/design/architecture.md`](docs/design/architecture.md),迭代记录见 [`docs/iteration/v0.1.md`](docs/iteration/v0.1.md)。
+设计参考:[earendil-works/pi](https://github.com/earendil-works/pi) 的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。架构设计见 [`docs/design/architecture.md`](docs/design/architecture.md),迭代记录见 [`docs/iteration/v0.1.md`](docs/iteration/v0.1.md),v0.2 任务书见 [`docs/iteration/v0.2.md`](docs/iteration/v0.2.md)。
 
 ### 当前能力(v0.1)
 
@@ -21,7 +21,7 @@
 - **Headless CLI**(默认形态):`--prompt` 一次性输入或 stdin 逐行读取,事件聚合输出最终回复。
 - **模型配置层**:每 provider 一个文件(配置 + 工厂自包含),内置模型目录 + `models.json` 按 id upsert 合并,支持思考强度(`model:effort`)与运行时换图(`replace_graph`)。
 - **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls 七个工具;bash 带危险命令黑名单、树级进程击杀、默认 120s 超时、输出保尾截断。
-- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试(当前 266 passed)。
+- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试(当前 336 passed)。
 
 ## 项目环境设置
 
@@ -109,7 +109,7 @@ echo "你好" | uv run codeagent
 ### 运行测试
 
 ```bash
-uv run pytest -q        # 当前 266 passed(全量离线,以实际运行结果为准)
+uv run pytest -q        # 当前 336 passed(全量离线,以实际运行结果为准)
 ```
 
 ## 项目结构
@@ -161,7 +161,7 @@ codeagent/
     │
     └── resources/ extensions/   # [资源/扩展层] 🔲 占位,延后 v0.2/v0.3
 
-tests/                          # 按 src 模块镜像分包,266 个测试全绿(离线)
+tests/                          # 按 src 模块镜像分包,336 个测试全绿(离线)
 ├── conftest.py                 #   _isolate_config_dir / fake_model / InMemoryFsOps 夹具
 ├── test_cli.py / test_config.py / test_container.py   # 应用层(拍平到根)
 ├── ai/                         #   factory / fake_client / model_store / providers / sse / transport / bridge

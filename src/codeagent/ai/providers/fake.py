@@ -62,11 +62,11 @@ class FakeClient(ChatClient):
         self.bound_tools = list(names)
 
     def bind_tools(self, tools: list[Any]) -> "FakeClient":
-        """记录工具名并返回 self(框架无关;langchain 包装由组合根负责)。
+        """记录工具名并返回 self(框架无关;编排适配由组合根 ChatModelPort 负责)。
 
         - 记录工具名(无副作用,离线可测);
-        - 组合根(container.py)拿到 self 后再 ``to_langchain_runnable`` 包装,
-          得到供 LangGraph 消费的 ``bound_model``。
+        - 组合根(container.py)拿到 self 后经 ``ChatModelPort`` 适配,
+          供自研 ReAct 循环消费。
         """
         self._bind_tools(tools)
         return self

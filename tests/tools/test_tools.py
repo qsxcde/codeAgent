@@ -5,7 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from langchain_core.tools import BaseTool
 
 from codeagent.app.container import create_tools
 from codeagent.tools.atomic import (
@@ -232,12 +231,10 @@ def test_bash_cwd_defaults_to_startup_directory(tmp_path, monkeypatch):
 
 def test_make_tools_passes_cwd_to_bash(tmp_path):
     """make_tools(cfg) 从 cfg.cwd 读取并传给 bash 工具(回归:P2-8)。"""
-    import asyncio
-
     (tmp_path / "marker.txt").write_text("")
     tools = create_tools(type("Cfg", (), {"cwd": str(tmp_path)})())
     bash_tool = next(t for t in tools if t.name == "bash")
-    out = asyncio.run(bash_tool.ainvoke({"command": "test -f marker.txt && echo CWD_OK"}))
+    out = bash_tool.invoke(bash_tool.Args(command="test -f marker.txt && echo CWD_OK"))
     assert "CWD_OK" in out and "命令失败" not in out
 
 
@@ -420,13 +417,15 @@ def test_bash_normal_command_unaffected_by_no_color(monkeypatch):
 
 # ── registry ──────────────────────────────────────────
 
-def test_make_tools_returns_seven_base_tools():
+def test_make_tools_returns_seven_atomic_tools():
     tools = create_tools()
     assert isinstance(tools, list)
     assert len(tools) == 7
     names = {t.name for t in tools}
     assert names == {"read", "write", "edit", "bash", "grep", "find", "ls"}
-    assert all(isinstance(t, BaseTool) for t in tools)
+    from codeagent.tools.base import AtomicTool
+
+    assert all(isinstance(t, AtomicTool) for t in tools)
 
 
 def test_make_tools_offline(tmp_path):

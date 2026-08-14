@@ -1,8 +1,8 @@
-# 编排引擎自研蓝图(第二步,暂缓)
+# 编排引擎自研蓝图(第二步,已落地)
 
-> 状态: **蓝图(规划)**,不实施——当前先做第一步「模型配置自研」(见 OpenSpec change)。
-> 更新日期: 2026-08-10
-> 关系: 本文是「自研统一封装」两阶段规划的第二阶段。第一阶段(ModelRuntime,模型层)见对应 OpenSpec change;本文只描述**编排层**自研的范围、收益、边界。
+> 状态: **已落地**(2026-08-14,OpenSpec change `self-built-orchestration`)——自研 ReAct 主循环 + 消息归约 + JSONL 树形会话替换 langgraph 编排,pyproject 移除 langchain-core/langgraph;三未决问题结论:平台部署非刚需、归约 spike 通过(5 场景双跑 diff)、JSONL 树形为格式结论。本文保留为决策与收益记录。
+> 更新日期: 2026-08-14
+> 关系: 本文是「自研统一封装」两阶段规划的第二阶段。第一阶段(ModelRuntime,模型层)见对应 OpenSpec change;本文描述编排层自研的范围、收益、边界。
 
 ---
 

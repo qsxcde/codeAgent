@@ -113,7 +113,7 @@ class OpenAICompatClient:
         self._tools = list(tools)
 
     def bind_tools(self, tools: list[Any]) -> "OpenAICompatClient":
-        """记录工具并返回 self(框架无关;langchain 包装由组合根负责)。
+        """记录工具并返回 self(框架无关;编排适配由组合根 ChatModelPort 负责)。
 
         - 组合根(container.py)拿到 self 后再 ``to_langchain_runnable`` 包装,
           得到供 LangGraph 消费的 ``bound_model``;

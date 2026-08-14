@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-基于 **LangGraph** 的编程 Agent(codeagent),采用 Pi-Agent 设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态)+ 端口-适配器(hexagonal)横切解耦。当前为 v0.1:CLI(headless 默认 + `--tui` 交互式终端)可对话、可调用 read/write/edit/bash/grep/find/ls 七个工具,事件流可订阅。
+基于**自研编排**(2026-08-14,self-built-orchestration,已弃用 langgraph/langchain)的编程 Agent(codeagent),采用 Pi-Agent 设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态)+ 端口-适配器(hexagonal)横切解耦。当前为 v0.1:v0.2 阶段 1(编排自研 + JSONL 会话地基)已落地,CLI(headless 默认 + `--tui` 交互式终端)可对话、可调用 read/write/edit/bash/grep/find/ls 七个工具,事件流可订阅。
 
-**注意:README.md 与 docs/design/architecture.md 已于 2026-08-14 校准至当前树**(此前曾描述已移除的 cli.py / 304 测试 / test_decoupling.py)。权威记录是 `docs/iteration/v0.1.md`(任务分解 + 变更记录 E1~E12)。
+**注意:README.md 与 docs/design/architecture.md 已于 2026-08-14 校准至当前树**(此前曾描述已移除的 cli.py / 304 测试 / test_decoupling.py)。权威记录是 `docs/iteration/v0.1.md`(任务分解 + 变更记录 E1~E12),v0.2 任务书见 `docs/iteration/v0.2.md`。
 
 ## 常用命令
 
@@ -26,7 +26,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 配置:密钥写在固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下的 `.env`**(安全决策 H10,防止在任意仓库运行时被其 `.env` 劫持)。`LLM_PROVIDER` 选 provider(deepseek / openai / qwen / glm / kimi / minimax / fake)。
 
-**当前测试状态:266 项全绿**(2026-08-14 实测,修复 bash 解释器探测后)。新增代码请保证 `uv run pytest` 不引入新的失败。
+**当前测试状态:311 项全绿**(2026-08-14 实测,编排自研后;删除 4 个源文件使解耦扫描参数化减少 4 项)。新增代码请保证 `uv run pytest` 不引入新的失败。
 
 ## 架构与分层
 
@@ -39,26 +39,26 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 | 模块 | 禁止 import |
 |---|---|
-| `core/` | config、ai、tools、session(只认识 `ports.py` + langgraph/langchain) |
+| `core/` | config、ai、tools、session(只认识 `ports.py` + 标准库) |
 | `session/` | ai、tools、config |
 | `ai/`、`tools/` | core、session |
 | `app/container.py`、`app/main.py` | 全部允许(**仅这两个文件可以跨层 import**) |
 
-判据:`core/` 中 grep 不到 `config / tools / ai / session` 字面量 → 横切解耦成立。此规则目前靠人工遵守(`test_decoupling.py` 已在重构中删除,计划 v0.2 重写)。
+判据:`core/` 中 grep 不到 `config / tools / ai / session` 字面量 → 横切解耦成立。此规则由 `tests/test_decoupling.py` 强制校验(AST 扫描,2026-08-14 重写)。
 
 ### 模块职责
 
-- **`app/container.py` — 组合根**:全项目唯一跨层交汇点。装配链:`create_llm` + `make_tools` → `llm.bind_tools(tools)`(★ 工具/模型唯一交汇行)→ `to_langchain_runnable` 包装 → 组装 `AgentPorts(bound_model, tool_executor=ToolNode, checkpointer=InMemorySaver)` → `build_graph`。`create_agent_session()` 供 CLI 入口消费。
+- **`app/container.py` — 组合根**:全项目唯一跨层交汇点(自研编排版,2026-08-14)。装配链:`create_llm`(ai 层 ChatClient)→ `ChatModelPort` 适配为 core 模型端口 → 与 `make_tools` 工具列表、可选 `SessionStore` 组装成 `AgentPorts` → `AgentSession` 事件壳。`create_agent_session()` 供 CLI 入口消费;`create_agent_ports()` 返回端口(平台/测试用)。
 - **`app/main.py` — CLI 入口**:解析 `--prompt` / stdin / `--tui`,订阅 `AgentSession` 事件流聚合成最终回复(TEXT_DELTA 累积、TOOL_CALL 前清零、AGENT_MESSAGE 兜底去重);`--tui` 转交 `app/tui/main.py`。
-- **`core/` — 纯编排层**:模块顶层零副作用(不建模型、不发请求、不读 key),可被平台直接 import。`AgentPorts`(core 认识外部世界的唯一窗口);`build_graph` 纯组装 ReAct 循环;`should_continue` 只看 state 形状(最后一条消息有没有 tool_calls),不 import 任何具体工具。
-- **`session/` — 有状态会话**:`AgentSession.run()` 全异步,用 `graph.astream(stream_mode=["messages","updates"])` 运行并把过程翻译成 `AgentEvent` 经 `EventBus` 分发(**不返回值**,订阅方感知进度)。每个 session 分配稳定 `thread_id`,同一会话多轮对话靠 checkpointer 累积上下文。失败自动回滚本轮消息;`abort()` 中断当前 run;`replace_graph()` 换图保留 thread。
-- **`ai/` — 模型配置层,五层细分**:
+- **`core/` — 纯编排层(自研)**:模块顶层零副作用(不建模型、不发请求、不读 key),可被平台直接 import。`AgentPorts`(model 端口 / tools / store)是 core 认识外部世界的唯一窗口;`core/loop.py` 的 `run_turn` 是自研 ReAct 循环(模型→工具→继续/结束,事件直接 emit);`core/messages.py` 是自研消息模型与归约(按 tool_call_id 归属、按 id 删除,id 用 uuid7)。
+- **`session/` — 有状态会话**:`AgentSession.run()` 全异步,直接驱动 `run_turn`,10 类 `AgentEvent` 经 `EventBus` 分发(**不返回值**,订阅方感知进度)。会话历史与 `SessionStore`(JSONL 树形)同步:成功轮次才落盘,失败/取消内存回滚。`abort()` 中断当前 run;`steer()` 运行中注入消息;`followup()` 结束后续跑一轮。
+- **`ai/` — 模型配置层,五层细分(无桥接层)**:
   - `providers/`:每 provider 一个自包含文件(配置类 + `make_llm` 工厂),在 `ai/providers/__init__.py` 的 `PROVIDERS` 注册表登记;`fake.py` 提供离线 `FakeClient`(脚本化多轮,支撑全量离线测试)。
   - `catalog/`:不可变值对象 `ModelSpec` + `ModelRegistry` 两遍解析(先全部精确 id → 再全部别名)+ `models.json` 按 id upsert 合并。
   - `protocol/`:框架无关协议(`ChatClient` / `ChatMessage` / `ToolCall` / `ChatResponse` / `StreamEvent`)。
   - `transport/`:`OpenAICompatClient`(httpx,重试/流式,thinking/usage 全量透传)。
-  - `bridge/`:`to_langchain_runnable` 把自研客户端包装成 langchain Runnable,**只被组合根消费**,`ai/` 内部其它模块不 import 它。
-- **`tools/`**:`AtomicTool` 基类(无状态,子类实现 `_invoke` + 定义 `Args` pydantic schema,经 `to_langchain()` 转 `StructuredTool`)。`make_tools` 注册表产出七个工具:read / write / edit / bash / grep / find / ls;`shared/` 提供 `FsOps` 文件系统抽象缝(注入内存实现即可离线测)、路径/文本/截断/写串行化等共享设施。`BashTool` 带危险命令黑名单(字符串正则 + shlex 分词语义级检测 `rm -rf` 等价写法)、Git for Windows/WSL bash 探测链、默认 120s 超时(上限 600)、30k 输出截断。
+  - `factory.py`:`create_llm` 统一入口;`model_pattern.py`:`model:effort` 解析唯一实现。适配自研循环的 `ChatModelPort` 在组合根 `app/container.py`。
+- **`tools/`**:`AtomicTool` 基类(无状态,子类实现 `_invoke` + 定义 `Args` pydantic schema,自研循环直接 `invoke`)。`make_tools` 注册表产出七个工具:read / write / edit / bash / grep / find / ls;`shared/` 提供 `FsOps` 文件系统抽象缝(注入内存实现即可离线测)、路径/文本/截断/写串行化等共享设施。`BashTool` 带危险命令黑名单(字符串正则 + shlex 分词语义级检测 `rm -rf` 等价写法)、Git for Windows/WSL bash 探测链、默认 120s 超时(上限 600)、30k 输出截断。
 - **`app/tui/` — 交互式终端(MVP)**:`view.py`(TuiApp 视图逻辑)只依赖 `backend.py` 的 `TuiBackend` 端口;`components.py` 纯渲染组件树(样式标签段,引擎无关可离线测);`textual_backend.py` 是当前唯一引擎实现。装配经组合根 `create_tui_app`(footer 的 model/effort 解析固化),本包不读配置、不跨层。
 - **`resources/`、`extensions/`**:占位,延后(v0.2/v0.3)。
 
@@ -75,13 +75,13 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 - **命名即文档**:标识符读起来像一句完整的话(如 `should_continue`、`create_agent_session`),不看函数体应能猜到行为。
 - **注释只写"为什么"**:解释约束、设计取舍、踩过的坑(参考 `tools/atomic/bash.py` 黑名单正则注释),不逐行翻译代码。
 - **docstring 全中文**,模块级先讲职责与分层约束,再进入实现。
-- **模块顶层零副作用 + 延迟导入**:新模块禁止顶层建对象/发请求/读密钥;langchain 只在 `ai/bridge/` 与 `app/container.py` 加载,保持启动路径轻量。
+- **模块顶层零副作用 + 延迟导入**:新模块禁止顶层建对象/发请求/读密钥;项目已无 langchain/langgraph 依赖(自研编排),textual 仅在 `app/tui/textual_backend.py` 加载。
 - **`__all__` 显式声明导出**。
 
 ### 内聚 / 耦合 / 可读性(结构与复杂度)
 
 - **单一职责**:一个文件/函数只做一件事。模块 docstring 若不能一句话说清职责 → 内聚出问题。
-- **函数一屏内**(约 ≤60 行),层层抽象:调用方读"做什么",细节下沉到私有方法(`session/session.py` 的 `_translate_*` 是范例)。
+- **函数一屏内**(约 ≤60 行),层层抽象:调用方读"做什么",细节下沉到私有方法(`session/session.py` 的 `_rollback` / `_friendly_error` 是范例)。
 - **文件行数双阈值(启发式,目标是内聚而非数字)**:
   - 超过 ~300 行 → code review 时必须能解释"为什么不拆";
   - 超过 ~500 行 → 应拆分或批准豁免;
@@ -100,7 +100,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 ### 测试规范
 
 - **离线可测是最高原则**(NFR-M2):核心编排层零网络、零密钥即可运行;新模块应能不联网、不碰其它模块、注入 `FakeClient` 即可测通。覆盖目标:核心编排层 100% 离线可测,总体覆盖率 ≥ 80%。
-- **目录按层镜像,不逐文件 1:1**:`src/<layer>/` 对应 `tests/<layer>/`,层内文件按被测单元命名(`tests/ai/test_bridge.py` ↔ `ai/bridge/langchain.py`)。例外:`tools/` 单文件 `test_tools.py` 覆盖整个工具包(内聚优先);`app/` 层测试拍平到 `tests/` 根(`test_config.py` / `test_container.py` / `test_cli.py`)。镜像纯为可导航性,测试代码可跨层 import。
+- **目录按层镜像,不逐文件 1:1**:`src/<layer>/` 对应 `tests/<layer>/`,层内文件按被测单元命名(`tests/core/test_messages.py` ↔ `core/messages.py`)。例外:`tools/` 单文件 `test_tools.py` 覆盖整个工具包(内聚优先);`app/` 层测试拍平到 `tests/` 根(`test_config.py` / `test_container.py` / `test_cli.py`)。镜像纯为可导航性,测试代码可跨层 import。
 - **夹具集中在 `tests/conftest.py`**:`_isolate_config_dir`(autouse,把 `CONFIG_DIR` 重定向到临时目录,防污染真实 `~/.codeagent`)、`memory_fsops`(内存 FsOps,注入测试用)。离线测试注入 `FakeClient` 或 mock `create_llm`。
 - **`FakeClient` 是编排测试的核心注入点**(`ai/providers/fake.py`,实现 `ChatClient` 协议):`response` 固定文本 / `responses` 按序返回 / `steps` 脚本化多轮 ReAct(含 tool_calls)/ `thinking` / `usage` / `call_history` 断言。异常路径用其**子类覆盖 `_generate`** 抛错,不重写协议层。
 - **桩对象代替真实依赖测节点级行为**:`_StubTool` / `_StubExecutor`(并行+config 透传)、`StubGraph` / `SimpleGraph`(run 的 recursion_limit、abort、usage)。桩只实现被测代码用到的接口。

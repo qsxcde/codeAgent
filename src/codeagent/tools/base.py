@@ -1,12 +1,13 @@
-"""AtomicTool 基类:无状态原子工具的抽象与 langchain 适配。
+"""AtomicTool 基类:无状态原子工具的抽象(自研版,2026-08-14)。
 
 设计要点(design D1/D2):
 - 无状态:工具本身不持有会话/文件缓存状态,天然可离线测试;
 - 依赖注入:构造函数注入 ``cwd``(相对路径解析基准)与 ``ops``(文件系统抽象,
   缺省 ``LocalFsOps``),工具逻辑不直接触碰文件系统 → 可测试、可远程化;
-- 纯自研骨架 + 组合 langchain:子类只实现 ``_invoke``,通过
-  ``to_langchain()`` 转成 ``StructuredTool`` 供 ``bind_tools`` / ``ToolNode`` 使用;
-- 分层约束:本模块顶层不 import langchain(延迟导入),不触碰 core/session。
+- 自研编排对接:循环直接 ``invoke(args)``,不再经 langchain StructuredTool
+  包装(``to_langchain`` 已随编排自研删除);
+- ``args_schema`` 属性供模型端口生成 OpenAI function schema;
+- 分层约束:本模块不 import langchain,不触碰 core/session。
 """
 
 from __future__ import annotations
@@ -47,29 +48,14 @@ class AtomicTool:
         self._cwd = cwd
         self._ops: FsOps = ops if ops is not None else LocalFsOps()
 
+    @property
+    def args_schema(self) -> type[BaseModel]:
+        """输入参数 schema(模型端口据此生成 function schema)。"""
+        return self.Args
+
     def invoke(self, args: BaseModel) -> str:
         """校验后的执行入口;子类应实现 ``_invoke``。"""
         return self._invoke(args)
 
     def _invoke(self, args: BaseModel) -> str:  # pragma: no cover - 抽象方法
         raise NotImplementedError(f"{type(self).__name__} 未实现 _invoke")
-
-    def to_langchain(self) -> Any:
-        """转换为 langchain ``StructuredTool``,供 bind_tools / ToolNode 使用。
-
-        延迟导入 langchain:只有真正装配图(container)时才加载。
-        """
-        from langchain_core.tools import StructuredTool
-
-        tool: AtomicTool = self
-
-        def func(**kwargs: Any) -> str:
-            args = tool.Args(**kwargs)
-            return tool.invoke(args)
-
-        return StructuredTool.from_function(
-            func=func,
-            name=self.name,
-            description=self.description,
-            args_schema=self.Args,
-        )

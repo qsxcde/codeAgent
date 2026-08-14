@@ -43,19 +43,16 @@ def test_fake_can_emit_tool_calls():
     assert resp.finish_reason == "tool_calls"
 
 
-def test_fake_bind_tools_records_then_wraps_to_runnable():
-    """bind_tools 记录工具并返回 self;经 to_langchain_runnable 包装后有 ainvoke。"""
-    from codeagent.ai.bridge.langchain import to_langchain_runnable
+def test_fake_bind_tools_records_then_runs_via_model_port():
+    """bind_tools 记录工具名;经组合根 ChatModelPort 适配后自研循环可消费。"""
+    from codeagent.app.container import ChatModelPort
 
     model = FakeClient(response="绑定测试")
 
     class FakeTool:
         name = "read"
 
-    bound = to_langchain_runnable(model.bind_tools([FakeTool()]))
+    model.bind_tools([FakeTool()])
     assert model.bound_tools == ["read"]
-    # 真实执行断言(替换 hasattr 弱断言):ainvoke 实际返回绑定响应
-    from langchain_core.messages import HumanMessage
-
-    resp = asyncio.run(bound.ainvoke([HumanMessage(content="hi")]))
-    assert resp.content == "绑定测试"
+    port = ChatModelPort(model)
+    assert port.model_id == "fake-model"

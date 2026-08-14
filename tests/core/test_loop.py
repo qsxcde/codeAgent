@@ -1,260 +1,194 @@
-"""编排层测试:假 ports 跑通整个 ReAct 循环(离线,零网络)。"""
+"""core 循环测试(自研版):事件序列 / 工具归属 / 递归上限 / 空响应 / steer / 超时。
 
-from __future__ import annotations
+使用 ``container.ChatModelPort``(正式适配器)把 FakeClient 接入自研循环;
+断言事件序列与消息历史的行为,不断言中间表示。
+"""
 
 import asyncio
-import time
 
 import pytest
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.prebuilt import ToolNode
 
+from codeagent.app.container import ChatModelPort
+from codeagent.core import AgentPorts, EventType, RecursionLimitError, run_turn
+from codeagent.core.messages import Message
+from codeagent.tools.atomic import (
+    BashTool,
+    EditTool,
+    FindTool,
+    GrepTool,
+    LsTool,
+    ReadTool,
+    WriteTool,
+)
 from codeagent.ai.providers.fake import FakeClient
-from codeagent.core import AgentPorts, build_graph
-from codeagent.tools.registry import make_tools
 
 
-def _graph(model: FakeClient):
-    from codeagent.ai.bridge.langchain import to_langchain_runnable
-
-    tools = make_tools()
-    bound = to_langchain_runnable(model.bind_tools(tools))
-    ports = AgentPorts(
-        bound_model=bound,
-        tool_executor=ToolNode(tools),
-        checkpointer=InMemorySaver(),
+def _ports(model: FakeClient) -> AgentPorts:
+    return AgentPorts(
+        model=ChatModelPort(model),
+        tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
     )
-    return build_graph(ports)
 
 
-def _invoke(graph, text: str, thread: str = "t1"):
-    import asyncio
+async def _run(model: FakeClient, prompt: str, **kwargs):
+    """跑一轮,返回 (事件类型序列, 事件列表, 消息历史)。"""
+    ports = _ports(model)
+    events: list = []
 
-    async def _run():
-        return await graph.ainvoke(
-            {"messages": [{"role": "user", "content": text}]},
-            config={"configurable": {"thread_id": thread}},
-        )
+    def emit(ev) -> None:
+        events.append(ev)
 
-    return asyncio.run(_run())
-
-
-def test_agent_ports_frozen_and_checkpointer_default():
-    tools = make_tools()
-    model = FakeClient()
-    ports = AgentPorts(bound_model=model, tool_executor=ToolNode(tools))
-    assert ports.bound_model is model
-    assert ports.checkpointer is None
-    # frozen dataclass 不可改字段
-    with pytest.raises(Exception):
-        ports.bound_model = None  # type: ignore[misc]
+    history = await run_turn(
+        ports, emit, prompt, history=[], recursion_limit=kwargs.pop("recursion_limit", 50), **kwargs
+    )
+    return [e.type for e in events], events, history
 
 
 def test_direct_reply_ends_loop():
-    graph = _graph(FakeClient(response="你好"))
-    out = _invoke(graph, "打招呼")
-    # 只经历一轮 agent,无工具调用
-    types = [type(m).__name__ for m in out["messages"]]
-    assert types == ["HumanMessage", "AIMessage"]
-    assert out["messages"][-1].content == "你好"
+    """直接回复:单条 assistant,无工具调用。"""
+    model = FakeClient(response="你好")
+    types, events, history = asyncio.run(_run(model, "hi"))
+    assert EventType.TEXT_DELTA in types
+    assert EventType.TOOL_CALL not in types
+    assert [m.role for m in history] == ["user", "assistant"]
+    assert history[-1].content == "你好"
 
 
-def test_tool_call_then_reply_react_loop(tmp_path):
-    target = tmp_path / "a.txt"
-    target.write_text("hello file")
+def test_single_tool_error_attached_and_flagged():
+    """单工具失败:结果带错误标记,归属到对应 assistant 之后。"""
     model = FakeClient(
         steps=[
             {
                 "content": "",
                 "tool_calls": [
-                    {"name": "read", "args": {"file_path": str(target)}, "id": "c1", "type": "tool_call"}
+                    {"name": "read", "args": {"file_path": "missing.py"}, "id": "c1", "type": "tool_call"}
                 ],
             },
-            {"content": "已读取"},
+            {"content": "文件不存在,已处理"},
         ]
     )
-    graph = _graph(model)
-    out = _invoke(graph, "读文件")
-    types = [type(m).__name__ for m in out["messages"]]
-    assert types == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"]
-    assert "hello file" in out["messages"][2].content
-    assert out["messages"][-1].content == "已读取"
+    types, events, history = asyncio.run(_run(model, "读"))
+    assert EventType.TOOL_CALL in types and EventType.TOOL_RESULT in types
+    assert EventType.TEXT_DELTA in types
+    result = next(e for e in events if e.type == EventType.TOOL_RESULT)
+    assert result.metadata["tool_call_id"] == "c1"
+    assert result.metadata["error"] is True
+    roles = [m.role for m in history]
+    assert roles == ["user", "assistant", "tool", "assistant"]
+    assert history[2].tool_call_id == "c1"
 
 
-def test_tool_error_does_not_break_graph(tmp_path):
-    # 读取不存在的文件 → 工具返回错误 ToolMessage,图继续回 agent
-    missing = tmp_path / "nope.txt"
-    model = FakeClient(
-        steps=[
-            {
-                "content": "",
-                "tool_calls": [
-                    {"name": "read", "args": {"file_path": str(missing)}, "id": "c1", "type": "tool_call"}
-                ],
-            },
-            {"content": "处理了错误"},
-        ]
-    )
-    graph = _graph(model)
-    out = _invoke(graph, "读不存在的文件")
-    types = [type(m).__name__ for m in out["messages"]]
-    assert types == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"]
-    assert out["messages"][-1].content == "处理了错误"
-
-
-def test_multi_tool_call_single_failure_keeps_success(tmp_path):
-    """多 tool_calls 单失败:成功 call 结果保留,失败 call 错误只带自身 id(回归:P2-2)。"""
-    missing = tmp_path / "nope.txt"
+def test_parallel_tools_ok_and_fail():
+    """并行双工具(一成一败):按 calls 顺序归属,错误互不污染。"""
     model = FakeClient(
         steps=[
             {
                 "content": "",
                 "tool_calls": [
                     {"name": "bash", "args": {"command": "echo ok"}, "id": "c-ok", "type": "tool_call"},
-                    {"name": "read", "args": {"file_path": str(missing)}, "id": "c-bad", "type": "tool_call"},
+                    {"name": "read", "args": {"file_path": "/nonexistent/x.py"}, "id": "c-bad", "type": "tool_call"},
                 ],
             },
-            {"content": "继续"},
+            {"content": "并行结果"},
         ]
     )
-    graph = _graph(model)
-    out = _invoke(graph, "并行执行")
-    tool_msgs = [m for m in out["messages"] if type(m).__name__ == "ToolMessage"]
-    assert len(tool_msgs) == 2
-    by_id = {m.tool_call_id: m for m in tool_msgs}
+    _, events, history = asyncio.run(_run(model, "并行"))
+    results = [e for e in events if e.type == EventType.TOOL_RESULT]
+    by_id = {e.metadata["tool_call_id"]: e for e in results}
     assert set(by_id) == {"c-ok", "c-bad"}
-    # 成功 call 携带真实结果
-    assert "ok" in by_id["c-ok"].content
-    assert "[工具执行出错]" not in by_id["c-ok"].content
-    # 失败 call 携带自身错误,且错误文本不污染成功 call
-    assert "[工具执行出错]" in by_id["c-bad"].content
-    assert "文件不存在" in by_id["c-bad"].content
-    # 错误标记契约:失败 ToolMessage 携带 additional_kwargs.error,成功的不带
-    assert by_id["c-bad"].additional_kwargs.get("error") is True
-    assert not by_id["c-ok"].additional_kwargs.get("error")
-    # 图继续回 agent 完成后续回复
-    assert out["messages"][-1].content == "继续"
+    assert by_id["c-ok"].metadata["error"] is False
+    assert by_id["c-bad"].metadata["error"] is True
+    # 消息序列:user → assistant → tool(c-ok) → tool(c-bad) → assistant
+    assert [m.role for m in history] == ["user", "assistant", "tool", "tool", "assistant"]
+    assert history[2].tool_call_id == "c-ok" and history[3].tool_call_id == "c-bad"
 
 
-def test_unknown_tool_generates_error_and_does_not_break_graph():
-    """未知工具名 → 携带自身 id 的「未知工具」错误,图不中断。"""
+def test_three_rounds_loop():
+    """三轮 ReAct:两次工具调用后最终回复。"""
+    model = FakeClient(
+        steps=[
+            {"content": "", "tool_calls": [{"name": "bash", "args": {"command": "echo one"}, "id": "r1", "type": "tool_call"}]},
+            {"content": "", "tool_calls": [{"name": "bash", "args": {"command": "echo two"}, "id": "r2", "type": "tool_call"}]},
+            {"content": "三轮结束"},
+        ]
+    )
+    types, _, history = asyncio.run(_run(model, "开始"))
+    assert types.count(EventType.TOOL_CALL) == 2
+    assert types.count(EventType.TOOL_RESULT) == 2
+    assert history[-1].content == "三轮结束"
+    assert sum(1 for m in history if m.role == "tool") == 2
+
+
+def test_empty_response_emits_agent_message():
+    """空响应兜底:AGENT_MESSAGE(''),无 TEXT_DELTA。"""
+    model = FakeClient(response="")
+    types, _, history = asyncio.run(_run(model, "空"))
+    assert EventType.AGENT_MESSAGE in types
+    assert EventType.TEXT_DELTA not in types
+    assert history[-1].role == "assistant" and history[-1].content == ""
+
+
+def test_recursion_limit_raises_friendly():
+    """循环超限:抛 RecursionLimitError,友好提示。"""
+    model = FakeClient(
+        steps=[
+            {"content": "", "tool_calls": [{"name": "bash", "args": {"command": "echo x"}, "id": f"r{i}", "type": "tool_call"}]}
+            for i in range(10)
+        ]
+    )
+    with pytest.raises(RecursionLimitError) as exc:
+        asyncio.run(_run(model, "循环", recursion_limit=3))
+    assert "次数过多" in str(exc.value)
+
+
+def test_steer_injection_consumed_before_next_round():
+    """steer 注入:运行中注入的消息在下一轮循环前消费为 user 消息。"""
+    model = FakeClient(
+        steps=[
+            {"content": "", "tool_calls": [{"name": "bash", "args": {"command": "echo a"}, "id": "s1", "type": "tool_call"}]},
+            {"content": "最终回复"},
+        ]
+    )
+    ports = _ports(model)
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    queue.put_nowait("运行中注入")
+    events: list = []
+
+    async def run() -> list[Message]:
+        return await run_turn(ports, events.append, "开始", history=[], inject_queue=queue)
+
+    history = asyncio.run(run())
+    # 注入消息成为第二轮前的 user 消息(在首条 user 之后、首个 assistant 之前?不——
+    # drain 在每轮循环前,第一轮前已有注入 → 紧随首条 user)
+    users = [m for m in history if m.role == "user"]
+    assert [m.content for m in users] == ["开始", "运行中注入"]
+
+
+def test_tool_timeout_marks_error():
+    """工具超时:超时结果按错误处理,循环继续。"""
     model = FakeClient(
         steps=[
             {
                 "content": "",
                 "tool_calls": [
-                    {"name": "nonexistent_tool", "args": {}, "id": "c-x", "type": "tool_call"}
+                    {"name": "bash", "args": {"command": "sleep 5"}, "id": "t1", "type": "tool_call"}
                 ],
             },
-            {"content": "已处理未知工具"},
+            {"content": "超时了"},
         ]
     )
-    graph = _graph(model)
-    out = _invoke(graph, "调用未知工具")
-    tool_msgs = [m for m in out["messages"] if type(m).__name__ == "ToolMessage"]
-    assert len(tool_msgs) == 1
-    assert tool_msgs[0].tool_call_id == "c-x"
-    assert tool_msgs[0].additional_kwargs.get("error") is True
-    assert "未知工具" in tool_msgs[0].content
-    assert "nonexistent_tool" in tool_msgs[0].content
-    assert out["messages"][-1].content == "已处理未知工具"
+    _, events, history = asyncio.run(_run(model, "超时", tool_timeout=0.2))
+    result = next(e for e in events if e.type == EventType.TOOL_RESULT)
+    assert result.metadata["error"] is True
+    assert history[-1].content == "超时了"
 
 
-def test_build_graph_top_level_no_side_effect():
-    """import 模块顶层不建模型、不发请求、不读 key。"""
-    import codeagent.core.loop as loop_mod
+def test_model_failure_propagates():
+    """模型抛错:异常传播给调用方(事件壳负责回滚与 ERROR)。"""
 
-    # 仅确认符号存在,且模块定义无副作用(这里能 import 即已通过)
-    assert callable(loop_mod.build_graph)
+    class BoomModel(FakeClient):
+        def _generate(self, messages, **kwargs):
+            raise RuntimeError("模型炸了")
 
-
-def test_default_recursion_limit_is_50():
-    """默认循环上限提升为 50(P2-15),约 25 轮 ReAct。"""
-    from codeagent.core.loop import DEFAULT_RECURSION_LIMIT
-
-    assert DEFAULT_RECURSION_LIMIT == 50
-
-
-def test_should_continue_logic():
-    from langchain_core.messages import AIMessage, HumanMessage
-
-    from codeagent.core.loop import should_continue
-    from codeagent.core.state import AgentState
-
-    no_tool: AgentState = {"messages": [HumanMessage("hi"), AIMessage(content="bye")]}
-    assert should_continue(no_tool) == "end"
-
-    with_tool: AgentState = {
-        "messages": [
-            HumanMessage("hi"),
-            AIMessage(content="", tool_calls=[{"name": "read", "args": {}, "id": "c1", "type": "tool_call"}]),
-        ]
-    }
-    assert should_continue(with_tool) == "tools"
-
-    empty: AgentState = {"messages": []}
-    assert should_continue(empty) == "end"
-
-
-class _StubTool:
-    """记录各调用开始时间与收到的 config,用于断言并行/串行与 config 透传。"""
-
-    def __init__(self, name: str, delay: float) -> None:
-        self.name = name
-        self.delay = delay
-        self.starts: list[float] = []
-        self.received_configs: list[object] = []
-
-    async def ainvoke(self, args: dict, config=None) -> str:
-        self.starts.append(time.monotonic())
-        self.received_configs.append(config)
-        await asyncio.sleep(self.delay)
-        return f"{self.name}:ok"
-
-
-class _StubExecutor:
-    def __init__(self) -> None:
-        self.tool_a = _StubTool("tool_a", 0.2)
-        self.tool_b = _StubTool("tool_b", 0.2)
-        self.tools_by_name = {"tool_a": self.tool_a, "tool_b": self.tool_b}
-
-
-def test_multi_tool_calls_execute_in_parallel():
-    """多 tool_calls 并行执行(回归:此前串行导致耗时线性叠加)。"""
-    from langchain_core.messages import AIMessage
-
-    from codeagent.core.nodes.tools import make_tools_node
-
-    executor = _StubExecutor()
-    node = make_tools_node(executor)
-    state = {
-        "messages": [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {"name": "tool_a", "args": {}, "id": "c1", "type": "tool_call"},
-                    {"name": "tool_b", "args": {}, "id": "c2", "type": "tool_call"},
-                ],
-            )
-        ]
-    }
-
-    started = time.monotonic()
-    out = asyncio.run(node(state, config={"configurable": {"thread_id": "t1"}}))
-    elapsed = time.monotonic() - started
-
-    # 两个工具均执行且结果正确
-    tool_msgs = [m for m in out["messages"] if type(m).__name__ == "ToolMessage"]
-    assert len(tool_msgs) == 2
-    assert {m.tool_call_id for m in tool_msgs} == {"c1", "c2"}
-
-    # 并行:两调用几乎同时开始(时间差远小于单个耗时 0.2s)
-    start_a = executor.tool_a.starts[0]
-    start_b = executor.tool_b.starts[0]
-    assert abs(start_a - start_b) < 0.05, "两个工具未并行开始"
-    # 并行:总耗时约等于最慢单个(0.2s),而非两者之和(0.4s)
-    assert elapsed < 0.35, f"总耗时 {elapsed:.3f}s 表明串行执行"
-    # config 透传:每个工具都收到节点级 config
-    for tool in (executor.tool_a, executor.tool_b):
-        assert len(tool.received_configs) == 1
-        assert tool.received_configs[0] == {"configurable": {"thread_id": "t1"}}
+    with pytest.raises(RuntimeError, match="模型炸了"):
+        asyncio.run(_run(BoomModel(response="x"), "触发"))

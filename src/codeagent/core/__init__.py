@@ -1,12 +1,25 @@
-"""编排层:端口、状态、事件、循环与节点。
+"""编排层:端口、事件、消息、循环(自研版,2026-08-14)。
 
-分层约束:core 不 import config / ai / tools / session,仅依赖 ports.py
-及 langchain/langgraph。外部世界统一收敛到 `AgentPorts`。
+分层约束:core 不 import config / ai / tools / session,仅依赖标准库与
+本包内部模块。外部世界统一收敛到 `AgentPorts`(模型端口 / 工具 / 存储)。
 """
 
 from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.loop import build_graph
-from codeagent.core.ports import AgentPorts
-from codeagent.core.state import AgentState
+from codeagent.core.loop import DEFAULT_RECURSION_LIMIT, RecursionLimitError, run_turn
+from codeagent.core.messages import Message, ToolCall, ToolResult
+from codeagent.core.ports import AgentPorts, ModelPort, ModelResponse, StreamEvent
 
-__all__ = ["AgentEvent", "AgentPorts", "AgentState", "EventType", "build_graph"]
+__all__ = [
+    "AgentEvent",
+    "AgentPorts",
+    "DEFAULT_RECURSION_LIMIT",
+    "EventType",
+    "Message",
+    "ModelPort",
+    "ModelResponse",
+    "RecursionLimitError",
+    "StreamEvent",
+    "ToolCall",
+    "ToolResult",
+    "run_turn",
+]

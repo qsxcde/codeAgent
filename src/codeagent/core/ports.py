@@ -1,29 +1,78 @@
-"""编排层端口:core 认识外部世界的唯一窗口。
+"""core/ports.py:编排层端口——core 认识外部世界的唯一窗口。
 
-`core/` 是纯编排层,不 import config / ai / tools / session。
-外部世界(模型、工具、持久化)统一收敛到 `AgentPorts` 三个字段,
-由组合根(container.py)负责组装。
+自研编排(2026-08-14)后端口收敛为三样东西:
+- ``model``:模型端口(实现方在组合根,内部对接 ai 层 ChatClient);
+- ``tools``:工具列表(实现 ``name`` / ``description`` / ``args_schema`` /
+  ``invoke(args_dict) -> str`` 即可);
+- ``store``:会话存储(可选;None 表示不持久化,如一次性 headless)。
+
+core 不 import config / ai / tools / session;端口类型定义在本模块,
+组合根(唯一允许跨层的地方)负责把外部实现装配进来。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Protocol
 
-if TYPE_CHECKING:
-    from langchain_core.language_models import BaseChatModel
-    from langchain_core.runnables import Runnable
+from codeagent.core.messages import Message, ToolCall
+
+__all__ = ["AgentPorts", "ModelPort", "ModelResponse", "StreamEvent"]
+
+
+@dataclass
+class ModelResponse:
+    """模型一次完整生成的结果(非流式路径)。"""
+
+    content: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: dict[str, int] | None = None  # {input_tokens, output_tokens, reasoning_tokens}
+    finish_reason: str | None = None
+    model: str = ""
+
+
+@dataclass
+class StreamEvent:
+    """模型流式产出的统一事件(与 ai 层 SSE 解析同形,core 自有类型)。"""
+
+    type: str  # content | thinking | tool_call_arg | finish | usage
+    text: str = ""
+    tool_index: int | None = None
+    arg_delta: str = ""
+    tool_name: str = ""
+    tool_id: str = ""
+    finish_reason: str | None = None
+    usage: dict[str, int] | None = None
+
+
+class ModelPort(Protocol):
+    """模型端口:编排循环消费的最小调用面(实现方在组合根)。"""
+
+    @property
+    def model_id(self) -> str: ...
+
+    async def generate(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+    ) -> ModelResponse: ...
+
+    def stream(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+    ) -> AsyncIterator[StreamEvent]: ...
 
 
 @dataclass(frozen=True)
 class AgentPorts:
-    """编排层的外部端口集合。
+    """编排层的外部端口集合(自研版)。
 
-    - ``bound_model``:已 ``bind_tools`` 的模型(由组合根负责 bind,core 零感知工具);
-    - ``tool_executor``:工具执行器,对 loop 是黑盒(通常是 ToolNode);
-    - ``checkpointer``:持久化对象,None 表示不启用(由组合根决定)。
+    - ``model``:模型端口(组合根适配 ai 层 ChatClient);
+    - ``tools``:工具列表(自研 AtomicTool 实例,直接 ``invoke``);
+    - ``store``:会话存储(可选;None 不持久化)。
     """
 
-    bound_model: BaseChatModel
-    tool_executor: Runnable
-    checkpointer: Any | None = None
+    model: ModelPort
+    tools: list[Any]
+    store: Any | None = None
