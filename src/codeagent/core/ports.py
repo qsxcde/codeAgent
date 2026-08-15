@@ -17,7 +17,14 @@ from typing import Any, AsyncIterator, Protocol
 
 from codeagent.core.messages import Message, ToolCall
 
-__all__ = ["AgentPorts", "ModelPort", "ModelResponse", "StreamEvent"]
+__all__ = [
+    "AgentPorts",
+    "ModelPort",
+    "ModelResponse",
+    "PolicyDecision",
+    "StreamEvent",
+    "Summarizer",
+]
 
 
 @dataclass
@@ -45,6 +52,43 @@ class StreamEvent:
     usage: dict[str, int] | None = None
 
 
+@dataclass(frozen=True)
+class PolicyDecision:
+    """执行前安全策略的决策结果(design security-permissions)。
+
+    - ``action``:allow(直接执行)/ ask(需用户确认)/ deny(拒绝执行);
+    - ``reason``:决策原因(拒绝/确认时对模型与用户可见,审计用途);
+    - ``warning``:放行但附带提示(如越界读),不影响执行。
+    """
+
+    action: str  # "allow" | "ask" | "deny"
+    reason: str = ""
+    warning: bool = False
+
+
+class ApprovalPolicy(Protocol):
+    """执行前安全策略端口:决定工具调用放行/需确认/拒绝。
+
+    core 只认识决策形态;实现方在组合根(tools 层分类器适配),循环在
+    每个工具调用执行前调用;``ask`` 由循环 emit 确认请求并等待会话队列。
+    """
+
+    def decide(self, tool_name: str, args: dict) -> PolicyDecision: ...
+
+
+class Summarizer(Protocol):
+    """上下文压缩摘要端口(session-compaction):把被压缩窗口摘要化。
+
+    - ``messages``:被压缩窗口的消息(完整轮次);
+    - ``prev_summary``:上一次压缩的摘要(二次压缩增量合并,None = 首次);
+    - 返回摘要文本;实现方在组合根(离线测试注入桩,真实实现接 LLM)。
+    """
+
+    async def summarize(
+        self, messages: list[Message], prev_summary: str | None
+    ) -> str: ...
+
+
 class ModelPort(Protocol):
     """模型端口:编排循环消费的最小调用面(实现方在组合根)。"""
 
@@ -69,7 +113,8 @@ class AgentPorts:
     """编排层的外部端口集合(自研版)。
 
     - ``model``:模型端口(组合根适配 ai 层 ChatClient);
-    - ``tools``:工具列表(自研 AtomicTool 实例,直接 ``invoke``)。
+    - ``tools``:工具列表(自研 AtomicTool 实例,直接 ``invoke``);
+    - ``policy``:执行前安全策略(可空 = 无确认环,保持既有调用方兼容)。
 
     ``store`` 不在端口内:core 循环从不落盘(成功轮次才写由会话层负责),
     会话存储只经 ``AgentSession`` 注入(session-manager change 清理死字段)。
@@ -77,3 +122,4 @@ class AgentPorts:
 
     model: ModelPort
     tools: list[Any]
+    policy: ApprovalPolicy | None = None

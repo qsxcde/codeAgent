@@ -39,6 +39,11 @@ def main(argv: list[str] | None = None) -> None:
         help="恢复指定会话继续对话(会话 id 见 --list-sessions)",
     )
     parser.add_argument("--list-sessions", action="store_true", help="列出全部会话")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="跳过敏感操作确认,全部放行(显式承担风险;缺省 headless 下敏感操作一律拒绝)",
+    )
     args = parser.parse_args(argv)
 
     from codeagent.app.config import ensure_config_files
@@ -62,13 +67,17 @@ def main(argv: list[str] | None = None) -> None:
         from codeagent.session.store import JsonFileStore
 
         store = JsonFileStore(CONFIG_DIR / "sessions")
-        manager = container.create_session_manager(store=store)
+        manager = container.create_session_manager(
+            store=store, approval_mode="allow" if args.yes else "deny"
+        )
         if args.session:
             session = manager.switch(args.session)
         else:
             session = manager.continue_recent()
     else:
-        session = container.create_agent_session()
+        session = container.create_agent_session(
+            approval_mode="allow" if args.yes else "deny"
+        )
 
     if args.prompt:
         asyncio.run(_headless_once(session, args.prompt))

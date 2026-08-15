@@ -358,6 +358,21 @@ def test_model_activity_lifecycle_and_out_of_order_tool_results():
     assert model.activity_visible is False
 
 
+def test_palette_covers_all_style_tags():
+    """词表受控不变式:每个样式标签都有色值,调色板键都在词表内(design D2;T-46)。
+
+    新增样式标签必须进 theme.py 的 __all__ + PALETTE,不得在组件/渲染器里
+    硬编码色值——否则后端映射缺失、标签序列断言失效。
+    """
+    from codeagent.app.tui import theme
+
+    tags = [getattr(theme, name) for name in theme.__all__ if name != "PALETTE"]
+    for tag in tags:
+        assert tag in theme.PALETTE, f"样式标签 {tag!r} 缺少色值"
+    for key in theme.PALETTE:
+        assert key in tags, f"调色板键 {key!r} 不在词表 __all__ 中"
+
+
 def test_footer_info_seeds_status_bar():
     """FooterInfo 装配数据(model/effort/cwd)注入状态栏(design D5)。"""
     model = TuiModel()
@@ -371,3 +386,65 @@ def test_footer_info_seeds_status_bar():
     model.status.cwd = info.cwd
     plain = "".join(s.text for s in model.status.render(60)[0])
     assert "qwen3.8-max high · /workspace" in plain
+
+
+# -- 确认环状态(security-permissions)-----------------------------------------
+
+
+def test_tool_block_awaiting_and_rejected_states():
+    """待确认/已拒绝状态渲染:等待黄色提示,拒绝红色 ✗ + Rejected 摘要。"""
+    from codeagent.app.tui.theme import ERROR, WARNING
+
+    block = ToolCallBlock("bash", {"command": "git push"}, call_id="c1")
+    block.set_awaiting()
+    header = block.render(60)[0]
+    plain = "".join(s.text for s in header)
+    assert "Awaiting confirmation" in plain
+    assert any(s.fg == WARNING for s in header)
+
+    block.set_rejected("[工具执行被拒绝] 用户拒绝执行: 推送远程分支")
+    header = block.render(60)[0]
+    plain = "".join(s.text for s in header)
+    assert header[2].text == "✗" and header[2].fg == ERROR
+    assert "Rejected bash" in plain
+    # 展开可见拒绝原因
+    block.toggle_expand()
+    expanded = "".join(s.text for line in block.render(60)[1:] for s in line)
+    assert "用户拒绝执行" in expanded
+
+
+def test_model_confirmation_event_marks_block_awaiting():
+    """CONFIRMATION_REQUESTED 事件 → 对应工具块进入等待确认态。"""
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {"command": "git push"}, "id": "c1"}],
+        )
+    )
+    block = next(b for b in model.transcript.blocks if isinstance(b, ToolCallBlock))
+    assert block.awaiting is False
+    model.apply(
+        AgentEvent(
+            EventType.CONFIRMATION_REQUESTED,
+            payload={
+                "request_id": "cf-r1",
+                "tool_call_id": "c1",
+                "tool": "bash",
+                "summary": "git push",
+                "reason": "推送远程分支",
+            },
+        )
+    )
+    assert block.awaiting is True
+    # 拒绝结果回填后退出等待态并进入拒绝态
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_RESULT,
+            payload="[工具执行被拒绝] 用户拒绝执行: 推送远程分支",
+            metadata={"tool_call_id": "c1", "error": True, "rejected": True},
+        )
+    )
+    assert block.awaiting is False
+    assert block.rejected is True

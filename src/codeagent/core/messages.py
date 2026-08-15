@@ -58,12 +58,17 @@ class ToolCall:
 
 @dataclass
 class ToolResult:
-    """一次工具执行结果(含错误标记,供事件 metadata 透传)。"""
+    """一次工具执行结果(含错误标记,供事件 metadata 透传)。
+
+    - ``rejected``:经安全策略/用户确认被拒绝(security-permissions),结果
+      内容为拒绝原因;订阅方(TUI)据此渲染「已拒绝」状态。
+    """
 
     tool_call_id: str
     content: str
     error: bool = False
     name: str = ""
+    rejected: bool = False
 
 
 @dataclass

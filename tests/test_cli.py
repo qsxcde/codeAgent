@@ -97,3 +97,53 @@ def test_continue_flag_appends_to_recent(fake_provider_env, capsys):
     assert "你: 继续" in out
     loaded = store.load_messages("recent1")
     assert [m.content for m in loaded if m.role == "user"][-1] == "继续"
+
+
+# -- 执行前安全策略(security-permissions)--------------------------------------
+
+
+def _scripted_sensitive_model(command: str = "rm -r data") -> Any:
+    """脚本化模型:首轮请求一条被分类为敏感的命令,次轮给出最终回复。
+
+    命令取 ``rm -r <不存在目录>``:分类为 ask(递归删除)但在隔离 cwd 下
+    执行无副作用(目标不存在,仅报错退出),测试不会破坏真实文件。
+    """
+    from codeagent.ai.providers.fake import FakeClient
+
+    return FakeClient(
+        steps=[
+            {
+                "content": "",
+                "tool_calls": [
+                    {"name": "bash", "args": {"command": command}, "id": "c1", "type": "tool_call"}
+                ],
+            },
+            {"content": "已处理"},
+        ]
+    )
+
+
+def test_headless_denies_sensitive_command_without_hanging(fake_provider_env, capsys, tmp_path, monkeypatch):
+    """headless 缺省 deny:敏感命令不执行、不挂起,循环正常结束(fail closed)。"""
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd(即使误执行也无真实文件)
+    from unittest.mock import patch
+
+    model = _scripted_sensitive_model()
+    with patch("codeagent.ai.factory.create_llm", return_value=model):
+        main(["--prompt", "删除数据"])
+    out = capsys.readouterr().out
+    assert "你: 删除数据" in out
+    assert "已处理" in out  # 循环在拒绝后继续并正常收尾(未挂起)
+
+
+def test_headless_yes_mode_executes_sensitive_command(fake_provider_env, capsys, tmp_path, monkeypatch):
+    """--yes:敏感命令放行执行(显式承担风险),循环正常收尾。"""
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd:rm -r data 目标不存在,无副作用
+    from unittest.mock import patch
+
+    model = _scripted_sensitive_model()
+    with patch("codeagent.ai.factory.create_llm", return_value=model):
+        main(["--yes", "--prompt", "删除数据"])
+    out = capsys.readouterr().out
+    assert "你: 删除数据" in out
+    assert "已处理" in out

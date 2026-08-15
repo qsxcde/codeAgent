@@ -11,6 +11,7 @@ import pytest
 from codeagent.app.container import ChatModelPort
 from codeagent.core import AgentPorts, EventType, RecursionLimitError, run_turn
 from codeagent.core.messages import Message
+from codeagent.core.ports import PolicyDecision
 from codeagent.tools.atomic import (
     BashTool,
     EditTool,
@@ -23,16 +24,18 @@ from codeagent.tools.atomic import (
 from codeagent.ai.providers.fake import FakeClient
 
 
-def _ports(model: FakeClient) -> AgentPorts:
+def _ports(model: FakeClient, policy=None) -> AgentPorts:
     return AgentPorts(
         model=ChatModelPort(model),
         tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
+        policy=policy,
     )
 
 
 async def _run(model: FakeClient, prompt: str, **kwargs):
     """跑一轮,返回 (事件类型序列, 事件列表, 消息历史)。"""
-    ports = _ports(model)
+    policy = kwargs.pop("policy", None)
+    ports = _ports(model, policy=policy)
     events: list = []
 
     def emit(ev) -> None:
@@ -192,3 +195,202 @@ def test_model_failure_propagates():
 
     with pytest.raises(RuntimeError, match="模型炸了"):
         asyncio.run(_run(BoomModel(response="x"), "触发"))
+
+
+# -- 执行前安全策略门(security-permissions)----------------------------------
+
+
+class _StubPolicy:
+    """脚本化策略:按工具名返回预设动作;记录 decide 调用。"""
+
+    def __init__(self, action_by_tool: dict[str, str]) -> None:
+        self._action_by_tool = action_by_tool
+        self.calls: list[tuple[str, dict]] = []
+
+    def decide(self, tool_name: str, args: dict):
+        self.calls.append((tool_name, args))
+        return PolicyDecision(
+            self._action_by_tool.get(tool_name, "allow"),
+            reason=f"stub:{tool_name}",
+        )
+
+
+def _bash_model(content: str = "完成") -> FakeClient:
+    """单轮 bash echo ok 后回复的 FakeClient。"""
+    return FakeClient(
+        steps=[
+            {
+                "content": "",
+                "tool_calls": [
+                    {"name": "bash", "args": {"command": "echo ok"}, "id": "c1", "type": "tool_call"}
+                ],
+            },
+            {"content": content},
+        ]
+    )
+
+
+async def _run_with_confirmation(model, *, respond: bool | None = None, policy=None, queue=None):
+    """带确认队列跑一轮;respond 非 None 时等确认请求到达后按值响应。
+
+    返回 (事件列表, 消息历史)。
+    """
+    ports = _ports(model, policy=policy)
+    events: list = []
+
+    def emit(ev) -> None:
+        events.append(ev)
+
+    confirm_queue = queue if queue is not None else asyncio.Queue()
+    task = asyncio.create_task(
+        run_turn(ports, emit, "跑", history=[], confirm_queue=confirm_queue)
+    )
+    if respond is not None:
+        for _ in range(200):
+            if any(e.type == EventType.CONFIRMATION_REQUESTED for e in events):
+                break
+            await asyncio.sleep(0.005)
+        request = next(e for e in events if e.type == EventType.CONFIRMATION_REQUESTED)
+        confirm_queue.put_nowait((request.payload["request_id"], respond))
+    history = await task
+    return events, history
+
+
+def test_policy_allow_executes_without_confirmation():
+    """allow 直通:工具正常执行,无确认事件。"""
+    model = _bash_model()
+    types, _, history = asyncio.run(_run(model, "跑", policy=_StubPolicy({"bash": "allow"})))
+    assert EventType.CONFIRMATION_REQUESTED not in types
+    assert history[2].role == "tool" and "ok" in history[2].content
+
+
+def test_policy_ask_approved_executes():
+    """ask 批准:确认请求事件携带摘要,批准后工具执行。"""
+    model = _bash_model()
+    ports = _ports(model, policy=_StubPolicy({"bash": "ask"}))
+    events = []
+    confirm_queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
+
+    async def scenario():
+        task = asyncio.create_task(
+            run_turn(ports, events.append, "跑", history=[], confirm_queue=confirm_queue)
+        )
+        for _ in range(200):
+            if any(e.type == EventType.CONFIRMATION_REQUESTED for e in events):
+                break
+            await asyncio.sleep(0.005)
+        request = next(e for e in events if e.type == EventType.CONFIRMATION_REQUESTED)
+        assert request.payload["tool"] == "bash"
+        assert request.payload["reason"] == "stub:bash"
+        assert "echo ok" in request.payload["summary"]
+        confirm_queue.put_nowait((request.payload["request_id"], True))
+        return await task
+
+    history = asyncio.run(scenario())
+    result = next(e for e in events if e.type == EventType.TOOL_RESULT)
+    assert result.metadata["error"] is False
+    assert history[2].role == "tool" and "ok" in history[2].content
+
+
+def test_policy_ask_rejected_fills_error_result():
+    """ask 拒绝:工具不执行,结果回填带「用户拒绝执行」的错误(模型可见)。"""
+    model = _bash_model()
+    events, history = asyncio.run(
+        _run_with_confirmation(model, respond=False, policy=_StubPolicy({"bash": "ask"}))
+    )
+    assert EventType.CONFIRMATION_REQUESTED in [e.type for e in events]
+    result = next(e for e in events if e.type == EventType.TOOL_RESULT)
+    assert result.metadata["error"] is True
+    assert "用户拒绝执行" in result.payload
+    assert "echo ok" not in history[2].content
+
+
+def test_policy_deny_rejects_without_confirmation():
+    """deny:直接拒绝(不发确认请求),原因回填。"""
+    model = _bash_model()
+    types, events, history = asyncio.run(_run(model, "跑", policy=_StubPolicy({"bash": "deny"})))
+    assert EventType.CONFIRMATION_REQUESTED not in types
+    result = next(e for e in events if e.type == EventType.TOOL_RESULT)
+    assert result.metadata["error"] is True
+    assert "[工具执行被拒绝]" in result.payload and "stub:bash" in result.payload
+
+
+def test_policy_ask_without_queue_fails_closed():
+    """确认队列为 None(headless)→ ask 视为拒绝,不挂起(fail closed)。"""
+    model = _bash_model()
+    types, events, _ = asyncio.run(_run(model, "跑", policy=_StubPolicy({"bash": "ask"})))
+    assert EventType.CONFIRMATION_REQUESTED in types
+    result = next(e for e in events if e.type == EventType.TOOL_RESULT)
+    assert result.metadata["error"] is True
+    assert "用户拒绝执行" in result.payload
+
+
+def test_abort_while_awaiting_confirmation_cancels():
+    """确认等待期间取消:await 随 CancelledError 退出,不悬挂。"""
+    model = _bash_model()
+    ports = _ports(model, policy=_StubPolicy({"bash": "ask"}))
+    confirm_queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
+    events: list = []
+
+    async def scenario():
+        task = asyncio.create_task(
+            run_turn(ports, events.append, "跑", history=[], confirm_queue=confirm_queue)
+        )
+        for _ in range(200):
+            if any(e.type == EventType.CONFIRMATION_REQUESTED for e in events):
+                break
+            await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+
+def test_parallel_ask_confirmations_sequential():
+    """并行双 ask:一次只等待一个,前一个响应后才出现下一个确认请求。"""
+    model = FakeClient(
+        steps=[
+            {
+                "content": "",
+                "tool_calls": [
+                    {"name": "bash", "args": {"command": "echo one"}, "id": "a", "type": "tool_call"},
+                    {"name": "bash", "args": {"command": "echo two"}, "id": "b", "type": "tool_call"},
+                ],
+            },
+            {"content": "双确认"},
+        ]
+    )
+    ports = _ports(model, policy=_StubPolicy({"bash": "ask"}))
+    confirm_queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
+    events: list = []
+
+    async def scenario():
+        task = asyncio.create_task(
+            run_turn(ports, events.append, "跑", history=[], confirm_queue=confirm_queue)
+        )
+        # 第一个确认请求出现时,第二个还不得出现(逐个排队)。
+        for _ in range(200):
+            if any(e.type == EventType.CONFIRMATION_REQUESTED for e in events):
+                break
+            await asyncio.sleep(0.005)
+        requested = [e for e in events if e.type == EventType.CONFIRMATION_REQUESTED]
+        assert len(requested) == 1
+        confirm_queue.put_nowait((requested[0].payload["request_id"], True))
+        # 第一个已响应,第二个确认请求到达。
+        for _ in range(200):
+            if len([e for e in events if e.type == EventType.CONFIRMATION_REQUESTED]) >= 2:
+                break
+            await asyncio.sleep(0.005)
+        requested = [e for e in events if e.type == EventType.CONFIRMATION_REQUESTED]
+        assert len(requested) == 2
+        assert requested[0].payload["tool_call_id"] == "a"
+        assert requested[1].payload["tool_call_id"] == "b"
+        confirm_queue.put_nowait((requested[1].payload["request_id"], False))
+        history = await task
+        results = [e for e in events if e.type == EventType.TOOL_RESULT]
+        assert results[0].metadata["error"] is False  # a 批准执行
+        assert results[1].metadata["error"] is True  # b 拒绝
+        assert "echo two" not in [m.content for m in history if m.role == "tool"]
+
+    asyncio.run(scenario())

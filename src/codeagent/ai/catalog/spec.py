@@ -20,6 +20,7 @@ class ModelSpec:
     name: str = ""
     reasoning: bool = False
     max_tokens: int | None = None
+    context_window: int | None = None  # 上下文窗口(token;压缩阈值触发用,缺省 None 兜底)
     aliases: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:

@@ -27,6 +27,11 @@ __all__ = [
     "DIFF_ADD",
     "DIFF_REMOVE",
     "DIFF_CONTEXT",
+    "BOLD",
+    "CODE_BG",
+    "HEADING",
+    "LIST_BULLET",
+    "BLOCK_MARK",
 ]
 
 # -- 样式标签(受控词表) ---------------------------------------------------
@@ -47,6 +52,11 @@ ACTIVITY = "activity"          # 等待动画
 DIFF_ADD = "diff_add"          # 差异新增行背景
 DIFF_REMOVE = "diff_remove"    # 差异删除行背景
 DIFF_CONTEXT = "diff_context"  # 差异上下文
+BOLD = "bold"                  # Markdown 加粗(引擎映射为字重,色值兜底)
+CODE_BG = "code_bg"            # Markdown 行内代码/代码块背景
+HEADING = "heading"            # Markdown 标题
+LIST_BULLET = "list_bullet"    # Markdown 列表标记
+BLOCK_MARK = "block_mark"      # Markdown 代码块围栏(``` / ~~~)
 
 #: 标签 → 色值(hex;目前均为前景色,背景色由后端按需使用词表)。
 PALETTE: dict[str, str] = {
@@ -66,4 +76,9 @@ PALETTE: dict[str, str] = {
     DIFF_ADD: "#183d27",
     DIFF_REMOVE: "#472225",
     DIFF_CONTEXT: "#303030",
+    BOLD: "#ffffff",
+    CODE_BG: "#2d2d2d",
+    HEADING: "#e6c07b",
+    LIST_BULLET: "#7fb3d5",
+    BLOCK_MARK: "#666666",
 }

@@ -221,10 +221,18 @@ class UserBlock(Component):
 
 
 class AssistantBlock(Component):
-    """助手回复块:保留推理累积，但只渲染用户可见正文。"""
+    """助手回复块:保留推理累积,但只渲染用户可见正文(Markdown 受控渲染)。"""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        md_renderer: Callable[[str, int], list[RichLine]] | None = None,
+    ) -> None:
+        """``md_renderer`` 为 Markdown 渲染器注入点(design T-46,仿 clock 模式):
+        None = 延迟导入默认实现——本模块对 md_renderer 延迟导入以避开
+        components ↔ md_renderer 的循环依赖(后者顶层 import 本模块)。"""
         self._clock = clock
+        self._md_renderer = md_renderer
         self._thinking_parts: list[str] = []
         self._body_parts: list[str] = []
         self.thinking_started: float | None = None
@@ -252,10 +260,14 @@ class AssistantBlock(Component):
         if not self.body:
             return []
         inner = max(1, width - 2)
+        renderer = self._md_renderer
+        if renderer is None:
+            from codeagent.app.tui.md_renderer import md_renderer as renderer
+        # 流式:每帧对累积正文全量重解析(design D1 方案 A,body 通常 ≤ 几 KB)。
         lines: list[RichLine] = []
-        for index, text in enumerate(_wrap(self.body, inner)):
+        for index, line in enumerate(renderer(self.body, inner)):
             prefix = "• " if index == 0 else "  "
-            lines.append([_seg(prefix, fg=ASSISTANT_PROMPT), _seg(text, fg=TEXT)])
+            lines.append([_seg(prefix, fg=ASSISTANT_PROMPT), *line])
         return lines
 
 
@@ -306,7 +318,7 @@ def _summarize_result(name: str, result: str) -> str | None:
 
 
 class ToolCallBlock(Component):
-    """Codex 风格工具摘要与可展开的执行结果/意图差异。"""
+    """Codex 风格工具摘要与可展开的执行结果/意图差异;含确认环状态(security-permissions)。"""
 
     def __init__(self, name: str, args: dict[str, Any], call_id: str | None = None) -> None:
         self.name = name
@@ -315,10 +327,25 @@ class ToolCallBlock(Component):
         self.status = "pending"  # pending | done | error
         self.result = ""
         self.expanded = False
+        #: 等待用户确认(确认请求已发出,尚未响应);拒绝态见 set_rejected。
+        self.awaiting = False
+        self.rejected = False
 
     def set_result(self, result: str, error: bool = False) -> None:
         self.result = result
         self.status = "error" if error else "done"
+        self.awaiting = False  # 结果已回填:退出等待确认态
+
+    def set_awaiting(self) -> None:
+        """进入等待确认态(循环已 emit 确认请求;security-permissions)。"""
+        self.awaiting = True
+
+    def set_rejected(self, result: str) -> None:
+        """进入拒绝态:结果回填拒绝原因,展示为错误(security-permissions)。"""
+        self.result = result
+        self.rejected = True
+        self.status = "error"
+        self.awaiting = False
 
     def toggle_expand(self) -> None:
         self.expanded = not self.expanded
@@ -391,12 +418,21 @@ class ToolCallBlock(Component):
             "done": ("✓", SUCCESS),
             "error": ("✗", ERROR),
         }[self.status]
+        if self.rejected:
+            summary = f"Rejected {self.name}"
+            summary_tag = ERROR
+        elif self.awaiting:
+            summary = f"Awaiting confirmation: {self._summary()}"
+            summary_tag = WARNING
+        else:
+            summary = self._summary()
+            summary_tag = ERROR if self.status == "error" else ACCENT
         header: RichLine = [
             _seg("▼" if self.expanded else "▶", fg=DIM),
             _seg(" "),
             _seg(icon, fg=icon_tag),
             _seg(" "),
-            _seg(self._summary(), fg=ERROR if self.status == "error" else ACCENT),
+            _seg(summary, fg=summary_tag),
         ]
         lines = [header]
         if self.expanded:
@@ -639,9 +675,22 @@ class TuiModel:
                 if block.call_id:
                     self._pending_tools_by_id.pop(block.call_id, None)
             if block is not None:
-                block.set_result(str(event.payload or ""), error=bool(metadata.get("error")))
+                if metadata.get("rejected"):
+                    block.set_rejected(str(event.payload or ""))
+                else:
+                    block.set_result(str(event.payload or ""), error=bool(metadata.get("error")))
             if not self._pending_tools:
                 self.activity_visible = True
+        elif ev_type == EventType.CONFIRMATION_REQUESTED:
+            # 确认请求:标记对应工具块为等待确认(security-permissions)。
+            payload = event.payload or {}
+            call_id = str(payload.get("tool_call_id") or "")
+            block = self._pending_tools_by_id.get(call_id)
+            if block is None and self._pending_tools:
+                block = self._pending_tools[0]
+            if block is not None:
+                block.set_awaiting()
+            self.activity_visible = False
         elif ev_type == EventType.TURN_END:
             self.running = False
             self._assistant = None

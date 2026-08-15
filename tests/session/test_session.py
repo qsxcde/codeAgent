@@ -298,3 +298,289 @@ def test_event_bus_clear_resets_errors():
     assert len(bus.emit_errors) == 1
     bus.clear()
     assert bus.emit_errors == []
+
+
+# -- 确认响应(security-permissions)------------------------------------------
+
+
+class _StubPolicy:
+    """脚本化策略:按工具名返回预设动作(会话层测试用,与 core 测试同形)。"""
+
+    def __init__(self, action_by_tool: dict[str, str]) -> None:
+        self._action_by_tool = action_by_tool
+
+    def decide(self, tool_name: str, args: dict):
+        from codeagent.core.ports import PolicyDecision
+
+        return PolicyDecision(
+            self._action_by_tool.get(tool_name, "allow"), reason=f"stub:{tool_name}"
+        )
+
+
+def _session_with_policy(
+    model: FakeClient, policy=None, store=None, session_id: str | None = None
+) -> AgentSession:
+    ports = AgentPorts(
+        model=ChatModelPort(model),
+        tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
+        policy=policy,
+    )
+    return AgentSession(ports, EventBus(), store=store, session_id=session_id)
+
+
+def _ask_model() -> FakeClient:
+    """单轮 bash echo ok 后回复的 FakeClient(ask 路径用)。"""
+    return FakeClient(
+        steps=[
+            {
+                "content": "",
+                "tool_calls": [
+                    {"name": "bash", "args": {"command": "echo ok"}, "id": "c1", "type": "tool_call"}
+                ],
+            },
+            {"content": "完成"},
+        ]
+    )
+
+
+async def _wait_for_confirmation(seen: list, timeout: int = 200) -> dict:
+    """轮询等待 confirmation_requested 事件,返回其 payload(须在运行中循环内 await)。"""
+    for _ in range(timeout):
+        if any(e.type == EventType.CONFIRMATION_REQUESTED for e in seen):
+            return next(e for e in seen if e.type == EventType.CONFIRMATION_REQUESTED).payload
+        await asyncio.sleep(0.005)
+    raise AssertionError("未收到确认请求事件")
+
+
+def test_respond_approval_approves_and_executes():
+    """批准:确认请求事件先于工具结果;响应后工具执行、结果非错误。"""
+    sess = _session_with_policy(_ask_model(), policy=_StubPolicy({"bash": "ask"}))
+    seen: list = []
+    sess.subscribe(seen.append)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(sess.run("跑"))
+        payload = await _wait_for_confirmation(seen)
+        assert payload["tool"] == "bash" and payload["reason"] == "stub:bash"
+        assert not any(e.type == EventType.TOOL_RESULT for e in seen)  # 未响应前不执行
+        sess.respond_approval(payload["request_id"], True)
+        await task
+
+    asyncio.run(scenario())
+    results = [e for e in seen if e.type == EventType.TOOL_RESULT]
+    assert results and results[-1].metadata["error"] is False
+    assert "ok" in results[-1].payload
+
+
+def test_respond_approval_rejects_and_fills_error():
+    """拒绝:工具不执行,结果回填「用户拒绝执行」错误(模型可见)。"""
+    sess = _session_with_policy(_ask_model(), policy=_StubPolicy({"bash": "ask"}))
+    seen: list = []
+    sess.subscribe(seen.append)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(sess.run("跑"))
+        payload = await _wait_for_confirmation(seen)
+        sess.respond_approval(payload["request_id"], False)
+        await task
+
+    asyncio.run(scenario())
+    results = [e for e in seen if e.type == EventType.TOOL_RESULT]
+    assert results and results[-1].metadata["error"] is True
+    assert "用户拒绝执行" in results[-1].payload
+    assert "ok" not in results[-1].payload
+
+
+def test_abort_while_waiting_confirmation_cancels_without_hanging():
+    """等待确认期间 abort:无悬挂,取消语义收尾,工具未执行。"""
+    sess = _session_with_policy(_ask_model(), policy=_StubPolicy({"bash": "ask"}))
+    seen: list = []
+    sess.subscribe(seen.append)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(sess.run("跑"))
+        await _wait_for_confirmation(seen)
+        sess.abort()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert EventType.RUN_CANCELLED in [e.type for e in seen]
+    assert not any(e.type == EventType.TOOL_RESULT for e in seen)
+
+
+# -- 会话分叉来源标记(session-fork)-------------------------------------------
+
+
+def test_forked_session_started_carries_previous_session_id():
+    """分叉会话首轮 SESSION_STARTED 事件 metadata 携带父会话 id(对齐 Pi reason=fork)。"""
+    ports = AgentPorts(
+        model=ChatModelPort(FakeClient(response="OK")),
+        tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
+    )
+    sess = AgentSession(ports, EventBus(), previous_session_id="parent-1")
+    seen: list = []
+    sess.subscribe(seen.append)
+    asyncio.run(sess.run("你好"))
+    started = next(e for e in seen if e.type == EventType.SESSION_STARTED)
+    assert started.metadata.get("previous_session_id") == "parent-1"
+    assert started.payload == "你好"  # payload 语义不变
+
+
+def test_normal_session_started_has_no_previous_session_id():
+    """普通会话首轮 SESSION_STARTED 不携带父会话字段(既有行为不变)。"""
+    sess = _session(FakeClient(response="OK"))
+    seen: list = []
+    sess.subscribe(seen.append)
+    asyncio.run(sess.run("你好"))
+    started = next(e for e in seen if e.type == EventType.SESSION_STARTED)
+    assert "previous_session_id" not in started.metadata
+
+
+# -- 上下文压缩(session-compaction)-------------------------------------------
+
+
+def _long(text: str) -> str:
+    """长文本输入(每条消息 ≈ 25 token,配合预算 50 触发压缩)。"""
+    return text + "x" * 100
+
+
+class _StubSummarizer:
+    """桩摘要:记录调用(窗口 / 既有摘要),返回可断言的拼接文本。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list, str | None]] = []
+
+    async def summarize(self, messages, prev_summary):
+        self.calls.append((list(messages), prev_summary))
+        window = "|".join(m.content[:6] for m in messages if m.content)
+        return f"SUM[{window}]" + (f"<{prev_summary}>" if prev_summary else "")
+
+
+def _compact_session(
+    model: FakeClient,
+    store=None,
+    summarizer=None,
+    context_window: int = 128_000,
+    compact_budget: int = 50,
+) -> AgentSession:
+    """构造带 Summarizer 的会话(port 直装,不跨组合根;预算注入小值便于离线测)。"""
+    ports = AgentPorts(
+        model=ChatModelPort(model),
+        tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
+    )
+    return AgentSession(
+        ports,
+        EventBus(),
+        store=store,
+        summarizer=summarizer,
+        context_window=context_window,
+        compact_budget=compact_budget,
+    )
+
+
+def test_compact_summarizes_and_truncates_history():
+    """手动压缩:摘要窗口 → 截断历史 → entry 落盘(store 与内存一致)。"""
+    store = MemoryStore()
+    model = FakeClient(responses=["答1", "答2", "答3"])
+    sess = _compact_session(model, store=store, summarizer=_StubSummarizer())
+    for text in (_long("问1"), _long("问2"), _long("问3")):
+        asyncio.run(sess.run(text))
+    assert len(sess.history) >= 6  # 3 user + 3 assistant
+    before_full = len(store.load_messages(sess.session_id))
+
+    async def scenario() -> None:
+        return await sess.compact()
+
+    assert asyncio.run(scenario()) is True
+    assert sess._summary is not None and sess._summary.startswith("SUM[")
+    assert sess.history  # 保留最近轮次(全保留时不压缩,这里 history 长度减少)
+    assert len(store.load_messages(sess.session_id)) == before_full  # 物理保留
+    state = store.load_context(sess.session_id)
+    assert state.summary == sess._summary
+    assert state.entry_id == sess._summary_entry_id
+    assert [m.id for m in state.messages] == [m.id for m in sess.history]
+
+
+def test_compact_noop_when_all_kept():
+    """短历史全部保留:压缩返回 False,无 entry 落盘。"""
+    store = MemoryStore()
+    sess = _compact_session(FakeClient(response="答"), store=store, summarizer=_StubSummarizer())
+    asyncio.run(sess.run("问"))
+    assert asyncio.run(sess.compact()) is False
+    assert sess._summary is None
+
+
+def test_compact_without_summarizer_raises():
+    """未注入 Summarizer → 明确报错(压缩不可用)。"""
+    sess = _compact_session(FakeClient(response="答"))
+    with pytest.raises(ValueError, match="压缩不可用"):
+        asyncio.run(sess.compact())
+
+
+def test_after_compact_run_injects_summary_and_links_parent():
+    """压缩后继续对话:摘要注入模型输入;新 user 消息父级接回压缩记录;
+    虚拟摘要消息不落盘。"""
+    store = MemoryStore()
+    model = FakeClient(responses=["答1", "答2", "答3", "答4"])
+    sess = _compact_session(model, store=store, summarizer=_StubSummarizer())
+    for text in (_long("问1"), _long("问2"), _long("问3")):
+        asyncio.run(sess.run(text))
+    assert asyncio.run(sess.compact()) is True
+    entry_id = sess._summary_entry_id
+    # 保留消息的内部链不被改写(物理历史完整)
+    kept_user = next(m for m in sess.history if m.role == "user")
+    assert kept_user.parent_id != entry_id
+    model.call_history.clear()
+    asyncio.run(sess.run(_long("问4")))
+    # 压缩后首条新 user 消息父级接回压缩记录
+    new_user = next(m for m in sess.history if m.role == "user" and m is not kept_user)
+    assert new_user.parent_id == entry_id
+    # 摘要注入模型输入(首条消息)
+    assert model.call_history
+    first = model.call_history[-1]["messages"][0]
+    assert first["role"] == "user" and "以下为会话历史摘要" in first["content"]
+    # 虚拟摘要消息不落盘;新消息追加
+    stored = store.load_messages(sess.session_id)
+    assert not any(m.id.startswith("summary-") for m in stored)
+    assert any(m.content.startswith("问4") for m in stored)
+
+
+def test_threshold_auto_compact_triggers():
+    """阈值触发:usage.input_tokens 超窗口减余量 → turn_end 后自动压缩。"""
+    store = MemoryStore()
+    # input_tokens 5000 > 20000 - 16384 = 3616 → 触发
+    model = FakeClient(
+        usage={"input_tokens": 5000, "output_tokens": 10},
+        responses=["答1", "答2", "答3", "答4", "答5", "答6"],
+    )
+    sess = _compact_session(model, store=store, summarizer=_StubSummarizer(), context_window=20000)
+    for text in (_long("问1"), _long("问2"), _long("问3"), _long("问4"), _long("问5"), _long("问6")):
+        asyncio.run(sess.run(text))
+    assert sess._summary is not None  # 自动压缩已发生
+    assert store.load_context(sess.session_id).summary == sess._summary
+
+
+def test_second_compact_incremental_merge():
+    """二次压缩:桩摘要收到既有摘要(增量合并);摘要链 compaction1 → compaction2。"""
+    store = MemoryStore()
+    model = FakeClient(responses=[f"答{i}" for i in range(8)])
+    summarizer = _StubSummarizer()
+    sess = _compact_session(model, store=store, summarizer=summarizer)
+    for text in (_long("问1"), _long("问2"), _long("问3"), _long("问4")):
+        asyncio.run(sess.run(text))
+    assert asyncio.run(sess.compact()) is True
+    first_entry = sess._summary_entry_id
+    first_summary = sess._summary
+    for text in (_long("问5"), _long("问6"), _long("问7"), _long("问8")):
+        asyncio.run(sess.run(text))
+    assert asyncio.run(sess.compact()) is True
+    # 二次压缩:既有摘要传入(增量合并,桩拼接 <prev>)
+    assert summarizer.calls[-1][1] == first_summary
+    assert first_summary in sess._summary
+    # 摘要链:新 entry 的 parentId = 旧 entry id
+    _, second = store._compactions[-1]
+    assert second.parent_id == first_entry
+    state = store.load_context(sess.session_id)
+    assert state.entry_id != first_entry  # 新 entry
+    assert state.summary == sess._summary

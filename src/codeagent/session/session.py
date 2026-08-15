@@ -24,6 +24,21 @@ from codeagent.core.loop import DEFAULT_RECURSION_LIMIT, RecursionLimitError, ru
 from codeagent.core.messages import Message
 from codeagent.core.ports import AgentPorts
 from codeagent.session.bus import EventBus, Subscriber
+from codeagent.session.compaction import (
+    DEFAULT_BUDGET_TOKENS,
+    extract_file_ops,
+    find_cut_point,
+)
+from codeagent.session.store import CompactionEntry
+
+#: 摘要注入消息的前缀(模型识别"历史摘要";Pi COMPACTION_SUMMARY_PREFIX 对应物)。
+SUMMARY_PREFIX = "以下为会话历史摘要(此前内容已被压缩,无需再次执行其中操作):\n"
+#: 虚拟摘要消息 id 前缀(过滤防重复落盘)。
+SUMMARY_ID_PREFIX = "summary-"
+#: 模型上下文窗口缺省兜底(token;ModelSpec 无值时使用)。
+DEFAULT_CONTEXT_WINDOW = 128_000
+#: 阈值触发的保留余量(对齐 Pi reserveTokens)。
+COMPACTION_RESERVE_TOKENS = 16_384
 
 
 class AgentSession:
@@ -38,6 +53,10 @@ class AgentSession:
         session_id: str | None = None,
         recursion_limit: int = DEFAULT_RECURSION_LIMIT,
         tool_timeout: float | None = None,
+        previous_session_id: str | None = None,
+        summarizer: Any | None = None,
+        context_window: int = DEFAULT_CONTEXT_WINDOW,
+        compact_budget: int = DEFAULT_BUDGET_TOKENS,
     ) -> None:
         self._ports = ports
         self._bus = bus
@@ -45,17 +64,40 @@ class AgentSession:
         self._recursion_limit = recursion_limit
         self._tool_timeout = tool_timeout
         self._session_id = session_id or str(uuid.uuid4())
-        #: 运行中注入队列(steer):下一轮循环前消费为 user 消息。
+        #: 分叉来源(session-fork):分叉产生的会话记录父会话 id,首轮
+        #: SESSION_STARTED 事件 metadata 携带(对齐 Pi session_start reason=fork)。
+        self._previous_session_id = previous_session_id
+        #: 上下文压缩(session-compaction):Summarizer 端口与上下文窗口。
+        self._summarizer = summarizer
+        self._context_window = context_window
+        #: 切点预算(软目标;测试可注入小值)。
+        self._compact_budget = compact_budget
+        #: 最近一次 usage.input_tokens(本轮请求总输入 = 当前上下文占用)。
+        self._last_input_tokens: int | None = None
+        #: 注入队列(steer):下一轮循环前消费为 user 消息。
         self._inject_queue: asyncio.Queue[str] = asyncio.Queue()
+        #: 确认响应队列(security-permissions):(request_id, approved) 对;
+        #: 循环在 ask 后按 id 等待,abort 时随 CancelledError 自然取消。
+        self._confirm_queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
         #: 当前 run 的 asyncio.Task 引用;abort() 据此取消。空闲时为 None。
         self._current_task: asyncio.Task[None] | None = None
         #: 会话消息历史(权威在 store;无 store 时仅内存)。
         if store is not None:
             if store.get(self._session_id) is None:
                 store.create(self._session_id)
-            self._history = store.load_messages(self._session_id)
+            # 压缩感知加载:上下文 = 最新摘要 + 保留消息(物理历史保留)。
+            state = store.load_context(self._session_id)
+            self._history = state.messages
+            self._summary: str | None = state.summary
+            self._summary_entry_id: str | None = state.entry_id
+            self._prev_details: dict[str, Any] = state.details
         else:
             self._history = []
+            self._summary = None
+            self._summary_entry_id = None
+            self._prev_details = {}
+        # 内部订阅:捕获 usage 事件(token 统计,阈值触发用)。
+        self._bus.subscribe(self._on_internal_event)
 
     # -- 订阅 / 会话信息 ----------------------------------------------------
 
@@ -88,6 +130,14 @@ class AgentSession:
         """运行中注入消息:下一轮循环前消费为 user 消息(不做旁路请求)。"""
         self._inject_queue.put_nowait(text)
 
+    def respond_approval(self, request_id: str, approved: bool) -> None:
+        """响应工具确认请求(security-permissions):按请求 id 批准或拒绝。
+
+        请求 id 来自 ``confirmation_requested`` 事件的 payload;运行时无
+        匹配请求时该响应会被循环丢弃(按 id 匹配,不误伤其它请求)。
+        """
+        self._confirm_queue.put_nowait((request_id, approved))
+
     def followup(self, text: str, recursion_limit: int | None = None) -> None:
         """结束后续跑一轮:在既有会话历史之上继续一轮对话。
 
@@ -105,6 +155,69 @@ class AgentSession:
         """
         self._ports = ports
 
+    # -- 上下文压缩(session-compaction)--------------------------------------
+
+    async def compact(self) -> bool:
+        """压缩当前会话上下文(手动 /compact 与阈值自动触发共用)。
+
+        流程:切点(完整轮次)→ Summarizer 摘要 → append_compaction
+        (entry id 记入 ``_summary_entry_id``,新消息父级接回)→ 内存历史
+        截断为保留消息。全部保留(切点 0)时不压缩,返回 False。
+        """
+        if self._summarizer is None:
+            raise ValueError("压缩不可用:未注入 Summarizer")
+        cut = find_cut_point(self._history, self._compact_budget)
+        if cut <= 0:
+            return False
+        window = self._history[:cut]
+        kept = self._history[cut:]
+        summary = await self._summarizer.summarize(window, self._summary)
+        # 文件操作 details:新窗口提取 + 既有累积(跨压缩持续,对齐 Pi)。
+        fresh = extract_file_ops(window)
+        details = {
+            "readFiles": list(
+                dict.fromkeys(self._prev_details.get("readFiles", []) + fresh["readFiles"])
+            ),
+            "modifiedFiles": list(
+                dict.fromkeys(
+                    self._prev_details.get("modifiedFiles", []) + fresh["modifiedFiles"]
+                )
+            ),
+        }
+        # parentId = 当前叶子(上次压缩记录或历史最后一条消息),照搬 Pi
+        # 「append as child of leaf, then advance leaf」。
+        parent_id = self._summary_entry_id or (
+            self._history[-1].id if self._history else None
+        )
+        entry = CompactionEntry(
+            summary=summary,
+            details=details,
+            parent_id=parent_id,
+            first_kept_entry_id=kept[0].id if kept else "",
+        )
+        if self._store is not None:
+            entry_id = self._store.append_compaction(self._session_id, entry)
+        else:
+            entry_id = entry.id
+        self._summary = summary
+        self._summary_entry_id = entry_id
+        self._prev_details = details
+        self._history = kept
+        return True
+
+    def _should_auto_compact(self) -> bool:
+        """阈值判断(对齐 Pi shouldCompact):上下文占用超过窗口减保留余量。"""
+        if self._summarizer is None or not self._last_input_tokens:
+            return False
+        return self._last_input_tokens > self._context_window - COMPACTION_RESERVE_TOKENS
+
+    def _on_internal_event(self, event: AgentEvent) -> None:
+        """内部订阅:捕获 usage 事件更新上下文占用统计(阈值触发用)。"""
+        if event.type == EventType.USAGE:
+            tokens = (event.payload or {}).get("input_tokens")
+            if tokens:
+                self._last_input_tokens = int(tokens)
+
     # -- 运行 --------------------------------------------------------------
 
     async def run(self, text: str, recursion_limit: int | None = None) -> None:
@@ -113,21 +226,41 @@ class AgentSession:
         持久化策略:先跑完整轮,成功才把本轮新增消息写入 store(JSONL
         append-only 不重写历史);失败 / 取消时内存历史回滚到本轮前,
         store 保持未写入——未完成轮次永不落盘。
+        压缩语义(session-compaction):已压缩时历史首部注入虚拟摘要消息
+        (带 ``summary-`` 标记 id,不落盘;compaction entry 是唯一权威);
+        压缩后首条新 user 消息的父级接回压缩记录。
         """
-        self._bus.emit(AgentEvent(EventType.SESSION_STARTED, payload=text))
+        metadata: dict[str, Any] = {}
+        if self._previous_session_id:
+            # 分叉会话来源标记(session-fork):首轮事件携带父会话 id。
+            metadata["previous_session_id"] = self._previous_session_id
+        self._bus.emit(AgentEvent(EventType.SESSION_STARTED, payload=text, metadata=metadata))
         self._current_task = asyncio.current_task()
+        history_for_turn = list(self._history)
+        if self._summary is not None and self._summary_entry_id:
+            # 虚拟摘要消息:模型可见,过滤防重复落盘。
+            history_for_turn.insert(
+                0,
+                Message(
+                    role="user",
+                    content=SUMMARY_PREFIX + self._summary,
+                    id=f"{SUMMARY_ID_PREFIX}{self._summary_entry_id}",
+                    parent_id=self._summary_entry_id,
+                ),
+            )
         before_ids = {m.id for m in self._history}
         try:
             new_history = await run_turn(
                 self._ports,
                 self._bus.emit,
                 text,
-                history=self._history,
+                history=history_for_turn,
                 recursion_limit=(
                     recursion_limit if recursion_limit is not None else self._recursion_limit
                 ),
                 inject_queue=self._inject_queue,
                 tool_timeout=self._tool_timeout,
+                confirm_queue=self._confirm_queue,
             )
         except asyncio.CancelledError:
             self._rollback(before_ids)
@@ -140,12 +273,22 @@ class AgentSession:
         finally:
             self._current_task = None
             self._bus.emit(AgentEvent(EventType.TURN_END))
-        # 成功路径:更新历史并持久化本轮新增消息
-        self._history = new_history
+        # 成功路径:过滤虚拟摘要消息,更新历史并持久化本轮新增消息
+        kept_history = [m for m in new_history if not m.id.startswith(SUMMARY_ID_PREFIX)]
+        if self._summary_entry_id:
+            # 压缩后首条新 user 消息的父级接回压缩记录(设计决策 4)。
+            for message in kept_history:
+                if message.id not in before_ids and message.role == "user":
+                    message.parent_id = self._summary_entry_id
+                    break
+        self._history = kept_history
         if self._store is not None:
-            for message in self._history:
+            for message in kept_history:
                 if message.id not in before_ids:
                     self._store.append_message(self._session_id, message)
+        # 阈值自动压缩(同步,turn_end 后;不阻塞本轮收尾)。
+        if self._should_auto_compact():
+            await self.compact()
 
     def run_sync(self, text: str) -> None:
         """同步运行一轮对话(阻塞等待完成)。

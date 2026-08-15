@@ -28,7 +28,8 @@ from codeagent.app.tui.commands import (
 )
 from codeagent.app.tui.components import FooterInfo, Span, TuiModel, ToolCallBlock
 from codeagent.app.tui.fuzzy import fuzzy_rank
-from codeagent.app.tui.theme import ACCENT, DIM
+from codeagent.app.tui.theme import ACCENT, DIM, ERROR, WARNING
+from codeagent.core.events import EventType
 
 #: 退出文档的兜底宽度(视口尺寸不可用时)。
 _DEFAULT_EXIT_WIDTH = 120
@@ -50,18 +51,24 @@ class TuiApp:
         footer: FooterInfo | None = None,
         rebuild_ports: Any = None,
         candidates: dict[str, list[str]] | None = None,
+        agents_sources: list[str] | None = None,
     ) -> None:
         """``rebuild_ports(provider, model, effort) -> (model, effort)`` 为组合根
         注入的配置热切换回调(/provider /model /effort 命令用;None = 不支持);
-        ``candidates`` 为选择器候选(provider/model/effort 各一份,组合根注入)。"""
+        ``candidates`` 为选择器候选(provider/model/effort 各一份,组合根注入);
+        ``agents_sources`` 为分层上下文文件来源列表(agents-md-hierarchy,
+        /status 展示加载结果;None = 未注入)。"""
         self._manager = manager
         self._backend = backend
         self._rebuild_ports = rebuild_ports
         self._candidates = candidates or {}
+        self._agents_sources = agents_sources or []
         self._suggestions: list[str] = []
         self._suggestion_index = 0
         # 确认填入后抑制下一次建议重算(set_input_text 的异步变更通知不重弹浮层,D1)。
         self._suppress_next_suggestions = False
+        #: 当前待确认请求(confirmation_requested 的 payload;None = 无确认条)。
+        self._pending_confirmation: dict[str, Any] | None = None
         self.model = TuiModel()
         if footer is not None:
             # 底部状态栏装配数据在组合根解析固化(design D5):模型名/思考强度/工作目录。
@@ -83,6 +90,8 @@ class TuiApp:
         self._backend.on_input_changed(self._on_input_changed)
         self._backend.on_suggestion_navigate(self._on_suggestion_navigate)
         self._backend.on_suggestion_confirm(self._on_suggestion_confirm)
+        self._backend.on_scroll(self._on_scroll)
+        self._backend.on_confirmation_response(self._on_confirmation_response)
         self._backend.run()
 
     def _click(self, row: int) -> None:
@@ -91,6 +100,52 @@ class TuiApp:
         if isinstance(block, ToolCallBlock):
             block.toggle_expand()
             self._schedule_render()
+
+    def _on_scroll(self, delta: int) -> None:
+        """滚动输入(滚轮/PageUp/PageDown)→ transcript 视口移动(design T-47)。
+
+        ``Transcript.scroll`` 内处理 follow 翻转(上滚解除跟随),``render`` 内
+        处理滚到底恢复跟随;引擎层已按焦点分派,这里无需区分输入来源。
+        """
+        self.model.transcript.scroll(delta)
+        self._schedule_render()
+
+    # -- 确认交互(security-permissions)-------------------------------------
+
+    def _on_confirmation_response(self, approved: bool) -> None:
+        """确认条 y/n 响应:反馈会话确认队列并收起确认条。
+
+        请求 id 匹配在会话层(``respond_approval`` 按 id 匹配,过期响应丢弃),
+        视图只负责把当前待确认请求的 id 与用户选择一并送出。
+        """
+        if self._pending_confirmation is None:
+            return
+        pending_id = str(self._pending_confirmation.get("request_id") or "")
+        self._clear_confirmation()
+        if not pending_id:
+            return
+        session = self._manager.current
+        if session is not None and hasattr(session, "respond_approval"):
+            session.respond_approval(pending_id, approved)
+
+    def _show_confirmation(self, payload: dict[str, Any]) -> None:
+        """显示确认条(工具摘要 + 原因 + 键位提示),激活后端 y/n 键。"""
+        self._pending_confirmation = payload
+        tool = str(payload.get("tool") or "?")
+        summary = str(payload.get("summary") or "")
+        reason = str(payload.get("reason") or "")
+        lines: list[list[Span]] = [
+            [Span("⚠ 需要确认 ", fg=WARNING)],
+            [Span(f"  {tool}: {summary}", fg=ACCENT)],
+            [Span(f"  原因: {reason}", fg=DIM)],
+            [Span("  [y] 允许  [n] 拒绝  [Esc] 拒绝并中止", fg=ERROR)],
+        ]
+        self._backend.set_confirmation(lines)
+
+    def _clear_confirmation(self) -> None:
+        """收起确认条并解除后端 y/n 键激活。"""
+        self._pending_confirmation = None
+        self._backend.set_confirmation(None)
 
     # -- 模糊补全 / 选择器(T-45)------------------------------------------
 
@@ -205,7 +260,8 @@ class TuiApp:
             "status": self._cmd_status,
             "tools": self._cmd_tools,
             "sessions": self._cmd_sessions,
-            "undo": self._cmd_undo,
+            "fork": self._cmd_fork,
+            "compact": self._cmd_compact,
             "provider": self._cmd_provider,
             "model": self._cmd_model,
             "effort": self._cmd_effort,
@@ -228,15 +284,18 @@ class TuiApp:
         state = "运行中" if self.model.running else "空闲"
         model = self.model.status.model or "(未配置)"
         effort = self.model.status.effort or ""
-        self.model.append_info(
-            "\n".join(
-                [
-                    f"会话: {session_id}",
-                    f"状态: {state}",
-                    f"模型: {model} {effort}".rstrip(),
-                ]
-            )
-        )
+        lines = [
+            f"会话: {session_id}",
+            f"状态: {state}",
+            f"模型: {model} {effort}".rstrip(),
+        ]
+        # 分层上下文文件来源(agents-md-hierarchy:加载结果可见可断言)。
+        if self._agents_sources:
+            lines.append("上下文文件:")
+            lines.extend(f"  {source}" for source in self._agents_sources)
+        else:
+            lines.append("上下文文件: (无)")
+        self.model.append_info("\n".join(lines))
 
     def _cmd_tools(self, cmd: Command) -> None:
         names = [getattr(tool, "name", "") for tool in self._manager.tools]
@@ -266,8 +325,52 @@ class TuiApp:
                 return
             self.model.append_info(f"已切换到会话: {session.session_id}")
 
-    def _cmd_undo(self, cmd: Command) -> None:
-        self.model.append_info("/undo 未可用:依赖会话回滚能力(阶段 4 T-42 落地后接线)")
+    def _cmd_compact(self, cmd: Command) -> None:
+        """/compact:压缩当前会话上下文(异步执行,完成后反馈)。"""
+        session = self._manager.current
+        if session is None:
+            self.model.append_info("(无当前会话)")
+            return
+        if not hasattr(session, "compact"):
+            self.model.append_info("/compact 不可用:当前会话不支持压缩")
+            return
+        self.model.append_info("正在压缩会话上下文...")
+        loop = asyncio.get_running_loop()
+        loop.create_task(self._run_compact(session))
+
+    async def _run_compact(self, session: Any) -> None:
+        try:
+            compacted = await session.compact()
+        except ValueError as exc:
+            self.model.append_info(str(exc))
+            return
+        if compacted:
+            self.model.append_info("已压缩:早期轮次已摘要化,上下文已精简")
+        else:
+            self.model.append_info("上下文较短,无需压缩")
+        self._schedule_render()
+
+    def _cmd_fork(self, cmd: Command) -> None:
+        """/fork [message-id]:从指定 user 消息分叉会话(缺省最近用户消息)。
+
+        分叉 = 从该消息之前重新开始(对齐 Pi createBranchedSession 语义);
+        原会话保留、文件保持当前状态;非法分叉点就地提示。
+        """
+        session = self._manager.current
+        if session is None:
+            self.model.append_info("(无当前会话)")
+            return
+        message_id = cmd.args[0] if cmd.args else None
+        try:
+            forked = self._manager.fork(session.session_id, message_id)
+        except ValueError as exc:
+            self.model.append_info(str(exc))
+            return
+        self.model.append_info(
+            f"已分叉会话 {forked.session_id}: "
+            f"从消息 {message_id or '(最近用户消息)'} 之前重新开始"
+            f"(原会话保留,文件保持当前状态)"
+        )
 
     def _cmd_provider(self, cmd: Command) -> None:
         if not cmd.args:
@@ -320,6 +423,13 @@ class TuiApp:
     # -- 事件 → 渲染 -------------------------------------------------------
 
     def _on_event(self, event: Any) -> None:
+        ev_type = getattr(event, "type", None)
+        if ev_type == EventType.CONFIRMATION_REQUESTED:
+            self._show_confirmation(dict(event.payload or {}))
+        elif ev_type in (EventType.TURN_END, EventType.RUN_CANCELLED, EventType.ERROR):
+            # 终态事件:确认条必然已无意义(abort 时循环随 CancelledError 退出)。
+            if self._pending_confirmation is not None:
+                self._clear_confirmation()
         self.model.apply(event)
         self._sync_activity_timer()
         self._schedule_render()

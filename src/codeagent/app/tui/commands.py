@@ -1,11 +1,10 @@
 """app/tui/commands.py:斜杠命令注册表与解析(纯函数,离线可测)。
 
-设计(design D2,T-44):
+设计(design D2,T-44;session-fork 改写):
 - ``parse(text)`` 把输入解析为 ``Literal | Command | UnknownCommand`` 三类:
   ``//`` 起始按字面量发送(去掉一个 ``/``,不触发命令解析);普通文本原样;
-- 注册表声明命令名 / 说明 / 位置参数 / 是否已接线(``available``):``/undo``
-  注册但依赖 T-42(会话回滚),未接线时提示"未可用"(NFR-U7 输入容错,
-  不静默忽略);
+- 注册表声明命令名 / 说明 / 位置参数 / 是否已接线(``available``):
+  ``/fork`` 从指定 user 消息分叉会话(T-42,session-fork 落地);
 - 本模块零副作用、不 import session/ai/tools;命令动作闭包由视图层分派
   (manager 经组合根注入),解析层只回答"这条输入是什么"。
 
@@ -83,7 +82,7 @@ def parse(text: str, registry: Mapping[str, CommandSpec]) -> Command | UnknownCo
 
 
 def default_registry() -> dict[str, CommandSpec]:
-    """v0.2 阶段 5 命令表(T-44);``/undo`` 注册槽位但未接线(T-42)。"""
+    """v0.2 阶段 5 命令表(T-44);``/fork`` 自 session-fork 落地(T-42 改写)。"""
     return {
         "help": CommandSpec("help", "显示命令帮助"),
         "clear": CommandSpec("clear", "清空聊天区"),
@@ -93,7 +92,10 @@ def default_registry() -> dict[str, CommandSpec]:
         "provider": CommandSpec("provider", "切换 provider", args=("name",)),
         "model": CommandSpec("model", "切换模型(支持 model:effort)", args=("model",)),
         "effort": CommandSpec("effort", "切换思考强度", args=("level",)),
-        "undo": CommandSpec("undo", "回滚到指定消息及对应文件变更", available=False),
+        "fork": CommandSpec(
+            "fork", "从指定消息分叉会话(缺省最近用户消息)", args=("message-id",)
+        ),
+        "compact": CommandSpec("compact", "压缩当前会话上下文"),
     }
 
 

@@ -111,3 +111,15 @@ def test_available_returns_copy(tmp_path):
     reg = ModelRegistry(ModelStore(tmp_path / "none.json"))
     reg.available("deepseek")["INJECT"] = None
     assert "INJECT" not in reg.available("deepseek")
+
+
+def test_model_spec_context_window_field():
+    """context_window 字段透传;缺省 None(压缩阈值触发用)。"""
+    from codeagent.ai.catalog.spec import ModelSpec
+
+    spec = ModelSpec(id="m", context_window=128_000)
+    assert spec.context_window == 128_000
+    assert ModelSpec(id="m2").context_window is None  # 缺省兜底
+    from codeagent.ai.catalog.builtin import DEEPSEEK_MODELS
+
+    assert DEEPSEEK_MODELS["deepseek-v4-flash"].context_window == 128_000

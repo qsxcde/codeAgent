@@ -29,7 +29,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from codeagent.core.messages import Message, ToolCall
+from codeagent.core.messages import Message, ToolCall, new_id
 
 CURRENT_VERSION = 1
 
@@ -39,6 +39,7 @@ TITLE_MAX = 20
 __all__ = [
     "CURRENT_VERSION",
     "CompactionEntry",
+    "CompactionState",
     "JsonFileStore",
     "MemoryStore",
     "SessionRef",
@@ -84,11 +85,39 @@ class SessionRef:
 
 @dataclass
 class CompactionEntry:
-    """压缩记录(预留:格式已支持,触发策略属后续会话层 change)。"""
+    """压缩记录(对齐 Pi CompactionEntry;session-compaction 语义落地)。
+
+    - ``id``:uuid7,构造时自动分配(供 parentId 链接回);
+    - ``parent_id``:追加时的叶子(当前历史最后一条消息 / 上一次压缩记录);
+    - ``first_kept_entry_id``:切点消息 id(上下文重构起点);
+    - ``details``:文件操作跟踪 ``{readFiles, modifiedFiles}``(预留字段落地)。
+    """
 
     summary: str
     details: dict[str, Any] = field(default_factory=dict)
     parent_id: str | None = None
+    first_kept_entry_id: str = ""
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            self.id = new_id()
+
+
+@dataclass(frozen=True)
+class CompactionState:
+    """压缩后的上下文状态(读侧重构;无压缩记录时 summary/entry_id 为 None)。
+
+    - ``summary`` / ``entry_id`` / ``details``:最新压缩记录的内容;
+    - ``messages``:从 ``first_kept_entry_id`` 起的保留消息
+      (被压缩窗口消息物理保留,但不出现在模型上下文)。
+    """
+
+    summary: str | None
+    entry_id: str | None
+    first_kept_entry_id: str | None
+    details: dict[str, Any]
+    messages: list[Message]
 
 
 class SessionStore(Protocol):
@@ -110,6 +139,9 @@ class SessionStore(Protocol):
 
     def load_messages(self, session_id: str) -> list[Message]: ...
 
+    def load_context(self, session_id: str) -> CompactionState:
+        """重构压缩后的上下文状态:最新摘要 + 保留消息(无压缩 = 全量)。"""
+
     def append_message(self, session_id: str, message: Message) -> None: ...
 
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> None: ...
@@ -121,6 +153,16 @@ class SessionStore(Protocol):
     def set_meta(self, session_id: str, key: str, value: Any) -> None: ...
 
     def get_meta(self, session_id: str, key: str) -> Any | None: ...
+
+    def fork(
+        self, session_id: str, target_message_id: str, new_session_id: str
+    ) -> SessionRef:
+        """从既有会话分叉新会话(session-fork,对齐 Pi createBranchedSession)。
+
+        - 分叉点 = target user 消息**之前**(复制到它之前,不含该消息);
+        - 新会话 header 记录 parentSession = 原会话 id,元数据从原 header 复制;
+        - 原会话文件零修改(append-only 承诺不破);分叉点非法抛 ValueError。
+        """
 
 
 def _now() -> str:
@@ -267,19 +309,58 @@ class JsonFileStore:
                 messages.append(_dict_to_message(entry))
         return messages
 
+    def load_context(self, session_id: str) -> CompactionState:
+        """重构压缩后的上下文:取最新压缩记录的摘要 + 切点起的消息。
+
+        切点按 **精确 id 定位**(uuid7 同毫秒内不保证严格递增,不能用
+        字典序比较;回归:同毫秒创建的多条消息被误过滤)。无压缩记录时
+        返回全量;切点缺失(异常文件)回退全量,不丢上下文。
+        """
+        path = self._path(session_id)
+        if not path.exists():
+            raise ValueError(f"会话不存在: {session_id}")
+        latest: dict[str, Any] | None = None
+        all_messages: list[Message] = []
+        for entry in self._read_entries(path):
+            if entry.get("type") == "compaction":
+                latest = entry
+            elif entry.get("type") == "message":
+                all_messages.append(_dict_to_message(entry))
+        if latest is None:
+            return CompactionState(None, None, None, {}, all_messages)
+        cut = str(latest.get("firstKeptEntryId") or "")
+        kept = list(all_messages)
+        if cut:
+            cut_index = next(
+                (i for i, m in enumerate(all_messages) if m.id == cut), None
+            )
+            if cut_index is not None:
+                kept = all_messages[cut_index:]
+        return CompactionState(
+            summary=str(latest.get("summary") or ""),
+            entry_id=str(latest.get("id") or ""),
+            first_kept_entry_id=cut or None,
+            details=dict(latest.get("details") or {}),
+            messages=kept,
+        )
+
     def append_message(self, session_id: str, message: Message) -> None:
         self._append(session_id, _message_to_dict(message))
 
-    def append_compaction(self, session_id: str, entry: CompactionEntry) -> None:
+    def append_compaction(self, session_id: str, entry: CompactionEntry) -> str:
+        """追加压缩记录(session-compaction):entry 生成 id / parentId /
+        firstKeptEntryId 语义落地,返回 entry id(供新消息 parent 链接回)。"""
         record = {
             "type": "compaction",
-            "id": entry.parent_id or "",
+            "id": entry.id,
             "parentId": entry.parent_id,
+            "firstKeptEntryId": entry.first_kept_entry_id,
             "timestamp": _now(),
             "summary": entry.summary,
             "details": entry.details,
         }
         self._append(session_id, record)
+        return entry.id
 
     def append_model_change(
         self, session_id: str, *, model: str = "", effort: str = ""
@@ -308,6 +389,59 @@ class JsonFileStore:
             if entry.get("type") == "meta" and entry.get("key") == key:
                 found = entry.get("value")
         return found
+
+    def fork(
+        self, session_id: str, target_message_id: str, new_session_id: str
+    ) -> SessionRef:
+        """分叉实现(文件后端):新文件 = 新 header + 分叉点前消息原样复制。
+
+        - 消息 id / parentId 链保持(回放语义、后续引用不受影响);
+        - 写侧走新文件路径锁(防并发创建同一新会话);原文件只读。
+        """
+        path = self._path(session_id)
+        if not path.exists():
+            raise ValueError(f"会话不存在: {session_id}")
+        new_path = self._path(new_session_id)
+        if new_path.exists():
+            raise ValueError(f"会话已存在: {new_session_id}")
+        entries = self._read_entries(path)
+        header = entries[0]
+        messages = [e for e in entries[1:] if e.get("type") == "message"]
+        index = next(
+            (i for i, e in enumerate(messages) if e.get("id") == target_message_id), None
+        )
+        if index is None:
+            raise ValueError(f"消息不存在: {target_message_id}")
+        if messages[index].get("role") != "user":
+            raise ValueError(f"分叉点必须是 user 消息: {target_message_id}")
+        # 分叉点 = 该 user 消息之前(不含该消息,对齐 Pi position=before)。
+        copied = messages[:index]
+        self._directory.mkdir(parents=True, exist_ok=True)
+        ref = SessionRef(
+            id=new_session_id,
+            timestamp=_now(),
+            cwd=header.get("cwd", "") or str(Path.cwd()),
+            parent_session=session_id,
+            model=header.get("model", "") or "",
+            effort=header.get("effort", "") or "",
+        )
+        new_header: dict[str, Any] = {
+            "type": "session",
+            "version": CURRENT_VERSION,
+            "id": ref.id,
+            "parentSession": session_id,
+            "timestamp": ref.timestamp,
+            "cwd": ref.cwd,
+        }
+        if header.get("model"):
+            new_header["model"] = header["model"]
+        if header.get("effort"):
+            new_header["effort"] = header["effort"]
+        with _lock_for(new_path):
+            lines = [json.dumps(new_header, ensure_ascii=False)]
+            lines.extend(json.dumps(e, ensure_ascii=False) for e in copied)
+            new_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return ref
 
     def _append(self, session_id: str, record: dict[str, Any]) -> None:
         path = self._path(session_id)
@@ -425,13 +559,40 @@ class MemoryStore:
             raise ValueError(f"会话不存在: {session_id}")
         return list(self._messages[session_id])
 
+    def load_context(self, session_id: str) -> CompactionState:
+        """重构压缩后的上下文(内存后端,与文件后端同语义)。"""
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        latest = next(
+            (entry for sid, entry in reversed(self._compactions) if sid == session_id), None
+        )
+        messages = self._messages[session_id]
+        if latest is None:
+            return CompactionState(None, None, None, {}, list(messages))
+        kept = list(messages)
+        if latest.first_kept_entry_id:
+            cut_index = next(
+                (i for i, m in enumerate(messages) if m.id == latest.first_kept_entry_id),
+                None,
+            )
+            if cut_index is not None:
+                kept = messages[cut_index:]
+        return CompactionState(
+            summary=latest.summary,
+            entry_id=latest.id,
+            first_kept_entry_id=latest.first_kept_entry_id or None,
+            details=dict(latest.details),
+            messages=kept,
+        )
+
     def append_message(self, session_id: str, message: Message) -> None:
         if session_id not in self._sessions:
             raise ValueError(f"会话不存在: {session_id}")
         self._messages[session_id].append(message)
 
-    def append_compaction(self, session_id: str, entry: CompactionEntry) -> None:
+    def append_compaction(self, session_id: str, entry: CompactionEntry) -> str:
         self._compactions.append((session_id, entry))
+        return entry.id
 
     def append_model_change(
         self, session_id: str, *, model: str = "", effort: str = ""
@@ -451,6 +612,35 @@ class MemoryStore:
 
     def get_meta(self, session_id: str, key: str) -> Any | None:
         return self._meta.get(session_id, {}).get(key)
+
+    def fork(
+        self, session_id: str, target_message_id: str, new_session_id: str
+    ) -> SessionRef:
+        """分叉实现(内存后端):新 dict + 分叉点前消息切片,parentSession 记入 ref。"""
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        if new_session_id in self._sessions:
+            raise ValueError(f"会话已存在: {new_session_id}")
+        messages = self._messages[session_id]
+        index = next(
+            (i for i, m in enumerate(messages) if m.id == target_message_id), None
+        )
+        if index is None:
+            raise ValueError(f"消息不存在: {target_message_id}")
+        if messages[index].role != "user":
+            raise ValueError(f"分叉点必须是 user 消息: {target_message_id}")
+        base = self._sessions[session_id]
+        ref = SessionRef(
+            id=new_session_id,
+            timestamp=_now(),
+            cwd=base.cwd,
+            parent_session=session_id,
+            model=base.model,
+            effort=base.effort,
+        )
+        self._sessions[new_session_id] = ref
+        self._messages[new_session_id] = list(messages[:index])
+        return ref
 
     def _ref_with_title(self, session_id: str) -> SessionRef:
         """返回带派生标题的 SessionRef(get/list 时派生,create 时为空)。"""

@@ -9,11 +9,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from codeagent.ai.protocol.messages import ChatMessage, ToolCall as AiToolCall
 from codeagent.core.messages import Message, ToolCall
-from codeagent.core.ports import AgentPorts, ModelResponse, StreamEvent
+from codeagent.core.ports import AgentPorts, ModelResponse, PolicyDecision, StreamEvent
 
 
 def create_tools(cfg: Any = None) -> list[Any]:
@@ -21,6 +22,117 @@ def create_tools(cfg: Any = None) -> list[Any]:
     from codeagent.tools.registry import make_tools
 
     return make_tools(cfg)
+
+
+# -- 系统提示词(agents-md-hierarchy)------------------------------------------
+
+
+def _build_system_prompt(cfg: Any = None) -> str:
+    """组装 system prompt:基础提示词 + 分层 AGENTS.md(全局→项目→子目录)。
+
+    - cwd 与 policy/工具同源(配置 cwd,缺省进程启动目录);
+    - config_dir 取 ``app.config.CONFIG_DIR``(全局上下文文件所在地);
+    - 热切换(rebuild_ports)再次调用本函数,同 cwd 幂等。
+    """
+    from codeagent.app import agents
+    from codeagent.app.config import CONFIG_DIR
+
+    workspace = getattr(cfg, "cwd", None) if cfg is not None else None
+    workspace = str(Path(workspace or Path.cwd()).expanduser().resolve())
+    return agents.build_system_prompt(
+        agents.read_base_prompt(), agents.load_agents_files(workspace, CONFIG_DIR)
+    )
+
+
+def agents_sources(cfg: Any = None) -> list[str]:
+    """本次装配加载的上下文文件来源列表(供 TUI /status 展示,可见可断言)。"""
+    from codeagent.app.agents import load_agents_files
+    from codeagent.app.config import CONFIG_DIR
+
+    workspace = getattr(cfg, "cwd", None) if cfg is not None else None
+    workspace = str(Path(workspace or Path.cwd()).expanduser().resolve())
+    return [path for path, _ in load_agents_files(workspace, CONFIG_DIR)]
+
+
+class LlmSummarizer:
+    """真实摘要实现(session-compaction):同一 LLM 通道生成结构化摘要。
+
+    - 提示词要求保留精确文件路径/函数名/错误消息(压缩语义不丢失);
+    - 二次压缩时传入既有摘要,提示词要求保留既有信息并合并新窗口
+      (对齐 Pi UPDATE_SUMMARIZATION_PROMPT 语义,MVP 不强约束输出格式);
+    - 离线测试注入桩实现(不经本类)。
+    """
+
+    _SYSTEM_PROMPT = (
+        "你是对话摘要器,为继续工作生成结构化上下文检查点摘要。"
+        "必须保留精确的文件路径、函数名与错误消息。"
+    )
+    _PROMPT = (
+        "以下是需要压缩的会话消息(完整轮次):\n\n{history}\n\n"
+        "既有摘要(必须保留其全部信息,只合并新增内容,不得丢弃):\n{prev}"
+    )
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def summarize(
+        self, messages: list[Any], prev_summary: str | None
+    ) -> str:
+        history = "\n".join(
+            f"{m.role}: {m.content}" for m in messages if getattr(m, "content", "")
+        )
+        prompt = self._PROMPT.format(
+            history=history, prev=prev_summary or "(无)"
+        )
+        from codeagent.ai.protocol.messages import ChatMessage
+
+        resp = await self._client.generate(
+            [
+                ChatMessage(role="system", content=self._SYSTEM_PROMPT),
+                ChatMessage(role="user", content=prompt),
+            ],
+            tools=None,
+        )
+        return str(resp.content or "")
+
+
+# -- 执行前安全策略(security-permissions)------------------------------------
+
+
+def _create_policy(cfg: Any = None, approval_mode: str = "deny") -> Any:
+    """按形态装配执行前安全策略(design 决策 6;approval_mode: interactive|deny|allow)。
+
+    - interactive(TUI):分类器原样——ask 由用户经会话确认队列响应;
+    - deny(headless 缺省):ask 降级 deny(fail closed,未确认不得执行 NFR-S3);
+    - allow(--yes):ask 放行(显式承担风险)。
+
+    workspace 取配置 cwd(缺省进程启动目录),与工具注入同源;分类器是
+    tools 层纯函数,此处适配为 core ``ApprovalPolicy`` 端口。
+    """
+    from codeagent.tools.security import classify_tool
+
+    workspace = getattr(cfg, "cwd", None) if cfg is not None else None
+    workspace = str(Path(workspace or Path.cwd()).expanduser().resolve())
+
+    def _target_exists(target: str) -> bool:
+        """mv 覆盖判定:目标相对 bash 执行目录(workspace)解析。"""
+        p = Path(target)
+        if not p.is_absolute():
+            p = Path(workspace) / p
+        return p.exists()
+
+    class _Policy:
+        def decide(self, tool_name: str, args: dict) -> PolicyDecision:
+            decision = classify_tool(
+                tool_name, args, workspace=workspace, cwd=workspace, exists=_target_exists
+            )
+            if decision.action == "ask" and approval_mode == "deny":
+                return PolicyDecision("deny", f"未确认不得执行(headless): {decision.reason}")
+            if decision.action == "ask" and approval_mode == "allow":
+                return PolicyDecision("allow", decision.reason)
+            return PolicyDecision(decision.action, decision.reason, decision.warning)
+
+    return _Policy()
 
 
 # -- 模型端口适配 ---------------------------------------------------------
@@ -65,15 +177,24 @@ class ChatModelPort:
     """把 ai 层 ``ChatClient`` 适配为 core ``ModelPort``(组合根唯一适配处)。
 
     流式事件逐项透传(thinking / content / tool_call_arg / usage / finish);
-    工具参数为 JSON 字符串分片,由 core 循环累积组装。
+    工具参数为 JSON 字符串分片,由 core 循环累积组装;
+    ``system_prompt`` 为分层上下文合并结果(agents-md-hierarchy):消息列表
+    首条非 system 时前置插入,保证模型收到基础指令 + AGENTS.md。
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, system_prompt: str | None = None) -> None:
         self._client = client
+        self._system_prompt = system_prompt
 
     @property
     def model_id(self) -> str:
         return self._client.model_id
+
+    def _prepend_system(self, chat: list[ChatMessage]) -> list[ChatMessage]:
+        """首条非 system 时前置插入 system 消息(仅一次,不重复)。"""
+        if self._system_prompt and (not chat or chat[0].role != "system"):
+            return [ChatMessage(role="system", content=self._system_prompt), *chat]
+        return chat
 
     def stream(
         self,
@@ -87,7 +208,7 @@ class ChatModelPort:
         messages: list[Message],
         tools: list[Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        chat = [_to_chat_message(m) for m in messages]
+        chat = self._prepend_system([_to_chat_message(m) for m in messages])
         async for ev in self._client.stream(chat, tools):
             yield StreamEvent(
                 type=ev.type,
@@ -105,7 +226,7 @@ class ChatModelPort:
         messages: list[Message],
         tools: list[Any] | None = None,
     ) -> ModelResponse:
-        chat = [_to_chat_message(m) for m in messages]
+        chat = self._prepend_system([_to_chat_message(m) for m in messages])
         resp = await self._client.generate(chat, tools)
         calls: list[ToolCall] = []
         for tc in resp.tool_calls:
@@ -135,11 +256,13 @@ def create_agent_ports(
     reasoning_effort: str | None = None,
     provider: str | None = None,
     model: str | None = None,
+    approval_mode: str = "deny",
 ) -> AgentPorts:
-    """组合根:装配自研编排端口(模型端口 + 工具)。
+    """组合根:装配自研编排端口(模型端口 + 工具 + 安全策略)。
 
     ``store`` 不进端口(core 循环不落盘);会话存储经 ``AgentSession`` /
-    ``SessionManager`` 注入(session-manager change,design D6)。
+    ``SessionManager`` 注入(session-manager change,design D6);
+    ``approval_mode`` 见 ``_create_policy``(缺省 deny = headless 安全优先)。
     """
     from codeagent.ai.factory import create_llm
 
@@ -151,8 +274,9 @@ def create_agent_ports(
         model=model,
     )
     return AgentPorts(
-        model=ChatModelPort(client),
+        model=ChatModelPort(client, system_prompt=_build_system_prompt(cfg)),
         tools=create_tools(cfg),
+        policy=_create_policy(cfg, approval_mode),
     )
 
 
@@ -167,13 +291,18 @@ def create_agent_session(
     model: str | None = None,
     recursion_limit: int | None = None,
     tool_timeout: float | None = None,
+    approval_mode: str = "deny",
+    summarizer: Any = None,
 ) -> Any:
     """组合根:创建有状态会话壳(CLI / TUI 入口)。
 
     - ``store`` 缺省 None(一次性 headless 不持久化);注入 SessionStore
       后会话可恢复、可继续(v0.2 会话层);
     - ``session_id`` 缺省自动分配;注入既有 id 恢复既有会话;
-    - ``recursion_limit`` / ``tool_timeout`` 可单会话覆盖。
+    - ``recursion_limit`` / ``tool_timeout`` 可单会话覆盖;
+    - ``approval_mode`` 见 ``_create_policy``(headless 缺省 deny);
+    - ``summarizer`` 为上下文压缩摘要端口(session-compaction;缺省 None
+      = 压缩不可用,保持既有调用兼容)。
     """
     from codeagent.session import AgentSession, EventBus
 
@@ -183,6 +312,7 @@ def create_agent_session(
         reasoning_effort=reasoning_effort,
         provider=provider,
         model=model,
+        approval_mode=approval_mode,
     )
     return AgentSession(
         ports,
@@ -191,6 +321,7 @@ def create_agent_session(
         session_id=session_id,
         recursion_limit=recursion_limit or 50,
         tool_timeout=tool_timeout,
+        summarizer=summarizer,
     )
 
 
@@ -216,6 +347,17 @@ def create_tui_app(
     from codeagent.app.tui.components import FooterInfo
     from codeagent.app.tui.view import TuiApp
 
+    from codeagent.ai.factory import create_llm
+
+    summarizer = LlmSummarizer(
+        create_llm(
+            cfg=cfg,
+            registry=registry,
+            reasoning_effort=reasoning_effort,
+            provider=provider,
+            model=model,
+        )
+    )
     manager = create_session_manager(
         cfg,
         registry=registry,
@@ -223,6 +365,8 @@ def create_tui_app(
         reasoning_effort=reasoning_effort,
         provider=provider,
         model=model,
+        approval_mode="interactive",  # TUI:敏感操作经确认条交互(security-permissions)
+        summarizer=summarizer,  # TUI:/compact 可用(session-compaction)
     )
     manager.create()  # 启动即进入首个会话(命令 /sessions new 可再建)
     if backend is None:
@@ -248,6 +392,7 @@ def create_tui_app(
             reasoning_effort=new_effort or reasoning_effort,
             provider=new_provider or None,
             model=new_model or None,
+            approval_mode="interactive",  # 热切换保留确认环(security-permissions)
         )
         model_id, effort = _resolve_model_effort(
             cfg, new_provider, new_model, new_effort or reasoning_effort
@@ -261,6 +406,7 @@ def create_tui_app(
         footer=_resolve_footer_info(cfg, provider, model, reasoning_effort),
         rebuild_ports=rebuild_ports,
         candidates=candidates,
+        agents_sources=agents_sources(cfg),  # 上下文文件来源(/status 展示)
     )
 
 
@@ -295,6 +441,8 @@ def create_session_manager(
     model: str | None = None,
     recursion_limit: int | None = None,
     tool_timeout: float | None = None,
+    approval_mode: str = "deny",
+    summarizer: Any = None,
 ) -> Any:
     """组合根:创建会话管理器(薄 Manager,design D1/D4)。
 
@@ -302,7 +450,10 @@ def create_session_manager(
     - store 注入后会话可持久化;header 的 model/effort 在创建时固化
       (_resolve_model_effort 与 footer 同源解析,唯一引用 split_model_pattern);
     - replace_ports 属 T-44(/provider /model 命令时按 Pi 式 model_change
-      entry 演进,design D4)。
+      entry 演进,design D4);
+    - approval_mode 见 ``_create_policy``(TUI 传 interactive,headless 会话
+      入口传 deny/allow);
+    - summarizer 为上下文压缩摘要端口(session-compaction;缺省 None)。
     """
     from codeagent.session import SessionManager
 
@@ -312,6 +463,7 @@ def create_session_manager(
         reasoning_effort=reasoning_effort,
         provider=provider,
         model=model,
+        approval_mode=approval_mode,
     )
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
     return SessionManager(
@@ -321,6 +473,7 @@ def create_session_manager(
         effort=effort,
         recursion_limit=recursion_limit or 50,
         tool_timeout=tool_timeout,
+        summarizer=summarizer,
     )
 
 

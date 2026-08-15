@@ -327,9 +327,15 @@ def test_bash_exit_code_one_marks_failure(monkeypatch):
 
 
 def test_bash_pipeline_grep_exit_one_not_failure(monkeypatch):
-    """集成验证:管道末段 grep 无匹配(退出码 1)不作为命令失败。"""
+    """集成验证:管道末段 grep 无匹配(退出码 1)不作为命令失败。
+
+    (回归:macOS 下 ps 输出会捕获管道自身 bash -lc 包装进程的命令行,其中包含
+    待匹配字样,导致 grep 自匹配、退出码 0——测试必失败。用 `[c]odeagent`
+    括号技巧:grep 进程自身的命令行是字面量 `[c]odeagent...`,正则不再命中,
+    恢复"无匹配 → 退出码 1"的本意,平台无关。)
+    """
     monkeypatch.chdir("/")
-    out = _invoke(BashTool(), command="ps aux | grep codeagent-zzz-nonexistent")
+    out = _invoke(BashTool(), command="ps aux | grep [c]odeagent-zzz-nonexistent")
     assert "命令失败" not in out and "退出码: 1" in out
 
 

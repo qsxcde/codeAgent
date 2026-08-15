@@ -36,6 +36,7 @@ class SessionManager:
         effort: str = "",
         recursion_limit: int = 50,
         tool_timeout: float | None = None,
+        summarizer: Any = None,
     ) -> None:
         self._ports = ports
         self._store = store
@@ -43,6 +44,8 @@ class SessionManager:
         self._effort = effort
         self._recursion_limit = recursion_limit
         self._tool_timeout = tool_timeout
+        #: 上下文压缩摘要端口(session-compaction;None = 压缩不可用)。
+        self._summarizer = summarizer
         #: 活动会话:session_id → AgentSession(dispose 摘除,文件保留)。
         self._sessions: dict[str, AgentSession] = {}
         self._current_id: str | None = None
@@ -81,6 +84,35 @@ class SessionManager:
         if not refs:
             return self.create()
         return self.switch(refs[-1].id)
+
+    def fork(self, session_id: str, message_id: str | None = None) -> AgentSession:
+        """从既有会话的 user 消息分叉新会话并切换当前(对齐 Pi createBranchedSession)。
+
+        - ``message_id`` 缺省 = 该会话最近一条 user 消息;分叉点 = 该消息
+          **之前**(不含,「从这条消息之前重新开始」);
+        - 新会话经 ``store.fork`` 复制历史 + header 记 parentSession,再
+          ``_adopt`` 切换(订阅跟随既有实现,订阅方无感);
+        - 原会话文件零修改(append-only 不破);分叉点非法抛 ValueError;
+        - 无 store(headless 一次性)不支持分叉。
+        """
+        if self._store is None:
+            raise ValueError("分叉需要持久化会话(当前无会话存储)")
+        if self._store.get(session_id) is None:
+            raise ValueError(f"会话不存在: {session_id}")
+        if message_id is None:
+            message_id = self._last_user_message_id(session_id)
+        self._halt_current()
+        new_id = str(uuid.uuid4())
+        self._store.fork(session_id, message_id, new_id)
+        return self._adopt(new_id, previous_session_id=session_id)
+
+    def _last_user_message_id(self, session_id: str) -> str:
+        """该会话最近一条 user 消息 id(缺省分叉点);无 user 消息报错。"""
+        messages = self._store.load_messages(session_id)
+        for message in reversed(messages):
+            if message.role == "user":
+                return message.id
+        raise ValueError("会话没有可分叉的用户消息")
 
     def replace_ports(
         self, ports: Any, *, model: str = "", effort: str = ""
@@ -153,8 +185,14 @@ class SessionManager:
         if current is not None:
             current.abort()
 
-    def _adopt(self, session_id: str) -> AgentSession:
-        """构造/接管会话壳:转移订阅并设为 current。"""
+    def _adopt(
+        self, session_id: str, *, previous_session_id: str | None = None
+    ) -> AgentSession:
+        """构造/接管会话壳:转移订阅并设为 current。
+
+        ``previous_session_id`` 为分叉来源(session-fork):分叉产生的会话
+        首轮 SESSION_STARTED 事件携带父会话 id。
+        """
         session = AgentSession(
             self._ports,
             EventBus(),
@@ -162,6 +200,8 @@ class SessionManager:
             session_id=session_id,
             recursion_limit=self._recursion_limit,
             tool_timeout=self._tool_timeout,
+            previous_session_id=previous_session_id,
+            summarizer=self._summarizer,
         )
         for fn, unsubs in self._subscribers:
             for u in unsubs:

@@ -30,6 +30,10 @@ InputChangedHandler = Callable[[str], None]
 SuggestionNavHandler = Callable[[int], None]
 #: 建议确认处理器:视图把选中建议填回输入框。
 SuggestionConfirmHandler = Callable[[], None]
+#: 滚动处理器:参数为相对行增量(正数上滚,负数下滚;design T-47)。
+ScrollHandler = Callable[[int], None]
+#: 确认响应处理器:参数为批准与否(y/n 键;请求 id 匹配在会话层,security-permissions)。
+ConfirmationResponseHandler = Callable[[bool], None]
 
 
 class TuiBackend(Protocol):
@@ -73,6 +77,15 @@ class TuiBackend(Protocol):
 
     def on_suggestion_confirm(self, handler: SuggestionConfirmHandler) -> None:
         """注册建议确认处理器(Enter/Tab,补全激活时)。"""
+
+    def on_scroll(self, handler: ScrollHandler) -> None:
+        """注册滚动输入处理器(滚轮/PageUp/PageDown;design T-47)。"""
+
+    def set_confirmation(self, lines: list[RichLine] | None) -> None:
+        """显示/隐藏确认条(security-permissions):非空 = 显示并激活 y/n 键。"""
+
+    def on_confirmation_response(self, handler: ConfirmationResponseHandler) -> None:
+        """注册确认响应处理器(y/n 键;security-permissions)。"""
 
     def exit_document(self, lines: list[str]) -> None:
         """记录退出文档并退出 alt 屏;run() 返回后(主屏已恢复)打印该文档(design D5)。"""

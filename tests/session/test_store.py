@@ -277,3 +277,166 @@ def test_memory_store_meta_and_title():
     assert store.get_meta("m1", "name") == "命名会话"
     with pytest.raises(ValueError, match="不存在"):
         store.set_meta("ghost", "name", "x")
+
+
+# -- session-fork change:会话分叉 --------------------------------------------
+
+
+def _fill_session(store, session_id: str) -> list[Message]:
+    """写入 user → assistant → user → assistant 消息链,返回消息列表。"""
+    store.create(session_id, model="deepseek-v4-flash", effort="high")
+    m1 = Message(role="user", content="第一问")
+    m2 = Message(role="assistant", content="第一答", parent_id=m1.id)
+    m3 = Message(role="user", content="第二问", parent_id=m2.id)
+    m4 = Message(role="assistant", content="第二答", parent_id=m3.id)
+    for m in (m1, m2, m3, m4):
+        store.append_message(session_id, m)
+    return [m1, m2, m3, m4]
+
+
+def test_fork_copies_history_before_target(tmp_path):
+    """分叉:新会话 = 分叉点之前(不含该 user 消息)消息副本,parentSession 记 header。"""
+    store = JsonFileStore(tmp_path)
+    msgs = _fill_session(store, "s1")
+    ref = store.fork("s1", msgs[2].id, "s2")  # 从「第二问」之前分叉
+
+    assert ref.parent_session == "s1"
+    assert ref.model == "deepseek-v4-flash" and ref.effort == "high"  # header 元数据复制
+    forked = store.load_messages("s2")
+    assert [m.id for m in forked] == [msgs[0].id, msgs[1].id]  # 第一问/第一答,不含第二问
+    assert forked[1].parent_id == msgs[0].id  # parentId 链保持
+
+
+def test_fork_keeps_original_file_untouched(tmp_path):
+    """原会话文件零修改(append-only 承诺不破)。"""
+    store = JsonFileStore(tmp_path)
+    msgs = _fill_session(store, "s1")
+    before = len((tmp_path / "s1.jsonl").read_text(encoding="utf-8").splitlines())
+    store.fork("s1", msgs[0].id, "s2")
+    after = len((tmp_path / "s1.jsonl").read_text(encoding="utf-8").splitlines())
+    assert before == after
+    assert store.load_messages("s1")  # 原历史完整
+
+
+def test_fork_validation_errors(tmp_path):
+    """分叉点校验:非 user 消息 / 不存在 / 目标已存在 → 明确错误,不产生会话。"""
+    store = JsonFileStore(tmp_path)
+    msgs = _fill_session(store, "s1")
+    with pytest.raises(ValueError, match="必须是 user 消息"):
+        store.fork("s1", msgs[1].id, "s2")  # assistant 消息
+    with pytest.raises(ValueError, match="消息不存在"):
+        store.fork("s1", "ghost-id", "s2")
+    with pytest.raises(ValueError, match="会话不存在"):
+        store.fork("ghost", msgs[0].id, "s2")
+    store.fork("s1", msgs[0].id, "s2")
+    with pytest.raises(ValueError, match="会话已存在"):
+        store.fork("s1", msgs[2].id, "s2")
+    assert (tmp_path / "s2.jsonl").exists()
+    assert len(store.list()) == 2
+
+
+def test_fork_first_message_yields_empty_history(tmp_path):
+    """分叉点是首条 user 消息:新会话仅 header(空历史,对齐 Pi 无 parent 分支)。"""
+    store = JsonFileStore(tmp_path)
+    msgs = _fill_session(store, "s1")
+    ref = store.fork("s1", msgs[0].id, "s2")
+    assert ref.parent_session == "s1"
+    assert store.load_messages("s2") == []
+
+
+def test_memory_store_fork_semantics():
+    """MemoryStore 与文件后端同语义:切片复制 + parentSession + 校验。"""
+    store = MemoryStore()
+    msgs = _fill_session(store, "m1")
+    ref = store.fork("m1", msgs[2].id, "m2")
+    assert ref.parent_session == "m1"
+    assert [m.id for m in store.load_messages("m2")] == [msgs[0].id, msgs[1].id]
+    assert store.load_messages("m1")  # 原会话完整
+    with pytest.raises(ValueError, match="必须是 user 消息"):
+        store.fork("m1", msgs[1].id, "m3")
+    with pytest.raises(ValueError, match="消息不存在"):
+        store.fork("m1", "ghost", "m3")
+
+
+# -- session-compaction change:压缩 entry 语义与上下文重构 ---------------------
+
+
+def test_compaction_entry_id_parent_and_first_kept(tmp_path):
+    """压缩 entry:id 自动分配、parentId/firstKeptEntryId 落盘、返回 entry id。"""
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    msgs = [Message(role="user", content=f"m{i}") for i in range(3)]
+    for m in msgs:
+        store.append_message("s1", m)
+    entry_id = store.append_compaction(
+        "s1",
+        CompactionEntry(
+            summary="摘要",
+            parent_id=msgs[-1].id,
+            first_kept_entry_id=msgs[1].id,
+        ),
+    )
+    assert entry_id  # uuid7
+    lines = (tmp_path / "sessions" / "s1.jsonl").read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[-1])
+    assert record["id"] == entry_id
+    assert record["parentId"] == msgs[-1].id
+    assert record["firstKeptEntryId"] == msgs[1].id
+
+
+def test_load_context_without_compaction_returns_all(tmp_path):
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    msgs = [Message(role="user", content=f"m{i}") for i in range(3)]
+    for m in msgs:
+        store.append_message("s1", m)
+    state = store.load_context("s1")
+    assert state.summary is None and state.entry_id is None
+    assert [m.id for m in state.messages] == [m.id for m in msgs]
+
+
+def test_load_context_reconstructs_summary_plus_kept(tmp_path):
+    """压缩后上下文 = 最新摘要 + firstKeptEntryId 起消息(uuid7 时间序过滤)。"""
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    msgs = [Message(role="user", content=f"m{i}") for i in range(5)]
+    for m in msgs:
+        store.append_message("s1", m)
+    store.append_compaction(
+        "s1",
+        CompactionEntry(summary="摘要1", first_kept_entry_id=msgs[2].id),
+    )
+    state = store.load_context("s1")
+    assert state.summary == "摘要1"
+    assert [m.id for m in state.messages] == [msgs[2].id, msgs[3].id, msgs[4].id]
+    # 全量回放仍包含被压缩窗口(物理保留)
+    assert len(store.load_messages("s1")) == 5
+
+
+def test_load_context_latest_compaction_wins(tmp_path):
+    """二次压缩后只认最新边界;新消息(压缩后追加)包含在上下文中。"""
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    msgs = [Message(role="user", content=f"m{i}") for i in range(6)]
+    for m in msgs:
+        store.append_message("s1", m)
+    store.append_compaction("s1", CompactionEntry(summary="摘要1", first_kept_entry_id=msgs[2].id))
+    store.append_compaction("s1", CompactionEntry(summary="摘要2", first_kept_entry_id=msgs[4].id))
+    state = store.load_context("s1")
+    assert state.summary == "摘要2"
+    assert [m.id for m in state.messages] == [msgs[4].id, msgs[5].id]
+
+
+def test_memory_store_load_context_semantics():
+    """MemoryStore 与文件后端同语义:摘要 + 保留消息 + 最新边界。"""
+    store = MemoryStore()
+    store.create("m1")
+    msgs = [Message(role="user", content=f"m{i}") for i in range(4)]
+    for m in msgs:
+        store.append_message("m1", m)
+    store.append_compaction("m1", CompactionEntry(summary="摘要", first_kept_entry_id=msgs[1].id))
+    state = store.load_context("m1")
+    assert state.summary == "摘要"
+    assert [m.id for m in state.messages] == [msgs[1].id, msgs[2].id, msgs[3].id]
+    with pytest.raises(ValueError, match="会话不存在"):
+        store.load_context("ghost")

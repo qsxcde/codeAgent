@@ -26,6 +26,9 @@ class StubBackend:
         self.input_changed = None
         self.suggestion_nav = None
         self.suggestion_confirm = None
+        self.scroll = None
+        self.confirmation_response = None
+        self.confirmation_lines: list[Any] = []
         self.suggestion_lines: list[Any] = []
         self.input_texts: list[str] = []
         self.exited: list[str] | None = None
@@ -69,6 +72,15 @@ class StubBackend:
     def on_suggestion_confirm(self, handler) -> None:
         self.suggestion_confirm = handler
 
+    def on_scroll(self, handler) -> None:
+        self.scroll = handler
+
+    def set_confirmation(self, lines) -> None:
+        self.confirmation_lines.append(list(lines) if lines else [])
+
+    def on_confirmation_response(self, handler) -> None:
+        self.confirmation_response = handler
+
     def exit_document(self, lines: list[str]) -> None:
         self.exited = list(lines)
 
@@ -84,6 +96,7 @@ class FakeSession:
         FakeSession._created.append(self)
         self.subscribers: list[Any] = []
         self.aborted = False
+        self.approvals: list[tuple[str, bool]] = []
 
     _created: list["FakeSession"] = []
 
@@ -101,6 +114,9 @@ class FakeSession:
 
     def abort(self) -> None:
         self.aborted = True
+
+    def respond_approval(self, request_id: str, approved: bool) -> None:
+        self.approvals.append((request_id, approved))
 
     def _emit(self, event: AgentEvent) -> None:
         for fn in list(self.subscribers):
@@ -122,6 +138,7 @@ class FakeManager:
         self.current = session if session is not None else FakeSession()
         self.sessions = [self.current]
         self.tools: list[Any] = []
+        self.fork_calls: list[tuple[str, str | None]] = []
 
     def subscribe(self, fn):
         return self.current.subscribe(fn)
@@ -142,6 +159,13 @@ class FakeManager:
     def list(self):
         return [FakeRef(s) for s in self.sessions]
 
+    def fork(self, session_id: str, message_id: str | None = None):
+        self.fork_calls.append((session_id, message_id))
+        session = FakeSession()
+        self.sessions.append(session)
+        self.current = session
+        return session
+
 
 def _make_app() -> tuple[TuiApp, StubBackend, FakeManager]:
     backend = StubBackend()
@@ -154,6 +178,8 @@ def _make_app() -> tuple[TuiApp, StubBackend, FakeManager]:
     backend.on_input_changed(app._on_input_changed)
     backend.on_suggestion_navigate(app._on_suggestion_navigate)
     backend.on_suggestion_confirm(app._on_suggestion_confirm)
+    backend.on_scroll(app._on_scroll)
+    backend.on_confirmation_response(app._on_confirmation_response)
     return app, backend, manager
 
 
@@ -290,6 +316,67 @@ def test_click_toggles_tool_expand():
     assert tool.expanded is False
 
 
+# -- 滚动交互(T-47,specc「alt 屏渲染与滚动」)---------------------------------
+
+
+def _fill_transcript(app: TuiApp) -> None:
+    """填充远超一屏的内容(40 × 40 字符 ≈ 28 行 > 视口 10 行),使滚动语义可被观察。"""
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    for _ in range(40):
+        app.model.apply(AgentEvent(EventType.TEXT_DELTA, payload="x" * 40))
+    app.model.apply(AgentEvent(EventType.TURN_END))
+    app.model.transcript.render(60, 10)
+
+
+def test_wheel_scroll_up_unfollows_and_new_output_does_not_jump():
+    """滚轮上滚 → 解除跟随;新输出不强制跳回底部(spec「上滚浏览历史」)。"""
+    app, backend, manager = _make_app()
+    _fill_transcript(app)
+    assert app.model.transcript.follow is True
+    backend.scroll(3)  # 滚轮一格(上滚)
+    assert app.model.transcript.follow is False
+    first_line = app.model.transcript.render(60, 10)[0][0].text
+    # 上滚后新正文到达:不跳回底部,视口内容不变
+    manager.current._emit(AgentEvent(EventType.TEXT_DELTA, payload="new "))
+    manager.current._emit(AgentEvent(EventType.TURN_END))
+    assert app.model.transcript.follow is False
+    assert app.model.transcript.render(60, 10)[0][0].text == first_line
+
+
+def test_scroll_back_to_bottom_restores_follow():
+    """滚回底部 → 恢复跟随(spec「回到底部恢复跟随」)。"""
+    app, backend, _ = _make_app()
+    _fill_transcript(app)
+    backend.scroll(3)
+    assert app.model.transcript.follow is False
+    backend.scroll(-1000)  # 持续下滚越过底部
+    app.model.transcript.render(60, 10)
+    assert app.model.transcript.follow is True
+
+
+def test_keyboard_page_up_down_dispatches_scroll():
+    """PageUp/PageDown → 一页行数增量,上翻解除跟随、下翻回底恢复(spec「键盘滚动」)。"""
+    app, backend, _ = _make_app()
+    _fill_transcript(app)
+    backend.scroll(9)  # PageUp 一页(视口高 10 - 1):解除跟随
+    assert app.model.transcript.follow is False
+    backend.scroll(9)  # PageUp 再一页:位置 20 → 2
+    backend.scroll(-9)  # PageDown 一页:2 → 11,未到底,仍不跟随
+    assert app.model.transcript.follow is False
+    backend.scroll(-1000)  # PageDown 越过底部
+    app.model.transcript.render(60, 10)
+    assert app.model.transcript.follow is True
+
+
+def test_start_registers_scroll_handler():
+    """start() 注册 on_scroll 回调(端口接线;design T-47)。"""
+    backend = StubBackend()
+    app = TuiApp(FakeManager(), backend)
+    app.start()  # StubBackend.run 为 no-op,只测注册
+    assert backend.scroll is not None
+    assert backend.scroll(5) is None  # 处理器可调用且不抛错
+
+
 # -- 斜杠命令分派(T-44)------------------------------------------------------
 
 
@@ -307,8 +394,7 @@ def test_submit_command_help_renders_without_run():
     manager.current.run_called = False  # 记录:命令不应触发 run
     backend.submit("/help")
     text = _rendered_text(app, backend)
-    assert "可用命令:" in text
-    assert "/undo" in text and "未可用" in text
+    assert "/fork" in text and "/compact" in text  # 帮助含新增命令(头行可能被视口裁剪)
 
 
 def test_submit_unknown_command_shows_error():
@@ -348,12 +434,40 @@ def test_clear_command_resets_transcript():
     assert app.model.transcript.follow is True
 
 
-def test_undo_command_shows_unavailable():
-    """/undo → 注册槽位,提示未可用(T-42 前不静默忽略)。"""
-    app, backend, _ = _make_app()
-    backend.submit("/undo")
+def test_fork_command_dispatches_and_feedback():
+    """/fork → manager.fork(缺省最近用户消息),反馈含新会话 id 与原会话保留提示。"""
+    app, backend, manager = _make_app()
+    current_id = manager.current.session_id
+    backend.submit("/fork")
+    assert manager.fork_calls == [(current_id, None)]
     text = _rendered_text(app, backend)
-    assert "未可用" in text and "T-42" in text
+    assert "已分叉会话" in text
+    assert "重新开始" in text  # 反馈含分叉点语义(换行后短语仍可断言)
+    assert "文件保持当前状态" in text
+
+
+def test_fork_command_with_message_id():
+    """/fork <message-id> → 显式分叉点传给 manager。"""
+    app, backend, manager = _make_app()
+    before_id = manager.current.session_id
+    backend.submit("/fork msg-123")
+    assert manager.fork_calls == [(before_id, "msg-123")]
+
+
+def test_fork_command_error_shown_inline():
+    """/fork 非法分叉点 → ValueError 就地提示,不崩溃。"""
+    backend = StubBackend()
+    manager = FakeManager()
+
+    class BoomManager(FakeManager):
+        def fork(self, session_id, message_id=None):
+            raise ValueError("分叉点必须是 user 消息: msg-x")
+
+    app = TuiApp(BoomManager(), backend)
+    backend.on_submit(app._submit)
+    backend.submit("/fork msg-x")
+    text = _rendered_text(app, backend)
+    assert "分叉点必须是 user 消息" in text
 
 
 def test_status_command_shows_session_info():
@@ -546,7 +660,7 @@ def test_bare_slash_shows_all_commands():
 
     app, backend, _ = _make_app()
     backend.input_changed("/")
-    assert app._suggestions == list(default_registry())
+    assert app._suggestions == list(default_registry())[:9]  # 浮层上限 _MAX_SUGGESTIONS
 
 
 def test_selector_empty_arg_shows_all_candidates():
@@ -566,3 +680,173 @@ def test_selector_empty_arg_shows_all_candidates():
     # 无空格仍是命令名补全,不进选择器。
     backend.input_changed("/model")
     assert app._suggestions == ["model"]
+
+
+# -- 确认交互(security-permissions)-------------------------------------------
+
+
+def _confirm_event(**overrides) -> AgentEvent:
+    """构造确认请求事件(默认 payload 含 request_id/tool_call_id/summary/reason)。"""
+    payload = {
+        "request_id": "cf-r1",
+        "tool_call_id": "c1",
+        "tool": "bash",
+        "summary": "git push origin main",
+        "reason": "推送远程分支",
+    }
+    payload.update(overrides)
+    return AgentEvent(EventType.CONFIRMATION_REQUESTED, payload=payload)
+
+
+def test_confirmation_event_shows_bar():
+    """确认请求事件 → 确认条渲染(工具/摘要/原因可见),后端激活。"""
+    app, backend, _ = _make_app()
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    manager = app._manager
+    manager.current._emit(_confirm_event())
+    assert backend.confirmation_lines[-1], "确认条未显示"
+    plain = "".join(s.text for line in backend.confirmation_lines[-1] for s in line)
+    assert "需要确认" in plain
+    assert "git push origin main" in plain
+    assert "推送远程分支" in plain
+    assert app._pending_confirmation is not None
+
+
+def test_confirmation_yes_forwards_approval():
+    """y 响应 → 会话 respond_approval(request_id, True),确认条收起。"""
+    app, backend, manager = _make_app()
+    manager.current._emit(_confirm_event())
+    backend.confirmation_response(True)
+    assert manager.current.approvals == [("cf-r1", True)]
+    assert backend.confirmation_lines[-1] == []
+    assert app._pending_confirmation is None
+
+
+def test_confirmation_no_forwards_rejection():
+    """n 响应 → 会话 respond_approval(request_id, False),确认条收起。"""
+    app, backend, manager = _make_app()
+    manager.current._emit(_confirm_event())
+    backend.confirmation_response(False)
+    assert manager.current.approvals == [("cf-r1", False)]
+
+
+def test_esc_while_confirmation_aborts_run():
+    """确认激活时 Esc → 中断当前运行(拒绝并中止语义;RUN_CANCELLED 后条收起)。"""
+    app, backend, manager = _make_app()
+    app.model.running = True
+    manager.current._emit(_confirm_event())
+    backend.interrupt()
+    assert manager.current.aborted is True
+    manager.current._emit(AgentEvent(EventType.RUN_CANCELLED))
+    assert app._pending_confirmation is None
+    assert backend.confirmation_lines[-1] == []
+
+
+def test_terminal_event_clears_confirmation_bar():
+    """终态事件(TURN_END)→ 确认条收起(不再悬挂)。"""
+    app, backend, manager = _make_app()
+    manager.current._emit(_confirm_event())
+    manager.current._emit(AgentEvent(EventType.TURN_END))
+    assert app._pending_confirmation is None
+    assert backend.confirmation_lines[-1] == []
+
+
+def test_rejected_tool_result_marks_block():
+    """拒绝的 TOOL_RESULT(rejected 元数据)→ 工具块进入拒绝态(图标 ✗)。"""
+    app, _, _ = _make_app()
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    app.model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {"command": "git push"}, "id": "c1"}],
+        )
+    )
+    app.model.apply(
+        AgentEvent(
+            EventType.TOOL_RESULT,
+            payload="[工具执行被拒绝] 用户拒绝执行: 推送远程分支",
+            metadata={"tool_call_id": "c1", "error": True, "rejected": True},
+        )
+    )
+    block = next(b for b in app.model.transcript.blocks if isinstance(b, ToolCallBlock))
+    assert block.rejected is True and block.status == "error"
+    header = block.render(60)[0]
+    assert header[2].text == "✗"
+    assert "Rejected bash" in "".join(s.text for s in header)
+
+
+def test_start_registers_confirmation_handler():
+    """start() 注册确认响应回调(端口接线)。"""
+    backend = StubBackend()
+    app = TuiApp(FakeManager(), backend)
+    app.start()
+    assert backend.confirmation_response is not None
+    backend.confirmation_response(True)  # 无 pending 时安全忽略
+
+
+# -- 上下文文件来源展示(agents-md-hierarchy)----------------------------------
+
+
+def test_status_shows_agents_sources_when_injected():
+    """/status:注入来源列表 → 展示上下文文件(加载结果可见)。"""
+    backend = StubBackend()
+    app = TuiApp(
+        FakeManager(),
+        backend,
+        agents_sources=["/global/AGENTS.md", "/proj/AGENTS.md"],
+    )
+    backend.on_submit(app._submit)
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "上下文文件:" in text
+    assert "/global/AGENTS.md" in text
+    assert "/proj/AGENTS.md" in text
+
+
+def test_status_without_sources_shows_none():
+    """/status:未注入来源 → 明确显示 (无)。"""
+    app, backend, _ = _make_app()
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "上下文文件: (无)" in text
+
+
+# -- 压缩命令(session-compaction)---------------------------------------------
+
+
+def test_compact_command_dispatches_and_feedback():
+    """/compact → 会话 compact 异步执行,完成后反馈压缩结果。"""
+    backend = StubBackend()
+
+    class CompactSession(FakeSession):
+        async def compact(self):
+            return True
+
+    class CompactManager(FakeManager):
+        def __init__(self):
+            super().__init__(session=CompactSession())
+
+    app = TuiApp(CompactManager(), backend)
+    backend.on_submit(app._submit)
+    backend.on_resize(app._schedule_render)
+
+    async def _run() -> None:
+        backend.resize()
+        await asyncio.sleep(0)
+        backend.submit("/compact")
+        for _ in range(20):  # 等异步 compact 完成并渲染
+            await asyncio.sleep(0.01)
+            text = "".join(rich_to_plain(backend.renders[-1]))
+            if "已压缩" in text:
+                return
+        raise AssertionError("未收到压缩完成反馈")
+
+    asyncio.run(_run())
+
+
+def test_compact_command_unavailable_inline():
+    """/compact 会话不支持压缩(无 compact 方法)→ 就地提示。"""
+    app, backend, _ = _make_app()
+    backend.submit("/compact")
+    text = _rendered_text(app, backend)
+    assert "不可用" in text

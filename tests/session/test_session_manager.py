@@ -180,3 +180,77 @@ def test_single_active_run_halted_on_switch():
     asyncio.run(scenario())
     assert EventType.RUN_CANCELLED in _event_types(a_seen)
     assert a.history == []  # 取消回滚
+
+
+# -- session-fork change:会话分叉 --------------------------------------------
+
+
+def _run_rounds(mgr: SessionManager, session, texts: list[str]) -> None:
+    """在会话上依次跑几轮(直接经 AgentSession.run,事件驱动)。"""
+    for text in texts:
+        asyncio.run(session.run(text))
+
+
+def test_fork_switches_to_new_session_and_keeps_original():
+    """fork:创建分叉会话并切换 current;原会话可切回且历史完整。"""
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    first = mgr.create()
+    _run_rounds(mgr, first, ["第一问", "第二问"])  # 两条 user 消息
+
+    forked = mgr.fork(first.session_id)  # 缺省 = 最近 user 消息(第二问)之前
+    assert mgr.current is forked
+    assert forked.session_id != first.session_id
+    assert [m.content for m in forked.history if m.role == "user"] == ["第一问"]
+    # 原会话保留、可切回、历史完整
+    back = mgr.switch(first.session_id)
+    assert [m.content for m in back.history if m.role == "user"] == ["第一问", "第二问"]
+    # 新会话可继续对话
+    _run_rounds(mgr, forked, ["分叉后的新问题"])
+    assert [m.content for m in forked.history if m.role == "user"] == ["第一问", "分叉后的新问题"]
+    assert [m.content for m in back.history if m.role == "user"] == ["第一问", "第二问"]
+
+
+def test_fork_with_explicit_message_id():
+    """fork 指定消息 id:从该 user 消息之前分叉。"""
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    session = mgr.create()
+    _run_rounds(mgr, session, ["问题一", "问题二", "问题三"])
+    first_user = next(m for m in session.history if m.role == "user")
+    forked = mgr.fork(session.session_id, first_user.id)  # 从首条 user 消息之前 → 空历史
+    assert forked.history == []
+    assert forked.session_id != session.session_id
+
+
+def test_fork_validation_errors():
+    """fork 校验:无 store / 会话不存在 / 无 user 消息 → 明确错误。"""
+    mgr = _manager(store=None)
+    with pytest.raises(ValueError, match="持久化会话"):
+        mgr.fork("any")
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    mgr.create()
+    with pytest.raises(ValueError, match="会话不存在"):
+        mgr.fork("ghost")
+    empty = mgr.create()  # 无消息
+    with pytest.raises(ValueError, match="没有可分叉的用户消息"):
+        mgr.fork(empty.session_id)
+
+
+def test_fork_subscription_follows():
+    """分叉后订阅跟随到新会话(订阅方无感;对齐 switch 语义)。"""
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    first = mgr.create()
+    _run_rounds(mgr, first, ["问题一"])
+    seen: list = []
+    mgr.subscribe(seen.append)
+    forked = mgr.fork(first.session_id)
+    _run_rounds(mgr, forked, ["分叉问题"])
+    assert any(e.type == EventType.SESSION_STARTED for e in seen)
+    assert any(
+        e.type == EventType.SESSION_STARTED
+        and e.metadata.get("previous_session_id") == first.session_id
+        for e in seen
+    )

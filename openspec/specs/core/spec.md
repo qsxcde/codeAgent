@@ -44,9 +44,33 @@
 - **WHEN** 消息被写入历史
 - **THEN** 每条消息带有全局唯一且随时间有序的 id,供后续按 id 引用(删除/归属/恢复)
 
+### Requirement: 工具执行确认
+
+每个工具调用在执行前 SHALL 经安全策略判定:允许(allow)、需确认(ask)或拒绝(deny);判定为需确认时 SHALL 发出确认请求并等待用户响应,**未确认不得执行**;判定为拒绝或用户拒绝时 SHALL 以失败结果回填消息历史,原因对模型可见;被拒绝的操作 SHALL 不产生任何副作用。
+
+#### Scenario: 允许执行
+
+- **WHEN** 策略判定工具调用为允许(如只读白名单命令)
+- **THEN** 工具直接执行,无需确认
+
+#### Scenario: 需确认后批准
+
+- **WHEN** 策略判定工具调用需确认且用户批准
+- **THEN** 工具正常执行,结果照常回填
+
+#### Scenario: 需确认后拒绝
+
+- **WHEN** 策略判定工具调用需确认且用户拒绝
+- **THEN** 工具不执行,该调用以失败结果回填并携带拒绝原因
+
+#### Scenario: 策略拒绝
+
+- **WHEN** 策略判定工具调用为拒绝(如命中危险命令黑名单)
+- **THEN** 工具不执行,该调用以失败结果回填并携带命中原因
+
 ### Requirement: 事件契约
 
-执行过程 SHALL 以事件流对外暴露,事件类型与既有契约一致(10 类):`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage`;执行失败时 SHALL 先回滚再发 `error`;被取消时 SHALL 发 `run_cancelled`。
+执行过程 SHALL 以事件流对外暴露,事件类型与既有契约一致并增量扩展(11 类):`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`;执行失败时 SHALL 先回滚再发 `error`;被取消时 SHALL 发 `run_cancelled`;工具调用需用户确认时 SHALL 发 `confirmation_requested`(携带请求标识、工具、摘要与原因),订阅方据此呈现确认交互。
 
 #### Scenario: 执行进度可订阅
 
@@ -59,6 +83,37 @@
 - **THEN** 本轮消息已回滚,且订阅方收到 `error` 事件
 - **WHEN** 执行被取消
 - **THEN** 本轮消息已回滚,且订阅方收到 `run_cancelled` 事件
+
+#### Scenario: 确认请求可订阅
+
+- **WHEN** 工具调用需用户确认
+- **THEN** 订阅方收到 `confirmation_requested` 事件,携带请求标识、工具名、摘要与确认原因;既有事件类型语义不变(契约只增不改)
+
+
+
+### Requirement: 系统提示词注入
+
+模型端口收到的消息列表 SHALL 以 system 消息起始;system 内容 SHALL 由基础提示词与分层上下文文件(AGENTS.md 等)合并而成;上下文文件 SHALL 按 全局 → 项目 → 子目录 分层加载,越接近工作目录的层级优先级越高(合并顺序越靠后);每个上下文文件的内容 SHALL 携带其来源路径标注,使模型与订阅方可追溯指令出处;加载结果 SHALL 可查询(来源文件列表),供展示与断言。
+
+#### Scenario: 首条 system 消息
+
+- **WHEN** 模型端口生成请求
+- **THEN** 消息列表首条为 system 消息,内容包含基础提示词与合并后的分层上下文
+
+#### Scenario: 分层合并与优先级
+
+- **WHEN** 全局 / 项目 / 子目录均存在上下文文件
+- **THEN** 全部按 全局 → 根 → … → 工作目录 的顺序合并;每个文件内容以来源路径标注;越近工作目录的文件在合并结果中越靠后(优先级越高)
+
+#### Scenario: 候选文件名与去重
+
+- **WHEN** 同一目录存在多个候选文件(如 AGENTS.md 与 CLAUDE.md)
+- **THEN** 按候选优先级取第一个(AGENTS.override.md > AGENTS.md > CLAUDE.md);同一文件不重复注入
+
+#### Scenario: 加载结果可见
+
+- **WHEN** 订阅方/用户查询上下文加载结果
+- **THEN** 返回本次加载的上下文文件来源列表(绝对路径),可展示可断言
 
 ### Requirement: 运行干预
 

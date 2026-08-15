@@ -23,6 +23,7 @@ class EventType:
     ERROR = "error"                          # 图运行出错(供订阅方感知并终止)
     RUN_CANCELLED = "run_cancelled"          # 运行被用户中断(abort 后由 session 广播)
     USAGE = "usage"                          # token 用量(模型 usage_metadata 透传)
+    CONFIRMATION_REQUESTED = "confirmation_requested"  # 工具执行需用户确认(security-permissions)
 
 
 @dataclass

@@ -50,7 +50,7 @@ def test_unknown_command():
 
 
 def test_registry_covers_expected_commands():
-    """T-44 命令表全部注册(含未接线的 /undo 槽位)。"""
+    """T-44 命令表全部注册;``/fork`` 自 session-fork 落地(T-42 改写)。"""
     names = set(REGISTRY)
     assert {
         "help",
@@ -61,20 +61,33 @@ def test_registry_covers_expected_commands():
         "provider",
         "model",
         "effort",
-        "undo",
+        "fork",
+        "compact",
     } <= names
+    assert "undo" not in names  # /undo 槽位已由 /fork 取代
 
 
-def test_undo_registered_but_not_available():
-    """/undo 注册槽位但未接线(T-42 前提示未可用,不静默忽略)。"""
-    assert REGISTRY["undo"].available is False
+def test_fork_command_registered_and_parsed():
+    """/fork 注册、解析参数(message-id 可选)。"""
+    assert REGISTRY["fork"].available is True
+    cmd = parse("/fork abc-123", REGISTRY)
+    assert isinstance(cmd, Command) and cmd.name == "fork" and cmd.args == ("abc-123",)
+    cmd = parse("/fork", REGISTRY)
+    assert isinstance(cmd, Command) and cmd.args == ()  # 缺省最近用户消息
+
+
+def test_compact_command_registered_and_parsed():
+    """/compact 注册、解析(无参数)。"""
+    assert REGISTRY["compact"].available is True
+    cmd = parse("/compact", REGISTRY)
+    assert isinstance(cmd, Command) and cmd.name == "compact" and cmd.args == ()
 
 
 def test_help_text_covers_all_commands():
     text = help_text(REGISTRY)
     for spec in REGISTRY.values():
         assert f"/{spec.name}" in text
-    assert "(未可用)" in text  # /undo 的未接线状态可见(NFR-U7 可发现性)
+    assert "/fork" in text
 
 
 def test_help_text_markup_available():

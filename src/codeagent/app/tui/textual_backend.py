@@ -18,21 +18,26 @@ from rich.text import Text
 from textual.app import App
 from textual.binding import Binding
 from textual.containers import HorizontalGroup, VerticalGroup
-from textual.events import Click, Resize
+from textual.events import Click, MouseScrollDown, MouseScrollUp, Resize
 from textual.message import Message
 from textual.widgets import Label, Static, TextArea
 
 from codeagent.app.tui.backend import (
     ClickHandler,
+    ConfirmationResponseHandler,
     InputChangedHandler,
     InterruptHandler,
     ResizeHandler,
+    ScrollHandler,
     SubmitHandler,
     SuggestionConfirmHandler,
     SuggestionNavHandler,
 )
 from codeagent.app.tui.components import RichLine
-from codeagent.app.tui.theme import PALETTE
+from codeagent.app.tui.theme import BOLD, PALETTE
+
+#: 滚轮每格对应的行数(终端惯例:一个齿 ≈ 3 行)。
+_WHEEL_LINES = 3
 
 
 def _color(tag: str | None) -> str | None:
@@ -44,7 +49,11 @@ def _line_to_text(line: RichLine) -> Text:
     for span in line:
         text.append(
             span.text,
-            style=Style(color=_color(span.fg), bgcolor=_color(span.bg)),
+            style=Style(
+                color=_color(span.fg),
+                bgcolor=_color(span.bg),
+                bold=(span.fg == BOLD),  # bold 标签经引擎映射为字重而非色值(design T-46)
+            ),
         )
     return text
 
@@ -68,9 +77,10 @@ class InputSubmitted(Message):
 
 
 class _InputArea(TextArea):
-    """多行输入区:Enter 提交、Shift+Enter 换行、补全键位拦截(T-45)。
+    """多行输入区:Enter 提交、Shift+Enter 换行、补全键位拦截(T-45)、确认键(T-40)。
 
     - 补全激活时(backend 记录):↑/↓ 导航建议、Enter/Tab 确认填入、Esc 收起;
+    - 确认条激活时(backend 记录):y/n 归属确认条,不落入输入文本;
     - 补全未激活:↑/↓ 恢复输入框光标移动、Tab 原生焦点切换、Enter 提交;
     - ``tab_behavior`` 保持默认 focus:Esc 不被吞,可冒泡到应用层打断/退出。
     """
@@ -81,6 +91,8 @@ class _InputArea(TextArea):
         Binding("up", "suggest_up", "上一条建议", show=False, priority=True),
         Binding("down", "suggest_down", "下一条建议", show=False, priority=True),
         Binding("tab", "suggest_tab", "补全/切换焦点", show=False, priority=True),
+        Binding("y", "confirm_yes", "允许", show=False, priority=True),
+        Binding("n", "confirm_no", "拒绝", show=False, priority=True),
     ]
 
     def __init__(self, backend: "TextualBackend", placeholder: str = "") -> None:
@@ -122,20 +134,46 @@ class _InputArea(TextArea):
         else:
             self.screen.focus_next()
 
+    def action_confirm_yes(self) -> None:
+        if self._backend.confirmation_active:
+            self._backend._notify_confirmation_response(True)
+        else:
+            self.insert("y")
+
+    def action_confirm_no(self) -> None:
+        if self._backend.confirmation_active:
+            self._backend._notify_confirmation_response(False)
+        else:
+            self.insert("n")
+
 class _Transcript(Static):
-    """显示组件渲染行、转发点击的 transcript widget。"""
+    """显示组件渲染行、转发点击与滚轮的 transcript widget。
+
+    - 点击 → ``on_click(相对行号)``(design D4,工具折叠);
+    - 滚轮 → ``_notify_scroll(±_WHEEL_LINES)``(design T-47);``stop()`` 防止
+      事件冒泡到其它可滚动祖先,保证滚动语义唯一归属 transcript 视口。
+    """
 
     def on_click(self, event: Click) -> None:
         self._backend._notify_click(event.y)
 
+    def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:
+        self._backend._notify_scroll(_WHEEL_LINES)
+        event.stop()
+
+    def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
+        self._backend._notify_scroll(-_WHEEL_LINES)
+        event.stop()
+
 
 class _Composer(VerticalGroup):
-    """Codex 风格 composer:无边框的深灰输入条 + 补全建议条(T-45)。
+    """Codex 风格 composer:无边框的深灰输入条 + 确认条 + 补全建议条(T-45/T-40)。
 
     - 高度自适应:行数 1..MAX_HEIGHT,超出后内部滚动(不占剩余布局);
     - 默认只显示 ``›``、占位文字和光标，不显示外框或快捷键说明;
     - Enter 提交 / Shift+Enter 换行(见 ``_InputArea``);
-    - suggestions 为输入框上方的补全建议条(空 = 高度 0 隐藏)。
+    - confirmation 为确认条(security-permissions,空 = 高度 0 隐藏),位于
+      建议条之上;suggestions 为补全建议条。
     """
 
     #: 输入区最大高度(行);超出后 TextArea 内部滚动。
@@ -147,6 +185,8 @@ class _Composer(VerticalGroup):
         self.styles.height = 3
         self.styles.background = "#2b2b2b"
         self.styles.padding = (1, 0)
+        self.confirmation = Static("", id="confirmation")
+        self.confirmation.styles.height = 0  # 默认隐藏
         self.suggestions = Static("", id="suggestions")
         self.suggestions.styles.height = 0  # 默认隐藏
         self.input_row = HorizontalGroup(id="composer-input-row")
@@ -162,22 +202,24 @@ class _Composer(VerticalGroup):
         self._input_lines = 1
 
     def compose(self):
+        yield self.confirmation
         yield self.suggestions
         with self.input_row:
             yield self.prompt
             yield self.input
 
     def _refresh_height(self) -> None:
-        """高度自适应:输入行数 1..MAX_HEIGHT + 呼吸空间 + 建议条行数(D3)。
+        """高度自适应:输入行数 1..MAX_HEIGHT + 呼吸空间 + 确认条/建议条行数(D3)。
 
-        建议条显示时计入其高度,避免输入行被固定高度裁剪(视觉测试缺陷)。
-        输入行数取缓存值,本方法在 set_suggestions 路径也可安全调用。
+        确认条与建议条显示时计入其高度,避免输入行被固定高度裁剪(视觉测试缺陷)。
+        输入行数取缓存值,本方法在 set_suggestions / set_confirmation 路径也可安全调用。
         """
         lines = min(self.MAX_HEIGHT, max(1, self._input_lines))
         self.input.styles.height = lines
+        confirm = int(self.confirmation.styles.height.value)
         suggest = int(self.suggestions.styles.height.value)
         # 默认一行文字上下各留一行空白；内容增长时保留同样的呼吸空间。
-        self.styles.height = lines + 2 + suggest
+        self.styles.height = lines + 2 + confirm + suggest
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """高度自适应与输入变更通知(见 ``_refresh_height``)。"""
@@ -197,6 +239,10 @@ class _TextualApp(App):
     BINDINGS = [
         ("escape", "interrupt_or_exit", "打断/退出"),
         ("ctrl+q", "interrupt_or_exit", "退出"),
+        # 键盘滚动(T-47):priority=True 保证按键归属由应用层显式分派——
+        # 输入框聚焦归编辑区(TextArea 原生翻页),否则滚动 transcript 视口。
+        Binding("pageup", "page_up", "上翻页", show=False, priority=True),
+        Binding("pagedown", "page_down", "下翻页", show=False, priority=True),
     ]
 
     def __init__(self, backend: "TextualBackend") -> None:
@@ -224,6 +270,23 @@ class _TextualApp(App):
     def action_interrupt_or_exit(self) -> None:
         self._backend._notify_interrupt()
 
+    def _page_delta(self) -> int:
+        """一页的行数(视口高 - 1,至少 1 行;design T-47 键盘翻页)。"""
+        return max(1, self.transcript.size.height - 1)
+
+    def action_page_up(self) -> None:
+        if self.composer.input.has_focus:
+            # 输入框聚焦:按键归属编辑区(原生翻页移动光标),不滚动视口。
+            self.composer.input.action_cursor_page_up()
+            return
+        self._backend._notify_scroll(self._page_delta())
+
+    def action_page_down(self) -> None:
+        if self.composer.input.has_focus:
+            self.composer.input.action_cursor_page_down()
+            return
+        self._backend._notify_scroll(-self._page_delta())
+
     def on_input_submitted(self, message: InputSubmitted) -> None:
         self._backend._notify_submit(message.text)
 
@@ -240,9 +303,13 @@ class TextualBackend:
         self._input_changed_handler: InputChangedHandler | None = None
         self._suggestion_nav_handler: SuggestionNavHandler | None = None
         self._suggestion_confirm_handler: SuggestionConfirmHandler | None = None
+        self._scroll_handler: ScrollHandler | None = None
+        self._confirmation_handler: ConfirmationResponseHandler | None = None
         self._exit_lines: list[str] | None = None
         #: 补全浮层激活态:引擎层据此分派 ↑/↓/Tab/Enter(见 _InputArea)。
         self.suggestions_active = False
+        #: 确认条激活态:引擎层据此分派 y/n(见 _InputArea;security-permissions)。
+        self.confirmation_active = False
 
     # -- 端口实现 ----------------------------------------------------------
 
@@ -306,6 +373,26 @@ class TextualBackend:
     def on_suggestion_confirm(self, handler: SuggestionConfirmHandler) -> None:
         self._suggestion_confirm_handler = handler
 
+    def on_scroll(self, handler: ScrollHandler) -> None:
+        self._scroll_handler = handler
+
+    def set_confirmation(self, lines: list[RichLine] | None) -> None:
+        """显示/隐藏确认条;激活态供输入区 y/n 键分派(security-permissions)。
+
+        确认条高度变化后同步刷新 composer 高度,输入行不被裁剪(同 D3 机制)。
+        """
+        self.confirmation_active = bool(lines)
+        if lines:
+            self._app.composer.confirmation.update(rich_to_text(lines))
+            self._app.composer.confirmation.styles.height = len(lines)
+        else:
+            self._app.composer.confirmation.update("")
+            self._app.composer.confirmation.styles.height = 0
+        self._app.composer._refresh_height()
+
+    def on_confirmation_response(self, handler: ConfirmationResponseHandler) -> None:
+        self._confirmation_handler = handler
+
     def exit_document(self, lines: list[str]) -> None:
         self._exit_lines = lines
         self._app.exit()
@@ -346,3 +433,11 @@ class TextualBackend:
     def _notify_suggestion_confirm(self) -> None:
         if self._suggestion_confirm_handler is not None:
             self._suggestion_confirm_handler()
+
+    def _notify_scroll(self, delta: int) -> None:
+        if self._scroll_handler is not None:
+            self._scroll_handler(delta)
+
+    def _notify_confirmation_response(self, approved: bool) -> None:
+        if self._confirmation_handler is not None:
+            self._confirmation_handler(approved)
