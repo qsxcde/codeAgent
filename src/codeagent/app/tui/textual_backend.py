@@ -13,14 +13,17 @@
 
 from __future__ import annotations
 
+from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual.app import App
 from textual.binding import Binding
+from textual.color import Color
 from textual.containers import HorizontalGroup, VerticalGroup
-from textual.events import Click, MouseScrollDown, MouseScrollUp, Resize
+from textual.events import Click, Key, MouseScrollDown, MouseScrollUp, Resize
+from textual.filter import LineFilter
 from textual.message import Message
-from textual.widgets import Label, Static, TextArea
+from textual.widgets import Label, Rule, Static, TextArea
 
 from codeagent.app.tui.backend import (
     ClickHandler,
@@ -39,6 +42,49 @@ from codeagent.app.tui.theme import BOLD, PALETTE
 
 #: 滚轮每格对应的行数(终端惯例:一个齿 ≈ 3 行)。
 _WHEEL_LINES = 3
+
+
+def _strip_default_bg(style: Style) -> Style:
+    """重建 Style,仅去掉 default 背景(Style 不可变,无 setter)。"""
+    return Style(
+        color=style.color,
+        bold=style.bold,
+        dim=style.dim,
+        italic=style.italic,
+        underline=style.underline,
+        blink=style.blink,
+        blink2=style.blink2,
+        reverse=style.reverse,
+        conceal=style.conceal,
+        strike=style.strike,
+        underline2=style.underline2,
+        frame=style.frame,
+        encircle=style.encircle,
+        overline=style.overline,
+        link=style.link,
+        meta=style.meta,
+    )
+
+
+class _NoDefaultBackground(LineFilter):
+    """剥离 Rich default 背景,使其落到终端默认背景(背景融合)。
+
+    Textual 的 ANSIToTruecolor 过滤器把 default 背景映射为主题实色
+    (rgb(12,12,12)),导致全屏不透明;本过滤器插在其之前,把 default
+    背景的样式重建为无背景,显式色值背景原样透传。
+    """
+
+    def apply(self, segments: list[Segment], background: Color) -> list[Segment]:
+        return [
+            (
+                Segment(segment.text, _strip_default_bg(segment.style), segment.control)
+                if segment.style is not None
+                and segment.style.bgcolor is not None
+                and segment.style.bgcolor.is_default
+                else segment
+            )
+            for segment in segments
+        ]
 
 
 def _color(tag: str | None) -> str | None:
@@ -81,19 +127,25 @@ class _InputArea(TextArea):
     """多行输入区:Enter 提交、Shift+Enter 换行、补全键位拦截(T-45)、确认键(T-40)。
 
     - 补全激活时(backend 记录):↑/↓ 导航建议、Enter/Tab 确认填入、Esc 收起;
-    - 确认条激活时(backend 记录):y/n 归属确认条,不落入输入文本;
+    - 确认条激活时(backend 记录):y/n 归属确认条,不落入输入文本;确认未激活
+      时不拦截任何按键(含粘贴/突发输入),全部走输入区原生路径——早期用
+      priority 绑定常驻拦截 y/n,突发输入下 insert() 回填与原生输入竞争,
+      导致字符丢失/重排(视觉测试缺陷);
     - 补全未激活:↑/↓ 恢复输入框光标移动、Tab 原生焦点切换、Enter 提交;
+      换行键 Shift+Enter 依赖 kitty 键盘协议,不支持的终端改用 Ctrl+J;
     - ``tab_behavior`` 保持默认 focus:Esc 不被吞,可冒泡到应用层打断/退出。
     """
 
     BINDINGS = [
         Binding("enter", "submit", "发送", show=False, priority=True),
         Binding("shift+enter", "insert_newline", "换行", show=False, priority=True),
+        # 兜底换行键:shift+enter 依赖 kitty 键盘协议,不支持的终端与 Enter
+        # 同码;textual 又会丢弃 ESC+CR 的 ESC(alt+enter 不可达);ctrl+j(\n)
+        # 在所有终端都有独立字节,恒可换行。
+        Binding("ctrl+j", "insert_newline", "换行", show=False, priority=True),
         Binding("up", "suggest_up", "上一条建议", show=False, priority=True),
         Binding("down", "suggest_down", "下一条建议", show=False, priority=True),
         Binding("tab", "suggest_tab", "补全/切换焦点", show=False, priority=True),
-        Binding("y", "confirm_yes", "允许", show=False, priority=True),
-        Binding("n", "confirm_no", "拒绝", show=False, priority=True),
     ]
 
     def __init__(self, backend: "TextualBackend", placeholder: str = "") -> None:
@@ -135,17 +187,16 @@ class _InputArea(TextArea):
         else:
             self.screen.focus_next()
 
-    def action_confirm_yes(self) -> None:
-        if self._backend.confirmation_active:
+    def on_key(self, event: Key) -> None:
+        """确认条激活时 y/n 归属确认条;其余情形不触碰事件(原生输入路径)。"""
+        if not self._backend.confirmation_active:
+            return
+        if event.key == "y":
+            event.stop()
             self._backend._notify_confirmation_response(True)
-        else:
-            self.insert("y")
-
-    def action_confirm_no(self) -> None:
-        if self._backend.confirmation_active:
+        elif event.key == "n":
+            event.stop()
             self._backend._notify_confirmation_response(False)
-        else:
-            self.insert("n")
 
 class _Transcript(Static):
     """显示组件渲染行、转发点击与滚轮的 transcript widget。
@@ -168,9 +219,11 @@ class _Transcript(Static):
 
 
 class _Composer(VerticalGroup):
-    """Codex 风格 composer:无边框的深灰输入条 + 确认条 + 补全建议条(T-45/T-40)。
+    """极简 composer:上下全宽细分隔线 + 透明背景输入行(T-45/T-40)。
 
+    - 无实色背景(与终端背景融合);上下各一条全宽 solid 分隔线;
     - 高度自适应:行数 1..MAX_HEIGHT,超出后内部滚动(不占剩余布局);
+      高度 = 输入行数 + 分隔线 2 行 + 确认条/建议条行数;
     - 默认只显示 ``›``、占位文字和光标，不显示外框或快捷键说明;
     - Enter 提交 / Shift+Enter 换行(见 ``_InputArea``);
     - confirmation 为确认条(security-permissions,空 = 高度 0 隐藏),位于
@@ -184,8 +237,11 @@ class _Composer(VerticalGroup):
         super().__init__()
         self._backend = backend
         self.styles.height = 3
-        self.styles.background = "#2b2b2b"
-        self.styles.padding = (1, 0)
+        self.top_rule = Rule(id="composer-top-rule")
+        self.bottom_rule = Rule(id="composer-bottom-rule")
+        for rule in (self.top_rule, self.bottom_rule):
+            rule.styles.margin = 0
+            rule.styles.color = "#5a5a5a"
         self.confirmation = Static("", id="confirmation")
         self.confirmation.styles.height = 0  # 默认隐藏
         self.suggestions = Static("", id="suggestions")
@@ -198,34 +254,39 @@ class _Composer(VerticalGroup):
         self.input.soft_wrap = True
         self.input.show_line_numbers = False
         self.input.styles.height = 1
-        self.input.styles.background = "#2b2b2b"
         # 输入行数缓存:_refresh_height 可在无事件上下文(set_suggestions 路径)使用。
         self._input_lines = 1
 
     def compose(self):
+        yield self.top_rule
         yield self.confirmation
         yield self.suggestions
         with self.input_row:
             yield self.prompt
             yield self.input
+        yield self.bottom_rule
 
     def _refresh_height(self) -> None:
-        """高度自适应:输入行数 1..MAX_HEIGHT + 呼吸空间 + 确认条/建议条行数(D3)。
+        """高度自适应:渲染行数 1..MAX_HEIGHT + 上下分隔线 + 确认条/建议条行数(D3)。
 
-        确认条与建议条显示时计入其高度,避免输入行被固定高度裁剪(视觉测试缺陷)。
-        输入行数取缓存值,本方法在 set_suggestions / set_confirmation 路径也可安全调用。
+        行数取逻辑行数与软换行渲染行数(virtual_size.height)的较大者:
+        单行超长输入软换行后按渲染行增高,而非固定一行高把视图滚到光标处。
+        virtual_size 在布局后才更新,``on_text_area_changed`` 会在 refresh 后
+        重算一次。确认条与建议条显示时计入其高度,避免输入行被裁剪(视觉测试缺陷)。
         """
-        lines = min(self.MAX_HEIGHT, max(1, self._input_lines))
+        wrapped = self.input.virtual_size.height
+        lines = min(self.MAX_HEIGHT, max(1, self._input_lines, wrapped))
         self.input.styles.height = lines
         confirm = int(self.confirmation.styles.height.value)
         suggest = int(self.suggestions.styles.height.value)
-        # 默认一行文字上下各留一行空白；内容增长时保留同样的呼吸空间。
         self.styles.height = lines + 2 + confirm + suggest
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """高度自适应与输入变更通知(见 ``_refresh_height``)。"""
         self._input_lines = event.text_area.document.line_count
         self._refresh_height()
+        # 软换行渲染行数在布局后才可得,refresh 后按 virtual_size 重算高度。
+        self.call_after_refresh(self._refresh_height)
         # 输入变化通知视图:计算补全建议(T-45)。
         self._backend._notify_input_changed(event.text_area.text)
 
@@ -233,7 +294,7 @@ class _Composer(VerticalGroup):
 class _TextualApp(App):
     """承载 transcript / 多行 composer / 单行状态栏的 textual App。
 
-    纵向 Dock:transcript(1fr)→ 无边框 composer(1~4 行)→ 单行状态栏。
+    纵向 Dock:transcript(1fr)→ 分隔线 composer(1~4 行)→ 单行状态栏。
     状态栏为单行会话元信息(模型、思考强度与工作目录)。
     """
 
@@ -243,8 +304,8 @@ class _TextualApp(App):
         Binding("escape", "interrupt", "打断", show=False),
         Binding("ctrl+c", "quit", "退出", show=False, priority=True),
         Binding("ctrl+q", "quit", "退出", show=False, priority=True),
-        # 键盘滚动(T-47):priority=True 保证按键归属由应用层显式分派——
-        # 输入框聚焦归编辑区(TextArea 原生翻页),否则滚动 transcript 视口。
+        # 键盘滚动(T-47):priority=True 抢先于输入区,PageUp/PageDown 恒定
+        # 滚动 transcript 视口(输入框 1~4 行,无整页光标移动需求)。
         Binding("pageup", "page_up", "上翻页", show=False, priority=True),
         Binding("pagedown", "page_down", "下翻页", show=False, priority=True),
     ]
@@ -264,6 +325,14 @@ class _TextualApp(App):
         yield self.status
 
     def on_mount(self) -> None:
+        # 背景融合:剥离 default 背景(须先于 ANSIToTruecolor),四处背景改为
+        # 终端默认背景语义;显式色值背景(用户消息块)不受影响。TextArea 主题
+        # 背景为实色,须显式覆盖为终端默认背景。
+        self._filters.insert(0, _NoDefaultBackground())
+        self.styles.background = "ansi_default"
+        self.screen.styles.background = "ansi_default"
+        self.transcript.styles.background = "ansi_default"
+        self.composer.input.styles.background = "ansi_default"
         self.composer.input.focus()
         # 首次渲染(等布局尺寸稳定后触发 resize 处理器)。
         self.call_after_refresh(self._backend._notify_resize)
@@ -284,16 +353,9 @@ class _TextualApp(App):
         return max(1, self.transcript.size.height - 1)
 
     def action_page_up(self) -> None:
-        if self.composer.input.has_focus:
-            # 输入框聚焦:按键归属编辑区(原生翻页移动光标),不滚动视口。
-            self.composer.input.action_cursor_page_up()
-            return
         self._backend._notify_scroll(self._page_delta())
 
     def action_page_down(self) -> None:
-        if self.composer.input.has_focus:
-            self.composer.input.action_cursor_page_down()
-            return
         self._backend._notify_scroll(-self._page_delta())
 
     def on_input_submitted(self, message: InputSubmitted) -> None:
@@ -424,10 +486,8 @@ class TextualBackend:
             self._quit_handler()
 
     def _notify_interrupt(self) -> None:
-        # 补全浮层激活时 Esc 先收起浮层,不触发打断/退出(T-45)。
-        if self.suggestions_active:
-            self.set_suggestions([])
-            return
+        # Esc 一律交由视图分派:浮层收起(值语境连同输入清空)/运行打断/空闲提示,
+        # 引擎层不自行消费,避免与视图状态脱节(T-45 内联选择后归一)。
         if self._interrupt_handler is not None:
             self._interrupt_handler()
 

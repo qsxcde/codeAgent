@@ -28,7 +28,7 @@ from codeagent.app.tui.commands import (
 )
 from codeagent.app.tui.components import FooterInfo, Span, TuiModel, ToolCallBlock
 from codeagent.app.tui.fuzzy import fuzzy_rank
-from codeagent.app.tui.theme import ACCENT, DIM, ERROR, WARNING
+from codeagent.app.tui.theme import ACCENT, DIM, ERROR, SUCCESS, WARNING
 from codeagent.core.events import EventType
 
 #: 退出文档的兜底宽度(视口尺寸不可用时)。
@@ -40,6 +40,13 @@ _COMMANDS = default_registry()
 #: 建议浮层最多展示行数。
 _MAX_SUGGESTIONS = 9
 
+#: picker 命令候选缺失/未注入热切换时的用法提示。
+_PICKER_HINTS = {
+    "provider": "/provider <name>: 切换模型提供方",
+    "model": "/model <model[:effort]>: 切换模型(支持内联思考强度)",
+    "effort": "/effort <level>: 切换思考强度",
+}
+
 
 class TuiApp:
     """把会话事件流驱动成组件渲染 + 输入/打断/退出的视图逻辑。"""
@@ -50,7 +57,7 @@ class TuiApp:
         backend: TuiBackend,
         footer: FooterInfo | None = None,
         rebuild_ports: Any = None,
-        candidates: dict[str, list[str]] | None = None,
+        candidates: dict[str, Any] | None = None,
         agents_sources: list[str] | None = None,
     ) -> None:
         """``rebuild_ports(provider, model, effort) -> (model, effort)`` 为组合根
@@ -65,8 +72,13 @@ class TuiApp:
         self._agents_sources = agents_sources or []
         self._suggestions: list[str] = []
         self._suggestion_index = 0
+        #: 建议浮层候选语境:"command" = 命令名补全,"value" = picker 值候选。
+        self._suggestion_kind = "command"
         # 确认填入后抑制下一次建议重算(set_input_text 的异步变更通知不重弹浮层,D1)。
         self._suppress_next_suggestions = False
+        #: 最近一次输入内容(值语境确认时据此还原命令名)。
+        self._last_text = ""
+        self._provider = footer.provider if footer is not None else ""
         #: 当前待确认请求(confirmation_requested 的 payload;None = 无确认条)。
         self._pending_confirmation: dict[str, Any] | None = None
         self.model = TuiModel()
@@ -166,10 +178,18 @@ class TuiApp:
             return name, list(_COMMANDS)
         if name in ("provider", "model", "effort"):
             # 有空格:选择器候选(rest 可为空 = 全量候选)。
-            return rest, self._candidates.get(name, [])
+            return rest, self._picker_candidates(name)
         return None
 
+    def _picker_candidates(self, name: str) -> list[str]:
+        """picker 值候选:model 按当前 provider 过滤(组合根注入 provider→模型表)。"""
+        if name == "model":
+            by_provider = self._candidates.get("model", {})
+            return list(by_provider.get(self._provider, []))
+        return list(self._candidates.get(name, []))
+
     def _on_input_changed(self, text: str) -> None:
+        self._last_text = text
         if self._suppress_next_suggestions:
             # 确认填入引发的异步变更通知:收起浮层、跳过本次计算(D1)。
             self._suppress_next_suggestions = False
@@ -177,6 +197,7 @@ class TuiApp:
             self._backend.set_suggestions([])
             return
         ctx = self._suggestion_context(text)
+        self._suggestion_kind = "command" if " " not in text else "value"
         if ctx is None:
             self._suggestions = []
             self._backend.set_suggestions([])
@@ -203,6 +224,21 @@ class TuiApp:
         name = self._suggestions[self._suggestion_index]
         self._suggestions = []
         self._backend.set_suggestions([])
+        # picker 命令的命令名确认 → 进入内联选择(输入框填 "/kind " 弹候选浮层)。
+        if self._suggestion_kind == "command" and _COMMANDS[name].picker:
+            self._open_inline_picker(name)
+            return
+        # picker 命令的候选值确认 → 直接生效(不填回输入框)。
+        cmd_name = self._last_text[1:].partition(" ")[0]
+        spec = _COMMANDS.get(cmd_name)
+        if self._suggestion_kind == "value" and spec is not None and spec.picker:
+            self._suppress_next_suggestions = True
+            self._backend.set_input_text("")
+            if self._apply_config(**self._picker_apply_kwargs(cmd_name, name)):
+                if cmd_name == "provider":
+                    self._provider = name
+            self._schedule_render()
+            return
         # 置位后再填入:set_input_text 引发的异步变更通知将被抑制,浮层不重弹(D1)。
         self._suppress_next_suggestions = True
         self._backend.set_input_text(f"/{name}")
@@ -211,17 +247,52 @@ class TuiApp:
         if not self._suggestions:
             self._backend.set_suggestions([])
             return
+        current = self._current_picker_value() if self._suggestion_kind == "value" else ""
         lines: list[list[Span]] = []
         for index, name in enumerate(self._suggestions):
             active = index == self._suggestion_index
             fg = ACCENT if active else DIM
-            lines.append(
-                [
-                    Span("› " if active else "  ", fg=fg),
-                    Span(f"/{name}", fg=fg),
-                ]
-            )
+            spans = [Span("› " if active else "  ", fg=fg)]
+            if self._suggestion_kind == "command":
+                # 命令条目附 summary 描述列(命令名语境)。
+                spans.append(Span(f"/{name}", fg=fg))
+                spans.append(Span(f" — {_COMMANDS[name].summary}", fg=DIM))
+            else:
+                # 值候选:纯名称,当前生效项打 ✓。
+                marked = bool(current) and name == current
+                spans.append(Span("✓ " if marked else "  ", fg=SUCCESS if marked else DIM))
+                spans.append(Span(name, fg=fg))
+            lines.append(spans)
         self._backend.set_suggestions(lines)
+
+    # -- 内联选择(/provider /model /effort)--------------------------------
+
+    def _open_inline_picker(self, kind: str) -> None:
+        """无参 picker 命令 → 输入框填 ``/kind `` 弹候选浮层(与命令补全同款 UX:
+        ↑↓ 导航、键入过滤、Enter 生效、Esc 收起)。候选缺失或未注入热切换时
+        回退用法提示。"""
+        if not self._picker_candidates(kind) or self._rebuild_ports is None:
+            self.model.append_info(_PICKER_HINTS[kind])
+            self._schedule_render()
+            return
+        self._backend.set_input_text(f"/{kind} ")
+
+    def _picker_apply_kwargs(self, kind: str, value: str) -> dict[str, str | None]:
+        """值确认的热切换参数:model/effort 锁定当前 provider(候选按 provider 分表)。"""
+        if kind == "provider":
+            return {"provider": value}
+        return {"provider": self._provider or None, kind: value}
+
+    def _current_picker_value(self) -> str:
+        """值语境当前生效值(浮层 ✓ 标记):按输入中的命令名取状态栏/装配记录。"""
+        cmd_name = self._last_text[1:].partition(" ")[0]
+        if cmd_name == "model":
+            return self.model.status.model
+        if cmd_name == "effort":
+            return self.model.status.effort
+        if cmd_name == "provider":
+            return self._provider
+        return ""
 
     # -- 输入 / 打断 / 退出 ------------------------------------------------
 
@@ -375,43 +446,55 @@ class TuiApp:
 
     def _cmd_provider(self, cmd: Command) -> None:
         if not cmd.args:
-            self.model.append_info("/provider <name>: 切换模型提供方")
+            self._open_inline_picker("provider")
             return
         self._apply_config(provider=cmd.args[0])
 
     def _cmd_model(self, cmd: Command) -> None:
         if not cmd.args:
-            self.model.append_info("/model <model[:effort]>: 切换模型(支持内联思考强度)")
+            self._open_inline_picker("model")
             return
         self._apply_config(model=cmd.args[0])
 
     def _cmd_effort(self, cmd: Command) -> None:
         if not cmd.args:
-            self.model.append_info("/effort <level>: 切换思考强度")
+            self._open_inline_picker("effort")
             return
         self._apply_config(effort=cmd.args[0])
 
     def _apply_config(
         self, *, provider: str | None = None, model: str | None = None, effort: str | None = None
-    ) -> None:
-        """配置热切换:经组合根注入的回调重建端口;未知值 ValueError 就地提示。"""
+    ) -> bool:
+        """配置热切换:经组合根注入的回调重建端口;未知值 ValueError 就地提示。
+
+        返回是否切换成功(选择面板确认路径据此更新当前 provider 记录)。
+        """
         if self._rebuild_ports is None:
             self.model.append_info("当前环境不支持热切换(未注入端口重建器)")
-            return
+            return False
         try:
             new_model, new_effort = self._rebuild_ports(provider, model, effort)
         except ValueError as exc:
             self.model.append_info(str(exc))
-            return
+            return False
         self.model.status.model = new_model
         self.model.status.effort = new_effort
         self.model.append_info("已切换配置")
+        return True
 
     def _interrupt(self) -> None:
-        """Esc:运行中打断当前会话;空闲提示退出方式(不再直接退出,收尾补丁)。
+        """Esc:运行中打断当前会话;浮层激活时收起浮层;空闲提示退出方式。
 
         退出键位已拆分为 Ctrl+C / Ctrl+Q(见 ``_quit``)。
         """
+        if self._suggestions and not self.model.running:
+            # 选择浮层激活:Esc 仅收起(值语境 = 取消选择,连同输入清空)。
+            self._suggestions = []
+            self._backend.set_suggestions([])
+            if self._suggestion_kind == "value":
+                self._suppress_next_suggestions = True
+                self._backend.set_input_text("")
+            return
         if self.model.running:
             session = self._manager.current
             if session is not None:

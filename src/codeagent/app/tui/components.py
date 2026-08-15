@@ -582,11 +582,13 @@ class FooterInfo:
     """底部状态栏装配数据(装配时解析固化,design D5)。
 
     - ``model`` / ``effort``:状态栏中的模型与思考强度;
+    - ``provider``:当前 provider(选择面板 ✓ 标记用;状态栏不显示);
     - ``cwd``:状态栏显示的工作目录。
     """
 
     model: str = ""
     effort: str = ""
+    provider: str = ""
     cwd: str = ""
 
 

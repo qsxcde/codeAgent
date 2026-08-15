@@ -394,3 +394,28 @@ def test_parallel_ask_confirmations_sequential():
         assert "echo two" not in [m.content for m in history if m.role == "tool"]
 
     asyncio.run(scenario())
+
+
+def test_policy_allow_with_warning_prepends_notice():
+    """allow 且带警告(越界读):结果文本前置警告,模型可见(spec「文件访问边界」)。"""
+    model = _bash_model()
+    ports = _ports(
+        model,
+        policy=_StubPolicyWithWarning("bash"),
+    )
+    _, events, history = asyncio.run(_run(model, "跑", policy=ports.policy))
+    result = next(e for e in events if e.type == EventType.TOOL_RESULT)
+    assert result.metadata["error"] is False  # 放行执行
+    assert "[越界读取警告]" in result.payload
+    assert "ok" in result.payload  # 正常输出仍在
+    assert "越界读取警告" in history[2].content
+
+
+class _StubPolicyWithWarning:
+    """allow + warning(回归:warning 此前被 loop 忽略,模型看不到越界提示)。"""
+
+    def __init__(self, tool_name: str) -> None:
+        self._tool_name = tool_name
+
+    def decide(self, tool_name: str, args: dict):
+        return PolicyDecision("allow", reason=f"越界读取: {args.get('command', '')}", warning=True)

@@ -347,7 +347,10 @@ def create_tui_app(
     from codeagent.app.tui.components import FooterInfo
     from codeagent.app.tui.view import TuiApp
 
+    from codeagent.ai.catalog.registry import ModelRegistry
     from codeagent.ai.factory import create_llm
+
+    registry = registry if registry is not None else ModelRegistry()
 
     summarizer = LlmSummarizer(
         create_llm(
@@ -385,17 +388,30 @@ def create_tui_app(
 
         唯一跨层点:构造新 LLM 端口必须经组合根;解析出的 (model, effort)
         返回给视图更新状态栏。未知 provider 抛 ValueError 由视图提示。
+
+        picker 候选为跨 provider 合并,故仅切模型时按目录推断归属 provider
+        (id 唯一归属才推断;歧义时保持原解析链,错误提示照常)。
         """
+        target_provider = new_provider
+        if new_model and target_provider is None and registry is not None:
+            from codeagent.ai.model_pattern import split_model_pattern
+
+            base = split_model_pattern(new_model)[0]
+            owners = [
+                p for p in registry.catalog_providers() if base in registry.available(p)
+            ]
+            if len(owners) == 1:
+                target_provider = owners[0]
         new_ports = create_agent_ports(
             cfg,
             registry=registry,
             reasoning_effort=new_effort or reasoning_effort,
-            provider=new_provider or None,
+            provider=target_provider or None,
             model=new_model or None,
             approval_mode="interactive",  # 热切换保留确认环(security-permissions)
         )
         model_id, effort = _resolve_model_effort(
-            cfg, new_provider, new_model, new_effort or reasoning_effort
+            cfg, target_provider, new_model, new_effort or reasoning_effort
         )
         manager.replace_ports(new_ports, model=model_id, effort=effort)
         return model_id, effort
@@ -410,23 +426,21 @@ def create_tui_app(
     )
 
 
-def _resolve_candidates(cfg: Any = None, registry: Any = None) -> dict[str, list[str]]:
+def _resolve_candidates(cfg: Any = None, registry: Any = None) -> dict[str, Any]:
     """选择器候选(design T-45):provider / model / effort 各一份,组合根注入。
 
-    provider 取注册表工厂;model 取全部目录模型(跨 provider 合并,resolve 时
-    按 provider 校验);effort 为约定强度档位。TUI 层不读配置,候选在此固化。
+    provider 取注册表工厂;model 按 provider 分表(视图按当前 provider 过滤,
+    保证 /model 只列当前提供商的模型);effort 为约定强度档位。TUI 层不读配置。
     """
     from codeagent.ai.catalog.registry import ModelRegistry
     from codeagent.ai.providers import PROVIDERS
 
     reg = registry if registry is not None else ModelRegistry()
     providers = sorted(PROVIDERS)
-    models: set[str] = set()
-    for p in providers:
-        models.update(reg.available(p))
+    models = {p: sorted(reg.available(p)) for p in providers if reg.available(p)}
     return {
         "provider": providers,
-        "model": sorted(models),
+        "model": models,
         "effort": ["low", "medium", "high"],
     }
 
@@ -525,9 +539,13 @@ def _resolve_footer_info(
     """
     from pathlib import Path
 
+    from codeagent.app.config import Settings
     from codeagent.app.tui.components import FooterInfo
 
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
+    resolved_provider = (
+        provider or getattr(cfg, "llm_provider", None) or Settings().llm_provider
+    )
     cwd = getattr(cfg, "cwd", None) if cfg is not None else None
     cwd = str(Path(cwd or Path.cwd()).expanduser().resolve())
-    return FooterInfo(model=model_id, effort=effort, cwd=cwd)
+    return FooterInfo(model=model_id, effort=effort, provider=resolved_provider, cwd=cwd)

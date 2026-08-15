@@ -184,6 +184,8 @@ async def _execute_tools(
     policy = ports.policy
     results_by_index: dict[int, ToolResult] = {}
     to_run: list[tuple[int, ToolCall, Any]] = []
+    #: allow 但带警告(越界读):结果文本前置警告,模型可见(spec「文件访问边界」)。
+    warnings_by_index: dict[int, str] = {}
 
     for index, call in enumerate(calls):
         tool = by_name.get(call.name)
@@ -194,6 +196,8 @@ async def _execute_tools(
             continue
         decision = policy.decide(call.name, call.args) if policy is not None else None
         if decision is None or decision.action == "allow":
+            if decision is not None and decision.warning and decision.reason:
+                warnings_by_index[index] = decision.reason
             to_run.append((index, call, tool))
         elif decision.action == "deny":
             results_by_index[index] = ToolResult(
@@ -234,6 +238,15 @@ async def _execute_tools(
             *(_execute_one(tool, call, timeout) for _, call, tool in to_run)
         )
         for (index, _, _), result in zip(to_run, gathered):
+            warning = warnings_by_index.get(index)
+            if warning:
+                result = ToolResult(
+                    result.tool_call_id,
+                    f"[越界读取警告] {warning}\n{result.content}",
+                    error=result.error,
+                    name=result.name,
+                    rejected=result.rejected,
+                )
             results_by_index[index] = result
 
     return [results_by_index[i] for i in range(len(calls))]

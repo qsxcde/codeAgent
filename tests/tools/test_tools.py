@@ -172,6 +172,18 @@ def test_bash_normal(tmp_path):
     assert "退出码: 0" in out
 
 
+def test_bash_empty_stderr_section_omitted(tmp_path):
+    """stderr 为空时结果不含空 stderr 标签行(TUI 展开视觉噪声)。"""
+    out = _invoke(BashTool(cwd=str(tmp_path)), command="echo hello")
+    assert "stderr" not in out
+
+
+def test_bash_nonempty_stderr_section_kept(tmp_path):
+    """stderr 非空时保留 stderr 段与内容。"""
+    out = _invoke(BashTool(cwd=str(tmp_path)), command="echo oops 1>&2")
+    assert "stderr:" in out and "oops" in out
+
+
 def test_bash_timeout(tmp_path):
     out = _invoke(BashTool(cwd=str(tmp_path)), command="sleep 5", timeout=1)
     assert "超时" in out

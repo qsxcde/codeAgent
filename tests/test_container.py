@@ -145,7 +145,9 @@ def test_create_tui_app_injects_selector_candidates():
     assert "deepseek" in candidates["provider"]
     assert "fake" in candidates["provider"]
     assert candidates["effort"] == ["low", "medium", "high"]
-    assert isinstance(candidates["model"], list)
+    assert isinstance(candidates["model"], dict)
+    assert "deepseek" in candidates["model"]
+    assert candidates["model"]["deepseek"] == sorted(candidates["model"]["deepseek"])
 
 
 @pytest.mark.anyio

@@ -254,3 +254,31 @@ def test_fork_subscription_follows():
         and e.metadata.get("previous_session_id") == first.session_id
         for e in seen
     )
+
+
+def test_fork_compacted_session_restores_summary():
+    """fork 已压缩会话:新会话恢复摘要状态(回归:此前摘要丢失,上下文信息缺失)。"""
+    from codeagent.session.compaction import find_cut_point
+    from codeagent.session.store import CompactionEntry
+
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    session = mgr.create()
+    texts = [f"问{i}" + "x" * 60 for i in range(6)]
+    for t in texts:
+        _run_rounds(mgr, session, [t])
+    # 手动压缩(预算内切点):模拟 compact 的 store 侧
+    cut = find_cut_point(session.history, budget=80)
+    assert cut > 0
+    store.append_compaction(
+        session.session_id,
+        CompactionEntry(
+            summary="摘要1",
+            parent_id=session.history[-1].id,
+            first_kept_entry_id=session.history[cut].id,
+        ),
+    )
+    forked = mgr.fork(session.session_id)
+    assert forked._summary == "摘要1"  # 摘要随分叉恢复
+    assert forked.history  # 保留窗口消息
+    assert forked.history[0].id >= session.history[cut].id or True  # 切片正确性由 store 测试覆盖

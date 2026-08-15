@@ -635,7 +635,7 @@ def test_suggestion_navigate_cycles_and_confirm_fills():
 def test_provider_selector_candidates_injected():
     """选择器候选经组合根注入:/provider 空格后按候选模糊匹配。"""
     app, backend, _ = _make_app()
-    app._candidates = {"provider": ["deepseek", "openai", "qwen"], "model": [], "effort": []}
+    app._candidates = {"provider": ["deepseek", "openai", "qwen"], "model": {}, "effort": []}
     backend.input_changed("/provider deep")
     names = list(app._suggestions)
     assert names == ["deepseek"]
@@ -694,9 +694,10 @@ def test_selector_empty_arg_shows_all_candidates():
     app, backend, _ = _make_app()
     app._candidates = {
         "provider": ["deepseek", "openai"],
-        "model": ["deepseek-v4-pro", "deepseek-v4-flash"],
+        "model": {"deepseek": ["deepseek-v4-pro", "deepseek-v4-flash"]},
         "effort": ["low", "medium", "high"],
     }
+    app._provider = "deepseek"
     backend.input_changed("/model ")
     assert app._suggestions == ["deepseek-v4-pro", "deepseek-v4-flash"]
     backend.input_changed("/provider ")
@@ -876,3 +877,143 @@ def test_compact_command_unavailable_inline():
     backend.submit("/compact")
     text = _rendered_text(app, backend)
     assert "不可用" in text
+
+
+# -- 内联选择(/provider /model /effort picker)---------------------------------
+
+
+def _make_picker_app() -> tuple[TuiApp, StubBackend, list]:
+    """内联选择测试夹具:model 候选按 provider 分表;footer 注入 provider 当前值。"""
+    calls: list[tuple] = []
+
+    def rebuild(provider, model, effort):
+        calls.append((provider, model, effort))
+        return ("m-new", "high") if model else ("", "")
+
+    backend = StubBackend()
+    app = TuiApp(
+        FakeManager(),
+        backend,
+        rebuild_ports=rebuild,
+        footer=FooterInfo(model="m-a", effort="low", cwd="/w", provider="p-a"),
+    )
+    backend.on_submit(app._submit)
+    backend.on_interrupt(app._interrupt)
+    backend.on_input_changed(app._on_input_changed)
+    backend.on_suggestion_navigate(app._on_suggestion_navigate)
+    backend.on_suggestion_confirm(app._on_suggestion_confirm)
+    app._candidates = {
+        "provider": ["p-a", "p-b"],
+        "model": {"p-a": ["m-a", "m-b"], "p-b": ["m-x"]},
+        "effort": ["low", "medium", "high"],
+    }
+    return app, backend, calls
+
+
+def _strip_rows(backend: StubBackend) -> list[str]:
+    """最近一次浮层记录 → 每行纯文本。"""
+    return ["".join(s.text for s in line) for line in backend.suggestion_lines[-1]]
+
+
+def test_bare_model_command_opens_inline_strip_scoped_to_provider():
+    """无参 /model → 输入框填 "/model " 弹值候选浮层;仅列当前 provider 的模型,
+    当前生效项 ✓,首行默认 › 选中。"""
+    app, backend, _ = _make_picker_app()
+    backend.submit("/model")
+    assert backend.input_texts[-1] == "/model "
+    backend.input_changed("/model ")  # textual 异步变更通知
+    assert app._suggestions == ["m-a", "m-b"]  # 仅 p-a 的模型,不含 p-b 的 m-x
+    rows = _strip_rows(backend)
+    assert any("✓" in r and "m-a" in r for r in rows)
+    assert rows[0].startswith("› ")
+
+
+def test_inline_picker_filter_and_navigate_cycles():
+    """键入模糊过滤并复位选中;↑↓ 循环导航(复用建议条既有交互)。"""
+    app, backend, _ = _make_picker_app()
+    backend.submit("/effort")
+    backend.input_changed("/effort ")
+    assert app._suggestions == ["low", "medium", "high"]
+    backend.suggestion_nav(1)
+    assert app._suggestion_index == 1
+    backend.suggestion_nav(-2)  # 1 - 2 → 循环到尾
+    assert app._suggestion_index == 2
+    backend.input_changed("/effort med")
+    assert app._suggestions == ["medium"]
+    assert app._suggestion_index == 0
+
+
+def test_inline_picker_confirm_applies_and_closes():
+    """Enter → rebuild_ports 生效(provider 锁定当前值)、浮层收起、输入清空、状态栏更新。"""
+    app, backend, calls = _make_picker_app()
+    backend.submit("/model")
+    backend.input_changed("/model ")
+    backend.suggestion_nav(1)  # 选中 m-b
+    backend.suggestion_confirm()
+    assert calls == [("p-a", "m-b", None)]
+    assert backend.suggestion_lines[-1] == []
+    assert backend.input_texts[-1] == ""
+    assert app.model.status.model == "m-new"
+
+
+def test_inline_picker_esc_dismisses_without_apply():
+    """Esc → 浮层收起、输入清空,不触发热切换。"""
+    app, backend, calls = _make_picker_app()
+    backend.submit("/effort")
+    backend.input_changed("/effort ")
+    backend.interrupt()
+    assert backend.suggestion_lines[-1] == []
+    assert backend.input_texts[-1] == ""
+    assert calls == []
+
+
+def test_inline_picker_provider_confirm_updates_provider():
+    """provider 浮层:✓ 取装配记录;确认后 _provider 更新,模型候选随 provider 切换。"""
+    app, backend, calls = _make_picker_app()
+    backend.submit("/provider")
+    backend.input_changed("/provider ")
+    rows = _strip_rows(backend)
+    assert any("✓" in r and "p-a" in r for r in rows)
+    backend.suggestion_nav(1)
+    backend.suggestion_confirm()
+    assert calls == [("p-b", None, None)]
+    assert app._provider == "p-b"
+    backend.input_changed("")  # 清空输入引发的异步通知(消费抑制位)
+    backend.submit("/provider")  # 重开:✓ 移到 p-b
+    backend.input_changed("/provider ")
+    rows = _strip_rows(backend)
+    assert any("✓" in r and "p-b" in r for r in rows)
+    backend.input_changed("")  # 收起浮层(Esc 语义等价,直接走值语境取消)
+    backend.submit("/model")  # 模型候选跟随新 provider
+    backend.input_changed("/model ")
+    assert app._suggestions == ["m-x"]
+
+
+def test_suggestion_confirm_opens_inline_picker_for_picker_command():
+    """命令建议确认:picker 命令(/mod → model)进入内联选择,条目含描述列。"""
+    app, backend, _ = _make_picker_app()
+    backend.input_changed("/mod")
+    assert app._suggestions == ["model"]
+    row = "".join(s.text for s in backend.suggestion_lines[-1][0])
+    assert "/model" in row and "—" in row
+    backend.suggestion_confirm()
+    assert backend.input_texts[-1] == "/model "
+    backend.input_changed("/model ")  # 异步通知弹值候选浮层
+    assert app._suggestion_kind == "value"
+    assert app._suggestions == ["m-a", "m-b"]
+
+
+def test_suggestion_confirm_non_picker_still_fills_input():
+    """非 picker 命令(/clear)建议确认 → 保持填入输入框原行为。"""
+    app, backend, _ = _make_picker_app()
+    backend.input_changed("/cle")
+    backend.suggestion_confirm()
+    assert backend.input_texts[-1] == "/clear"
+
+
+def test_picker_fallback_usage_hint_without_rebuild_ports():
+    """候选缺失 / 未注入热切换 → 回退用法提示,不填输入框。"""
+    app, backend, _ = _make_app()  # 无 rebuild_ports、无候选
+    backend.submit("/model")
+    assert backend.input_texts == []
+    assert "/model <model" in _rendered_text(app, backend)

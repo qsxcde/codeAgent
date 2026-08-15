@@ -393,9 +393,12 @@ class JsonFileStore:
     def fork(
         self, session_id: str, target_message_id: str, new_session_id: str
     ) -> SessionRef:
-        """分叉实现(文件后端):新文件 = 新 header + 分叉点前消息原样复制。
+        """分叉实现(文件后端):新文件 = 新 header + 保留窗口消息 + 压缩状态。
 
         - 消息 id / parentId 链保持(回放语义、后续引用不受影响);
+        - 父会话存在压缩记录时,新会话**携带最新摘要**(压缩状态复制):
+          分叉点之前、切点(firstKeptEntryId)之后的消息复制;切点之前的
+          窗口消息已被摘要,不复制(否则摘要与物理消息重复);
         - 写侧走新文件路径锁(防并发创建同一新会话);原文件只读。
         """
         path = self._path(session_id)
@@ -415,7 +418,22 @@ class JsonFileStore:
         if messages[index].get("role") != "user":
             raise ValueError(f"分叉点必须是 user 消息: {target_message_id}")
         # 分叉点 = 该 user 消息之前(不含该消息,对齐 Pi position=before)。
+        latest_compaction = next(
+            (e for e in reversed(entries[1:]) if e.get("type") == "compaction"), None
+        )
         copied = messages[:index]
+        if latest_compaction is not None:
+            first_kept = str(latest_compaction.get("firstKeptEntryId") or "")
+            first_kept_index = next(
+                (i for i, m in enumerate(messages) if m.get("id") == first_kept), None
+            )
+            if first_kept_index is not None:
+                # 切点之前的窗口消息已被摘要:只复制切点起、分叉点前的消息。
+                copied = (
+                    messages[first_kept_index:index]
+                    if first_kept_index <= index
+                    else []
+                )
         self._directory.mkdir(parents=True, exist_ok=True)
         ref = SessionRef(
             id=new_session_id,
@@ -440,8 +458,14 @@ class JsonFileStore:
         with _lock_for(new_path):
             lines = [json.dumps(new_header, ensure_ascii=False)]
             lines.extend(json.dumps(e, ensure_ascii=False) for e in copied)
+            if latest_compaction is not None:
+                # 压缩状态复制:摘要随新会话;parentId 接回复制窗口末尾。
+                record = dict(latest_compaction)
+                record["parentId"] = copied[-1].get("id") if copied else None
+                lines.append(json.dumps(record, ensure_ascii=False))
             new_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return ref
+
 
     def _append(self, session_id: str, record: dict[str, Any]) -> None:
         path = self._path(session_id)
@@ -616,7 +640,7 @@ class MemoryStore:
     def fork(
         self, session_id: str, target_message_id: str, new_session_id: str
     ) -> SessionRef:
-        """分叉实现(内存后端):新 dict + 分叉点前消息切片,parentSession 记入 ref。"""
+        """分叉实现(内存后端):新 dict + 保留窗口消息切片 + 压缩状态复制。"""
         if session_id not in self._sessions:
             raise ValueError(f"会话不存在: {session_id}")
         if new_session_id in self._sessions:
@@ -639,7 +663,32 @@ class MemoryStore:
             effort=base.effort,
         )
         self._sessions[new_session_id] = ref
-        self._messages[new_session_id] = list(messages[:index])
+        # 压缩状态复制:切点前的窗口消息已被摘要,只复制切点起、分叉点前的消息。
+        latest = next(
+            (e for sid, e in reversed(self._compactions) if sid == session_id), None
+        )
+        copied = list(messages[:index])
+        if latest is not None and latest.first_kept_entry_id:
+            first_kept_index = next(
+                (i for i, m in enumerate(messages) if m.id == latest.first_kept_entry_id),
+                None,
+            )
+            if first_kept_index is not None:
+                copied = (
+                    list(messages[first_kept_index:index])
+                    if first_kept_index <= index
+                    else []
+                )
+            self._compactions.append(
+                (
+                    new_session_id,
+                    replace(
+                        latest,
+                        parent_id=copied[-1].id if copied else None,
+                    ),
+                )
+            )
+        self._messages[new_session_id] = copied
         return ref
 
     def _ref_with_title(self, session_id: str) -> SessionRef:

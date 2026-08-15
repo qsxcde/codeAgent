@@ -35,6 +35,7 @@ class CommandSpec:
     summary: str
     args: tuple[str, ...] = ()
     available: bool = True  # False = 已注册但依赖其它阶段,提示未可用
+    picker: bool = False  # True = 无参执行时打开选择面板(provider/model/effort)
 
 
 @dataclass(frozen=True)
@@ -89,9 +90,11 @@ def default_registry() -> dict[str, CommandSpec]:
         "status": CommandSpec("status", "显示会话状态"),
         "sessions": CommandSpec("sessions", "列出 / 新建 / 切换会话", args=("action",)),
         "tools": CommandSpec("tools", "列出可用工具"),
-        "provider": CommandSpec("provider", "切换 provider", args=("name",)),
-        "model": CommandSpec("model", "切换模型(支持 model:effort)", args=("model",)),
-        "effort": CommandSpec("effort", "切换思考强度", args=("level",)),
+        "provider": CommandSpec("provider", "切换 provider", args=("name",), picker=True),
+        "model": CommandSpec(
+            "model", "切换模型(支持 model:effort)", args=("model",), picker=True
+        ),
+        "effort": CommandSpec("effort", "切换思考强度", args=("level",), picker=True),
         "fork": CommandSpec(
             "fork", "从指定消息分叉会话(缺省最近用户消息)", args=("message-id",)
         ),

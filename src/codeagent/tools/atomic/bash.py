@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -352,16 +351,13 @@ class BashTool(AtomicTool):
             stderr_t += TRUNCATION_MARKER
 
         if not _semantically_ok(returncode, command):
-            return (
-                f"退出码: {returncode}(命令失败,耗时 {elapsed:.1f}s)\n"
-                f"stdout:\n{stdout_t}\n"
-                f"stderr:\n{stderr_t}"
-            )
-        return (
-            f"退出码: {returncode}(耗时 {elapsed:.1f}s)\n"
-            f"stdout:\n{stdout_t}\n"
-            f"stderr:\n{stderr_t}"
-        )
+            header = f"退出码: {returncode}(命令失败,耗时 {elapsed:.1f}s)"
+        else:
+            header = f"退出码: {returncode}(耗时 {elapsed:.1f}s)"
+        # stderr 为空时不输出空标签行(展开态视觉噪声)。
+        if stderr_t.strip():
+            return f"{header}\nstdout:\n{stdout_t}\nstderr:\n{stderr_t}"
+        return f"{header}\nstdout:\n{stdout_t}"
 
     def _bash_env(self) -> dict[str, str]:
         """构造子进程环境:写侧强制 LANG 让 bash 输出 UTF-8 字节;注入 NO_COLOR。

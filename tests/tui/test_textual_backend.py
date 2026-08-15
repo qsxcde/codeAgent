@@ -2,7 +2,7 @@
 
 textual 延迟 import(与 src 侧一致)。覆盖 fix-tui-command-completion D3:
 建议条高度计入 composer,输入行不被裁剪;T-47 滚动:滚轮转发与
-PageUp/PageDown 按键焦点分派。
+PageUp/PageDown 恒滚视口;确认键仅在激活时拦截;终端背景融合。
 """
 
 import asyncio
@@ -68,8 +68,8 @@ def test_transcript_wheel_notifies_scroll():
     asyncio.run(_run())
 
 
-def test_page_keys_dispatch_by_focus():
-    """PageUp/PageDown:输入框聚焦归编辑区(不滚动视口),否则滚动一页(spec「键盘滚动」)。"""
+def test_page_keys_always_scroll_viewport():
+    """PageUp/PageDown 无论输入框是否聚焦均滚动视口(spec「键盘滚动」修订)。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
     async def _run() -> None:
@@ -79,16 +79,15 @@ def test_page_keys_dispatch_by_focus():
         backend.on_scroll(scrolls.append)
         async with app.run_test(size=(80, 24)):
             page = max(1, app.transcript.size.height - 1)
-            # 直接置 has_focus 标志测分派逻辑(textual 的 focus/blur 消息泵是引擎职责,
-            # 不在本测试范围;分支读取的就是该标志)。
-            app.composer.input.has_focus = True
-            app.action_page_up()
-            app.action_page_down()
-            assert scrolls == []  # 输入框聚焦:按键归属编辑区
-            app.composer.input.has_focus = False
+            # on_mount 后输入框持有焦点:翻页仍归视口(此前分派给编辑区导致
+            # 键盘滚动不可达,视觉测试缺陷)。
+            assert app.composer.input.has_focus
             app.action_page_up()
             app.action_page_down()
             assert scrolls == [page, -page]
+            app.composer.input.has_focus = False
+            app.action_page_up()
+            assert scrolls == [page, -page, page]
 
     asyncio.run(_run())
 
@@ -120,8 +119,10 @@ def test_set_confirmation_shows_bar_and_activates_keys():
     asyncio.run(_run())
 
 
-def test_confirmation_keys_dispatch_by_active_state():
-    """确认激活时 y/n → 响应回调;未激活时 y/n 正常输入文本。"""
+def test_confirmation_keys_intercept_only_when_active():
+    """确认激活时 y/n 被拦截(stop + 响应回调);未激活时事件不被触碰(spec「键位归属」)。"""
+    from textual.events import Key
+
     from codeagent.app.tui.textual_backend import TextualBackend
 
     async def _run() -> None:
@@ -130,18 +131,22 @@ def test_confirmation_keys_dispatch_by_active_state():
         responses: list[bool] = []
         backend.on_confirmation_response(responses.append)
         async with app.run_test(size=(80, 24)):
-            # 未激活:y/n 落入输入文本
-            app.composer.input.action_confirm_yes()
-            app.composer.input.action_confirm_no()
+            # 未激活:y/n 事件不被 stop、无响应回调(原生输入路径,含突发序列)。
+            burst = [Key(ch, ch) for ch in "banana"]
+            for ev in burst:
+                app.composer.input.on_key(ev)
             assert responses == []
-            assert app.composer.input.text == "yn"
-            # 激活:y/n 转为响应,不落入文本
-            app.composer.input.text = ""
+            assert not any(ev._stop_propagation for ev in burst)
+
+            # 激活:y/n 被 stop 并转响应;其它键不拦截。
             backend.confirmation_active = True
-            app.composer.input.action_confirm_yes()
-            app.composer.input.action_confirm_no()
+            y, n, other = Key("y", "y"), Key("n", "n"), Key("x", "x")
+            app.composer.input.on_key(y)
+            app.composer.input.on_key(n)
+            app.composer.input.on_key(other)
             assert responses == [True, False]
-            assert app.composer.input.text == ""
+            assert y._stop_propagation and n._stop_propagation
+            assert not other._stop_propagation
 
     asyncio.run(_run())
 
@@ -182,6 +187,43 @@ def test_escape_only_interrupts_not_quits():
     asyncio.run(_run())
 
 
+def test_ctrl_j_inserts_newline_fallback():
+    """Ctrl+J 兜底换行:无 kitty 协议的终端 Shift+Enter 与 Enter 同码。"""
+    from codeagent.app.tui.textual_backend import TextualBackend
+
+    async def _run() -> None:
+        backend = TextualBackend()
+        app = backend._app
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.composer.input.text = "第一行"
+            app.composer.input.move_cursor(app.composer.input.document.end)
+            await pilot.press("ctrl+j")
+            await pilot.press(*list("第二行"))
+            await pilot.pause()
+            assert app.composer.input.text == "第一行\n第二行"
+            assert app.composer.styles.height.value == 3 + 1  # 两行输入 + 分隔线
+
+    asyncio.run(_run())
+
+
+def test_soft_wrap_grows_composer_height():
+    """(回归)单行超长输入软换行后按渲染行增高,而非固定一行高滚动视图。"""
+    from codeagent.app.tui.textual_backend import TextualBackend
+
+    async def _run() -> None:
+        backend = TextualBackend()
+        app = backend._app
+        async with app.run_test(size=(100, 32)) as pilot:
+            app.composer.input.text = "a" * 150  # 单逻辑行,软换行折成 2 渲染行
+            await pilot.pause()
+            assert app.composer.styles.height.value == 3 + 1
+            app.composer.input.text = "short"
+            await pilot.pause()
+            assert app.composer.styles.height.value == 3
+
+    asyncio.run(_run())
+
+
 def test_ctrl_c_and_ctrl_q_quit():
     """Ctrl+C / Ctrl+Q → quit 回调;ctrl+c 覆盖 textual 系统 help_quit 绑定。"""
     from codeagent.app.tui.textual_backend import TextualBackend
@@ -198,5 +240,57 @@ def test_ctrl_c_and_ctrl_q_quit():
             keymap = app._bindings.get_bindings_for_key("ctrl+c")
             assert any(b.action == "quit" for b in keymap)
             assert not any(b.action == "help_quit" for b in keymap)
+
+    asyncio.run(_run())
+
+
+# -- 终端背景融合(spec「终端背景融合」)----------------------------------------
+
+
+def test_no_default_background_filter():
+    """过滤器剥离 default 背景;显式色值背景与无样式 segment 原样透传。"""
+    from rich.segment import Segment
+    from rich.style import Style
+    from textual.color import Color
+
+    from codeagent.app.tui.textual_backend import _NoDefaultBackground, _strip_default_bg
+
+    filt = _NoDefaultBackground()
+    bg = Color(0, 0, 0)
+    default_bg = Segment("a", Style(color="#ff0000", bgcolor="default"))
+    explicit_bg = Segment("b", Style(color="#ff0000", bgcolor="#2b2b2b"))
+    no_style = Segment("c", None)
+
+    out = filt.apply([default_bg, explicit_bg, no_style], bg)
+    assert out[0].style is not None
+    assert out[0].style.bgcolor is None  # default 背景被剥离
+    assert out[0].style.color == default_bg.style.color  # 前景等属性保留
+    assert out[1] is explicit_bg  # 显式背景原样透传
+    assert out[2] is no_style  # 无样式原样透传
+
+    # _strip_default_bg 全字段重建:前景/字重等保留,仅背景移除。
+    s = Style(color="#00ff00", bgcolor="default", bold=True, italic=True, underline=True)
+    s2 = _strip_default_bg(s)
+    assert s2.bgcolor is None
+    assert s2.color == s.color and s2.bold and s2.italic and s2.underline
+
+
+def test_on_mount_installs_background_blending():
+    """on_mount:过滤器置于过滤链头部,四处背景改为终端默认背景语义。"""
+    from textual.color import Color
+
+    from codeagent.app.tui.textual_backend import TextualBackend, _NoDefaultBackground
+
+    ansi_default = Color.parse("ansi_default")
+
+    async def _run() -> None:
+        backend = TextualBackend()
+        app = backend._app
+        async with app.run_test(size=(80, 24)):
+            assert isinstance(app._filters[0], _NoDefaultBackground)
+            assert app.styles.background == ansi_default
+            assert app.screen.styles.background == ansi_default
+            assert app.transcript.styles.background == ansi_default
+            assert app.composer.input.styles.background == ansi_default
 
     asyncio.run(_run())

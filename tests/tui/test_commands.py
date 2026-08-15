@@ -92,3 +92,12 @@ def test_help_text_covers_all_commands():
 
 def test_help_text_markup_available():
     assert "可用命令:" in help_text(REGISTRY)
+
+
+def test_picker_flag_only_for_config_commands():
+    """picker 面板数据驱动:仅 provider/model/effort 置位,其余命令保持纯文本补全。"""
+    assert {name for name, spec in REGISTRY.items() if spec.picker} == {
+        "provider",
+        "model",
+        "effort",
+    }

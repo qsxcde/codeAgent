@@ -440,3 +440,48 @@ def test_memory_store_load_context_semantics():
     assert [m.id for m in state.messages] == [msgs[1].id, msgs[2].id, msgs[3].id]
     with pytest.raises(ValueError, match="会话不存在"):
         store.load_context("ghost")
+
+
+def test_fork_carries_compaction_summary(tmp_path):
+    """fork 已压缩会话:新会话携带摘要 + 切点起消息(回归:此前摘要丢失)。"""
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    msgs = [Message(role="user", content=f"m{i}") for i in range(5)]
+    for m in msgs:
+        store.append_message("s1", m)
+    store.append_compaction("s1", CompactionEntry(summary="摘要1", first_kept_entry_id=msgs[2].id))
+    # 从 m4 分叉(在保留窗口内):复制 m2..m3 + 摘要
+    store.fork("s1", msgs[4].id, "s2")
+    state = store.load_context("s2")
+    assert state.summary == "摘要1"
+    assert [m.id for m in state.messages] == [msgs[2].id, msgs[3].id]
+    # 父会话不受影响
+    assert len(store.load_messages("s1")) == 5
+
+
+def test_fork_before_compaction_boundary_keeps_summary_only(tmp_path):
+    """分叉点在切点之前:窗口消息已被摘要,新会话只有摘要(不复制物理窗口)。"""
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    msgs = [Message(role="user", content=f"m{i}") for i in range(5)]
+    for m in msgs:
+        store.append_message("s1", m)
+    store.append_compaction("s1", CompactionEntry(summary="摘要1", first_kept_entry_id=msgs[3].id))
+    store.fork("s1", msgs[1].id, "s2")  # 分叉点在 firstKept 之前
+    state = store.load_context("s2")
+    assert state.summary == "摘要1"
+    assert state.messages == []  # 全部窗口内容由摘要承载
+
+
+def test_memory_store_fork_carries_compaction():
+    """MemoryStore 与文件后端同语义:fork 携带摘要。"""
+    store = MemoryStore()
+    store.create("m1")
+    msgs = [Message(role="user", content=f"m{i}") for i in range(4)]
+    for m in msgs:
+        store.append_message("m1", m)
+    store.append_compaction("m1", CompactionEntry(summary="摘要", first_kept_entry_id=msgs[2].id))
+    store.fork("m1", msgs[3].id, "m2")
+    state = store.load_context("m2")
+    assert state.summary == "摘要"
+    assert [m.id for m in state.messages] == [msgs[2].id]
