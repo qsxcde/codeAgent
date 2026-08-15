@@ -85,6 +85,7 @@ class TuiApp:
         """注册后端回调并进入事件循环(阻塞直到退出)。"""
         self._backend.on_submit(self._submit)
         self._backend.on_interrupt(self._interrupt)
+        self._backend.on_quit(self._quit)
         self._backend.on_resize(self._schedule_render)
         self._backend.on_click(self._click)
         self._backend.on_input_changed(self._on_input_changed)
@@ -407,13 +408,25 @@ class TuiApp:
         self.model.append_info("已切换配置")
 
     def _interrupt(self) -> None:
-        """Esc 按运行态分派:运行中打断当前会话,空闲退出。"""
+        """Esc:运行中打断当前会话;空闲提示退出方式(不再直接退出,收尾补丁)。
+
+        退出键位已拆分为 Ctrl+C / Ctrl+Q(见 ``_quit``)。
+        """
         if self.model.running:
             session = self._manager.current
             if session is not None:
                 session.abort()
         else:
-            self._exit()
+            self.model.append_info("按 Ctrl+C 退出")
+
+    def _quit(self) -> None:
+        """Ctrl+C / Ctrl+Q:退出——运行中先中止当前轮(未完成轮次不落盘,
+        既有回滚语义),再打印完整文档退出。"""
+        if self.model.running:
+            session = self._manager.current
+            if session is not None:
+                session.abort()
+        self._exit()
 
     def _exit(self) -> None:
         self._stop_activity_timer()

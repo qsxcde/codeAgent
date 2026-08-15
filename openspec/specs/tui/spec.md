@@ -122,17 +122,22 @@ Agent 正文 SHALL 以受控样式渲染 Markdown 结构:加粗、行内代码�
 
 ### Requirement: 运行中打断
 
-agent 运行中,用户 SHALL 可中断当前运行;中断后状态 SHALL 回到可输入,会话可继续。
+agent 运行中,用户 SHALL 可中断当前运行;中断后状态 SHALL 回到可输入,会话可继续。中断与退出键位 SHALL 拆分:Esc 仅中断(空闲时提示退出方式,不直接退出);Ctrl+C 与 Ctrl+Q 退出(运行中先中止当前轮,再退出)。
 
 #### Scenario: 打断运行
 
-- **WHEN** agent 运行中用户触发中断(如 Esc)
-- **THEN** 当前运行被取消,聊天区标记取消,输入框恢复可用
+- **WHEN** agent 运行中用户按 Esc
+- **THEN** 当前运行被取消(模型流式请求关闭,不再计费),聊天区标记取消,输入框恢复可用
 
-#### Scenario: 空闲退出
+#### Scenario: 空闲按 Esc
 
-- **WHEN** agent 空闲时用户触发退出(如 Esc)
-- **THEN** TUI 退出并打印完整对话文档
+- **WHEN** agent 空闲时用户按 Esc
+- **THEN** TUI 不退出,提示退出方式(如「按 Ctrl+C 退出」)
+
+#### Scenario: 退出
+
+- **WHEN** 用户按 Ctrl+C 或 Ctrl+Q(运行中或空闲)
+- **THEN** TUI 退出并打印完整对话文档;运行中先中止当前轮(未完成轮次不落盘)
 
 ### Requirement: alt 屏渲染与滚动
 

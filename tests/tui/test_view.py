@@ -21,6 +21,7 @@ class StubBackend:
         self.footers: list[Any] = []
         self.submit = None
         self.interrupt = None
+        self.quit = None
         self.resize = None
         self.click = None
         self.input_changed = None
@@ -56,6 +57,9 @@ class StubBackend:
 
     def on_interrupt(self, handler) -> None:
         self.interrupt = handler
+
+    def on_quit(self, handler) -> None:
+        self.quit = handler
 
     def on_resize(self, handler) -> None:
         self.resize = handler
@@ -173,6 +177,7 @@ def _make_app() -> tuple[TuiApp, StubBackend, FakeManager]:
     app = TuiApp(manager, backend)
     backend.on_submit(app._submit)
     backend.on_interrupt(app._interrupt)
+    backend.on_quit(app._quit)
     backend.on_resize(app._schedule_render)
     backend.on_click(app._click)
     backend.on_input_changed(app._on_input_changed)
@@ -239,17 +244,38 @@ def test_interrupt_running_aborts():
     assert manager.current.aborted is True
 
 
-def test_interrupt_idle_exits_with_doc():
-    """空闲 Esc → 退出并打印完整文档(对应 spec「空闲退出」「退出完整文档」)。"""
-    app, backend, manager = _make_app()
+def test_interrupt_idle_prompts_quit_hint():
+    """空闲 Esc → 提示「按 Ctrl+C 退出」,不再直接退出(收尾补丁:退出键位拆分)。"""
+    app, backend, _ = _make_app()
     app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="hi"))
     app.model.apply(AgentEvent(EventType.TEXT_DELTA, payload="回复"))
     app.model.apply(AgentEvent(EventType.TURN_END))  # 结束本轮 → 空闲
     backend.interrupt()
+    assert backend.exited is None  # 不退出
+    text = _rendered_text(app, backend)
+    assert "Ctrl+C" in text
+
+
+def test_quit_idle_exits_with_doc():
+    """空闲 Ctrl+C → 退出并打印完整文档(对应 spec「退出完整文档」)。"""
+    app, backend, manager = _make_app()
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="hi"))
+    app.model.apply(AgentEvent(EventType.TEXT_DELTA, payload="回复"))
+    app.model.apply(AgentEvent(EventType.TURN_END))
+    backend.quit()
     assert backend.exited is not None
     doc = "\n".join(backend.exited)
     assert "hi" in doc
     assert "回复" in doc
+
+
+def test_quit_running_aborts_then_exits():
+    """运行中 Ctrl+C → 先中止当前轮(abort),再退出(未完成轮次不落盘)。"""
+    app, backend, manager = _make_app()
+    app.model.running = True
+    backend.quit()
+    assert manager.current.aborted is True
+    assert backend.exited is not None
 
 
 def test_run_cancelled_event_returns_idle():

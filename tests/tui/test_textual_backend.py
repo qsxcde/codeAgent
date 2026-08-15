@@ -159,3 +159,44 @@ def test_confirmation_response_port_wired():
         assert calls == [True, False]
 
     asyncio.run(_run())
+
+
+# -- 键位拆分(收尾补丁:Esc 仅中断 / Ctrl+C 退出)-----------------------------
+
+
+def test_escape_only_interrupts_not_quits():
+    """Esc → interrupt 回调(不触发退出)。"""
+    from codeagent.app.tui.textual_backend import TextualBackend
+
+    async def _run() -> None:
+        backend = TextualBackend()
+        app = backend._app
+        interrupts: list[str] = []
+        quits: list[str] = []
+        backend.on_interrupt(lambda: interrupts.append("i"))
+        backend.on_quit(lambda: quits.append("q"))
+        async with app.run_test(size=(80, 24)):
+            app.action_interrupt()
+            assert interrupts == ["i"] and quits == []
+
+    asyncio.run(_run())
+
+
+def test_ctrl_c_and_ctrl_q_quit():
+    """Ctrl+C / Ctrl+Q → quit 回调;ctrl+c 覆盖 textual 系统 help_quit 绑定。"""
+    from codeagent.app.tui.textual_backend import TextualBackend
+
+    async def _run() -> None:
+        backend = TextualBackend()
+        app = backend._app
+        quits: list[str] = []
+        backend.on_quit(lambda: quits.append("q"))
+        async with app.run_test(size=(80, 24)):
+            app.action_quit()
+            assert quits == ["q"]
+            # 应用绑定优先级覆盖系统绑定:ctrl+c 指向 quit 而非 help_quit
+            keymap = app._bindings.get_bindings_for_key("ctrl+c")
+            assert any(b.action == "quit" for b in keymap)
+            assert not any(b.action == "help_quit" for b in keymap)
+
+    asyncio.run(_run())

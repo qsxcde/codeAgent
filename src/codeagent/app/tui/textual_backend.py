@@ -27,6 +27,7 @@ from codeagent.app.tui.backend import (
     ConfirmationResponseHandler,
     InputChangedHandler,
     InterruptHandler,
+    QuitHandler,
     ResizeHandler,
     ScrollHandler,
     SubmitHandler,
@@ -237,8 +238,11 @@ class _TextualApp(App):
     """
 
     BINDINGS = [
-        ("escape", "interrupt_or_exit", "打断/退出"),
-        ("ctrl+q", "interrupt_or_exit", "退出"),
+        # 收尾补丁:Esc 仅中断(不再退出);Ctrl+C 覆盖 textual 系统 help_quit 绑定
+        # (priority=True 优先)承担退出;Ctrl+Q 保留为退出路径。
+        Binding("escape", "interrupt", "打断", show=False),
+        Binding("ctrl+c", "quit", "退出", show=False, priority=True),
+        Binding("ctrl+q", "quit", "退出", show=False, priority=True),
         # 键盘滚动(T-47):priority=True 保证按键归属由应用层显式分派——
         # 输入框聚焦归编辑区(TextArea 原生翻页),否则滚动 transcript 视口。
         Binding("pageup", "page_up", "上翻页", show=False, priority=True),
@@ -267,8 +271,13 @@ class _TextualApp(App):
     def on_resize(self, event: Resize) -> None:
         self._backend._notify_resize()
 
-    def action_interrupt_or_exit(self) -> None:
+    def action_interrupt(self) -> None:
+        """Esc:仅中断(运行中打断;空闲由视图提示退出方式,不再直接退出)。"""
         self._backend._notify_interrupt()
+
+    def action_quit(self) -> None:
+        """Ctrl+C / Ctrl+Q:退出(运行中先中止当前轮,再退出)。"""
+        self._backend._notify_quit()
 
     def _page_delta(self) -> int:
         """一页的行数(视口高 - 1,至少 1 行;design T-47 键盘翻页)。"""
@@ -298,6 +307,7 @@ class TextualBackend:
         self._app = _TextualApp(self)
         self._submit_handler: SubmitHandler | None = None
         self._interrupt_handler: InterruptHandler | None = None
+        self._quit_handler: QuitHandler | None = None
         self._resize_handler: ResizeHandler | None = None
         self._click_handler: ClickHandler | None = None
         self._input_changed_handler: InputChangedHandler | None = None
@@ -358,6 +368,9 @@ class TextualBackend:
     def on_interrupt(self, handler: InterruptHandler) -> None:
         self._interrupt_handler = handler
 
+    def on_quit(self, handler: QuitHandler) -> None:
+        self._quit_handler = handler
+
     def on_resize(self, handler: ResizeHandler) -> None:
         self._resize_handler = handler
 
@@ -405,6 +418,10 @@ class TextualBackend:
     def _notify_submit(self, text: str) -> None:
         if self._submit_handler is not None:
             self._submit_handler(text)
+
+    def _notify_quit(self) -> None:
+        if self._quit_handler is not None:
+            self._quit_handler()
 
     def _notify_interrupt(self) -> None:
         # 补全浮层激活时 Esc 先收起浮层,不触发打断/退出(T-45)。

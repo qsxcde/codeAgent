@@ -20,6 +20,8 @@ from codeagent.app.tui.components import RichLine
 SubmitHandler = Callable[[str], None]
 #: 打断/退出处理器:运行中打断、空闲退出(由视图按运行态分派)。
 InterruptHandler = Callable[[], None]
+#: 退出处理器(Ctrl+C 专用;收尾补丁:退出键位由 Esc 拆出至 Ctrl+C)。
+QuitHandler = Callable[[], None]
 #: 尺寸变化处理器(含首次挂载),用于触发重新渲染。
 ResizeHandler = Callable[[], None]
 #: transcript 区点击处理器:参数为相对 transcript 顶部的行号(design D4,工具点击折叠)。
@@ -62,6 +64,9 @@ class TuiBackend(Protocol):
 
     def on_interrupt(self, handler: InterruptHandler) -> None:
         """注册打断/退出处理器(如 Esc)。"""
+
+    def on_quit(self, handler: QuitHandler) -> None:
+        """注册退出处理器(Ctrl+C;收尾补丁:退出与中断键位拆分)。"""
 
     def on_resize(self, handler: ResizeHandler) -> None:
         """注册尺寸变化处理器(挂载时也会触发一次)。"""
