@@ -82,6 +82,26 @@ class SessionManager:
             return self.create()
         return self.switch(refs[-1].id)
 
+    def replace_ports(
+        self, ports: Any, *, model: str = "", effort: str = ""
+    ) -> None:
+        """热切换共享端口与会话配置(design D4,T-44;组合根注入新端口)。
+
+        - ports 无状态共享:替换后所有会话后续轮次使用新配置,历史不变;
+        - 运行中的会话先中止,避免旧端口执行中被替换;
+        - 当前会话文件追加 ``model_change`` entry(读侧后写覆盖 header);
+          新建会话时 header 直接固化新配置。
+        """
+        self._halt_current()
+        self._ports = ports
+        self._model = model
+        self._effort = effort
+        # 既有会话壳在构造时固化端口引用:逐壳更新,后续轮次用新配置。
+        for session in self._sessions.values():
+            session.replace_ports(ports)
+        if self._store is not None and self._current_id is not None:
+            self._store.append_model_change(self._current_id, model=model, effort=effort)
+
     def dispose(self, session_id: str) -> None:
         """释放会话:中止运行并从活动集合移除(文件与历史保留,可再恢复)。"""
         session = self._sessions.pop(session_id, None)
@@ -102,6 +122,11 @@ class SessionManager:
         if self._current_id is None:
             return None
         return self._sessions.get(self._current_id)
+
+    @property
+    def tools(self) -> list[Any]:
+        """共享端口中的工具列表(供 TUI `/tools` 命令展示,只读视图)。"""
+        return list(getattr(self._ports, "tools", []))
 
     # -- 订阅跟随 -----------------------------------------------------------
 

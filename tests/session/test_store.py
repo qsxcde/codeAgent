@@ -227,6 +227,45 @@ def test_unknown_entry_types_ignored(tmp_path):
     assert store.get_meta("s1", "name") is None
 
 
+def test_model_change_entry_overrides_header(tmp_path):
+    """model_change entry 追加式写入,读侧后写覆盖 header(热切换持久化)。"""
+    store = _store(tmp_path)
+    store.create("s1", model="a", effort="low")
+    store.append_model_change("s1", model="b", effort="high")
+    ref = store.get("s1")
+    assert ref.model == "b" and ref.effort == "high"
+    # 空字段不覆盖:只传 model 时 effort 保留上一值
+    store.append_model_change("s1", model="c")
+    ref = store.get("s1")
+    assert ref.model == "c" and ref.effort == "high"
+    # 文件为追加式:历史 entry 未被改写
+    lines = (tmp_path / "sessions" / "s1.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3  # header + 2 次 model_change
+
+
+def test_model_change_legacy_file_without_header_config(tmp_path):
+    """旧文件(header 无 model/effort)+ model_change:读侧取 entry 值。"""
+    store = _store(tmp_path)
+    store.create("s1")
+    store.append_model_change("s1", model="b", effort="high")
+    ref = store.get("s1")
+    assert ref.model == "b" and ref.effort == "high"
+
+
+def test_memory_store_model_change():
+    """MemoryStore 与文件后端同语义:model_change 后写覆盖 create 值。"""
+    store = MemoryStore()
+    store.create("m1", model="a", effort="low")
+    store.append_model_change("m1", model="b", effort="high")
+    ref = store.get("m1")
+    assert ref.model == "b" and ref.effort == "high"
+    store.append_model_change("m1", model="c")
+    assert store.get("m1").model == "c"
+    assert store.get("m1").effort == "high"
+    with pytest.raises(ValueError, match="不存在"):
+        store.append_model_change("ghost", model="x")
+
+
 def test_memory_store_meta_and_title():
     """MemoryStore 与文件后端同语义:meta 后写覆盖 + 标题派生。"""
     store = MemoryStore()

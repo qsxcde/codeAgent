@@ -111,6 +111,43 @@ def test_create_tui_app_resolves_footer_info():
         assert app.model.status.effort == "high"
 
 
+def test_create_tui_app_injects_rebuild_ports():
+    """组合根注入 rebuild 回调:/provider /model /effort 热切换链路(T-44)。"""
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.session.store import MemoryStore
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_tui_app
+
+        store = MemoryStore()
+        app = create_tui_app(provider="fake", backend=_StubBackend(), store=store)
+    assert app._rebuild_ports is not None
+    model_id, effort = app._rebuild_ports("fake", "fake-model:high", None)
+    assert model_id == "fake-model"
+    assert effort == "high"
+    # 配置写入 store(model_change 后写覆盖)且会话端口已更新
+    ref = store.list()[-1]
+    assert ref.model == "fake-model" and ref.effort == "high"
+    assert app._manager._ports is not None
+
+
+def test_create_tui_app_injects_selector_candidates():
+    """选择器候选经组合根注入(T-45):provider/model/effort 各一份。"""
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_tui_app
+
+        app = create_tui_app(provider="fake", backend=_StubBackend())
+    candidates = app._candidates
+    assert "deepseek" in candidates["provider"]
+    assert "fake" in candidates["provider"]
+    assert candidates["effort"] == ["low", "medium", "high"]
+    assert isinstance(candidates["model"], list)
+
+
 @pytest.mark.anyio
 async def test_real_provider_runs_through_loop():
     """真实 OpenAICompatClient 经自研循环可跑通(回归:#1 + 流式路径)。

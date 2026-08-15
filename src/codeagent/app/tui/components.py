@@ -441,6 +441,13 @@ class Transcript(Component):
     def append(self, block: Component) -> None:
         self._blocks.append(block)
 
+    def clear(self) -> None:
+        """清空聊天区(/clear 命令):重置块与滚动状态。"""
+        self._blocks.clear()
+        self.follow = True
+        self._scroll_top = 0
+        self._line_blocks = []
+
     @property
     def blocks(self) -> list[Component]:
         return list(self._blocks)
@@ -578,6 +585,12 @@ class TuiModel:
             self._assistant = AssistantBlock(clock=self._clock)
             self.transcript.append(self._assistant)
         return self._assistant
+
+    def append_info(self, text: str) -> None:
+        """追加一条命令输出块(纯 TUI 显示,不进入会话历史,不改运行态)。"""
+        block = AssistantBlock(clock=self._clock)
+        block.append_text(text)
+        self.transcript.append(block)
 
     def apply(self, event: AgentEvent) -> None:
         ev_type = event.type

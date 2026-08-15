@@ -204,8 +204,10 @@ def create_tui_app(
     provider: str | None = None,
     model: str | None = None,
 ) -> Any:
-    """组合根:TUI 装配——session + backend + footer 的 model/effort(design D5)。
+    """组合根:TUI 装配——SessionManager + backend + footer 的 model/effort(design D5/D6)。
 
+    - TUI 经 ``SessionManager`` 装配(T-44 前置改造):会话可切换、订阅跟随,
+      ``/sessions`` 等命令无需重建视图;启动即创建首个会话;
     - footer 信息在装配时解析固化:``model:effort`` 内联后缀 > ``reasoning_effort``
       > provider 配置默认;model:effort 解析唯一引用 ``split_model_pattern``;
     - backend 缺省构造 TextualBackend(textual 延迟到此处 import,保持启动路径轻量);
@@ -214,7 +216,7 @@ def create_tui_app(
     from codeagent.app.tui.components import FooterInfo
     from codeagent.app.tui.view import TuiApp
 
-    session = create_agent_session(
+    manager = create_session_manager(
         cfg,
         registry=registry,
         store=store,
@@ -222,15 +224,65 @@ def create_tui_app(
         provider=provider,
         model=model,
     )
+    manager.create()  # 启动即进入首个会话(命令 /sessions new 可再建)
     if backend is None:
         from codeagent.app.tui.textual_backend import TextualBackend
 
         backend = TextualBackend()
+
+    candidates = _resolve_candidates(cfg, registry)
+
+    def rebuild_ports(
+        new_provider: str | None = None,
+        new_model: str | None = None,
+        new_effort: str | None = None,
+    ) -> tuple[str, str]:
+        """配置热切换回调(/provider /model /effort):重建端口并更新 manager。
+
+        唯一跨层点:构造新 LLM 端口必须经组合根;解析出的 (model, effort)
+        返回给视图更新状态栏。未知 provider 抛 ValueError 由视图提示。
+        """
+        new_ports = create_agent_ports(
+            cfg,
+            registry=registry,
+            reasoning_effort=new_effort or reasoning_effort,
+            provider=new_provider or None,
+            model=new_model or None,
+        )
+        model_id, effort = _resolve_model_effort(
+            cfg, new_provider, new_model, new_effort or reasoning_effort
+        )
+        manager.replace_ports(new_ports, model=model_id, effort=effort)
+        return model_id, effort
+
     return TuiApp(
-        session,
+        manager,
         backend,
         footer=_resolve_footer_info(cfg, provider, model, reasoning_effort),
+        rebuild_ports=rebuild_ports,
+        candidates=candidates,
     )
+
+
+def _resolve_candidates(cfg: Any = None, registry: Any = None) -> dict[str, list[str]]:
+    """选择器候选(design T-45):provider / model / effort 各一份,组合根注入。
+
+    provider 取注册表工厂;model 取全部目录模型(跨 provider 合并,resolve 时
+    按 provider 校验);effort 为约定强度档位。TUI 层不读配置,候选在此固化。
+    """
+    from codeagent.ai.catalog.registry import ModelRegistry
+    from codeagent.ai.providers import PROVIDERS
+
+    reg = registry if registry is not None else ModelRegistry()
+    providers = sorted(PROVIDERS)
+    models: set[str] = set()
+    for p in providers:
+        models.update(reg.available(p))
+    return {
+        "provider": providers,
+        "model": sorted(models),
+        "effort": ["low", "medium", "high"],
+    }
 
 
 def create_session_manager(

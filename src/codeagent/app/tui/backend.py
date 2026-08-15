@@ -24,6 +24,12 @@ InterruptHandler = Callable[[], None]
 ResizeHandler = Callable[[], None]
 #: transcript 区点击处理器:参数为相对 transcript 顶部的行号(design D4,工具点击折叠)。
 ClickHandler = Callable[[int], None]
+#: 输入框内容变化处理器(T-45 补全:视图据此计算建议)。
+InputChangedHandler = Callable[[str], None]
+#: 建议导航处理器:参数为选择位移(±1,循环)。
+SuggestionNavHandler = Callable[[int], None]
+#: 建议确认处理器:视图把选中建议填回输入框。
+SuggestionConfirmHandler = Callable[[], None]
 
 
 class TuiBackend(Protocol):
@@ -41,6 +47,12 @@ class TuiBackend(Protocol):
     def set_status(self, line: RichLine) -> None:
         """更新状态栏内容(富样式行;design D5)。"""
 
+    def set_suggestions(self, lines: list[RichLine]) -> None:
+        """更新补全建议行(空列表 = 隐藏浮层;design T-45)。"""
+
+    def set_input_text(self, text: str) -> None:
+        """替换输入框全文(建议确认填入;design T-45)。"""
+
     def on_submit(self, handler: SubmitHandler) -> None:
         """注册输入提交处理器。"""
 
@@ -52,6 +64,15 @@ class TuiBackend(Protocol):
 
     def on_click(self, handler: ClickHandler) -> None:
         """注册 transcript 区行点击处理器(相对行号;design D4)。"""
+
+    def on_input_changed(self, handler: InputChangedHandler) -> None:
+        """注册输入内容变化处理器(补全建议计算)。"""
+
+    def on_suggestion_navigate(self, handler: SuggestionNavHandler) -> None:
+        """注册建议导航处理器(↑/↓)。"""
+
+    def on_suggestion_confirm(self, handler: SuggestionConfirmHandler) -> None:
+        """注册建议确认处理器(Enter/Tab,补全激活时)。"""
 
     def exit_document(self, lines: list[str]) -> None:
         """记录退出文档并退出 alt 屏;run() 返回后(主屏已恢复)打印该文档(design D5)。"""

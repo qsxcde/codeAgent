@@ -122,8 +122,23 @@ def test_abort_cancels_and_emits_run_cancelled():
 
 
 def test_steer_injects_message():
-    """运行中 steer:注入消息成为后续轮次的 user 消息。"""
-    model = FakeClient(
+    """运行中 steer:注入消息成为后续轮次的 user 消息(回归:时序确定性)。
+
+    早期缺陷:注入依赖 50ms sleep 恰好落在工具执行窗口,快速机器上整轮
+    run 早于 sleep 完成(实测 12ms vs 50ms),注入队列永不消费。现在第一轮
+    模型调用固定放慢 0.2s,steer 在 0.05s 入队必然落在运行中;并断言注入
+    消息进入第二轮模型输入(而非仅追加在历史末尾)。
+    """
+
+    class SlowFirstModel(FakeClient):
+        """放慢每次模型调用:让 steer 必然落在第一轮调用期间。"""
+
+        async def stream(self, messages, tools=None):
+            await asyncio.sleep(0.2)
+            async for ev in super().stream(messages, tools):
+                yield ev
+
+    model = SlowFirstModel(
         steps=[
             {"content": "", "tool_calls": [{"name": "bash", "args": {"command": "echo a"}, "id": "s1", "type": "tool_call"}]},
             {"content": "已处理注入"},
@@ -133,13 +148,31 @@ def test_steer_injects_message():
 
     async def scenario() -> None:
         task = asyncio.create_task(sess.run("开始"))
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05)  # 第一轮模型调用进行中(0.05 < 0.2)
         sess.steer("运行中注入")
         await task
 
     asyncio.run(scenario())
     users = [m.content for m in sess.history if m.role == "user"]
     assert "运行中注入" in users
+    # 注入消息进入第二轮模型输入(下一轮循环前消费,而非事后追加)
+    second_call = model.call_history[1]["messages"]
+    assert any("运行中注入" in (m.get("content") or "") for m in second_call)
+
+
+def test_followup_continues_history():
+    """结束后续跑:followup 在既有历史之上再跑一轮,上下文连续。"""
+    model = FakeClient(responses=["第一轮回复", "后续回复"])
+    sess = _session(model)
+    seen: list = []
+    sess.subscribe(seen.append)
+    asyncio.run(sess.run("第一轮"))
+    asyncio.run(sess.followup("后续"))
+    assert [m.role for m in sess.history] == ["user", "assistant", "user", "assistant"]
+    assert [m.content for m in sess.history if m.role == "user"] == ["第一轮", "后续"]
+    # 第二轮模型输入含第一轮上下文(会话即状态,不重建会话)
+    assert model.call_history[1]["messages"][0]["content"] == "第一轮"
+    assert EventType.TURN_END in _event_types(seen)
 
 
 def test_store_persists_successful_turns_only():

@@ -26,7 +26,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 配置:密钥写在固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下的 `.env`**(安全决策 H10,防止在任意仓库运行时被其 `.env` 劫持)。`LLM_PROVIDER` 选 provider(deepseek / openai / qwen / glm / kimi / minimax / fake)。
 
-**当前测试状态:311 项全绿**(2026-08-14 实测,编排自研后;删除 4 个源文件使解耦扫描参数化减少 4 项)。新增代码请保证 `uv run pytest` 不引入新的失败。
+**当前测试状态:378 项全绿**(2026-08-14 实测,TUI 增强落地后;编排自研后基线 311,会话层 333,阶段 5 命令/补全/选择器后 378)。新增代码请保证 `uv run pytest` 不引入新的失败。
 
 ## 架构与分层
 

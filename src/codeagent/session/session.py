@@ -88,6 +88,23 @@ class AgentSession:
         """运行中注入消息:下一轮循环前消费为 user 消息(不做旁路请求)。"""
         self._inject_queue.put_nowait(text)
 
+    def followup(self, text: str, recursion_limit: int | None = None) -> None:
+        """结束后续跑一轮:在既有会话历史之上继续一轮对话。
+
+        自研循环下与 ``run`` 同机制(再次 ``run_turn``,历史累积、事件
+        照常分发),保留独立方法名以稳定 v0.1 起的事件契约——CLI/TUI
+        结束后续跑不重建会话。
+        """
+        return self.run(text, recursion_limit=recursion_limit)
+
+    def replace_ports(self, ports: AgentPorts) -> None:
+        """热切换本会话使用的端口(manager.replace_ports 逐壳转发)。
+
+        会话壳在构造时固化端口引用,配置热切换必须显式更新每个活动壳,
+        否则旧壳仍用旧模型继续对话。
+        """
+        self._ports = ports
+
     # -- 运行 --------------------------------------------------------------
 
     async def run(self, text: str, recursion_limit: int | None = None) -> None:

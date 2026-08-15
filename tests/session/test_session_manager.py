@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -80,13 +81,52 @@ def test_dispose_keeps_file_and_allows_reswitch():
 
 
 def test_continue_recent_returns_latest():
+    """continue_recent 返回最近创建的会话(回归:时序确定性)。
+
+    早期缺陷:store 时间戳为毫秒精度,两次紧邻 create 落在同一毫秒时列表按
+    uuid 兜底排序,"最近"断言不确定(全量测试负载下偶发失败)。两次创建间
+    留 2ms 间隔,保证时间戳必然不同,断言与实现语义(时间升序取末位)一致。
+    """
     store = MemoryStore()
     mgr = _manager(store=store)
     a = mgr.create()
     asyncio.run(a.run("第一轮"))
+    time.sleep(0.002)  # 跨过毫秒时间戳精度,保证 a/b 排序确定
     b = mgr.create()
     asyncio.run(b.run("第二轮"))
     assert mgr.continue_recent().session_id == b.session_id
+
+
+def test_replace_ports_switches_config_and_persists():
+    """replace_ports:热切换后会话用新端口,配置写入 store(读侧后写覆盖)。"""
+    store = MemoryStore()
+    mgr = _manager(store=store, model="a", effort="low")
+    mgr.create()
+    new_ports = AgentPorts(model=ChatModelPort(FakeClient(response="新配置回复")), tools=[])
+    mgr.replace_ports(new_ports, model="b", effort="high")
+    ref = store.list()[-1]
+    assert ref.model == "b" and ref.effort == "high"
+    # 既有会话继续对话使用新端口(历史不丢、回复来自新模型)
+    asyncio.run(mgr.current.run("继续"))
+    assistant = [m.content for m in mgr.current.history if m.role == "assistant"]
+    assert assistant[-1] == "新配置回复"
+
+
+def test_replace_ports_halt_running():
+    """replace_ports 先中止运行中的会话(避免旧端口执行中被替换)。"""
+    mgr = _manager(store=MemoryStore())
+    session = mgr.create()
+    new_ports = AgentPorts(model=ChatModelPort(FakeClient(response="x")), tools=[])
+
+    async def _scenario() -> None:
+        task = asyncio.create_task(asyncio.sleep(10))  # 伪装运行中
+        session._current_task = task
+        mgr.replace_ports(new_ports, model="c")
+        await asyncio.sleep(0)  # 让取消在事件循环中生效
+        assert task.cancelled()  # halt 中止了运行中任务
+        assert mgr._ports is new_ports
+
+    asyncio.run(_scenario())
 
 
 def test_continue_recent_without_sessions_creates_new():

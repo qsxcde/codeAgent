@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -113,6 +113,10 @@ class SessionStore(Protocol):
     def append_message(self, session_id: str, message: Message) -> None: ...
 
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> None: ...
+
+    def append_model_change(
+        self, session_id: str, *, model: str = "", effort: str = ""
+    ) -> None: ...
 
     def set_meta(self, session_id: str, key: str, value: Any) -> None: ...
 
@@ -230,14 +234,14 @@ class JsonFileStore:
         path = self._path(session_id)
         if not path.exists():
             return None
-        header, first_user, last_name = self._scan(path)
+        header, first_user, last_name, model, effort = self._scan(path)
         return SessionRef(
             id=header.get("id", session_id),
             timestamp=header.get("timestamp", ""),
             cwd=header.get("cwd", ""),
             parent_session=header.get("parentSession"),
-            model=header.get("model", ""),
-            effort=header.get("effort", ""),
+            model=model,
+            effort=effort,
             title=_derive_title(last_name, first_user),
         )
 
@@ -275,6 +279,17 @@ class JsonFileStore:
             "summary": entry.summary,
             "details": entry.details,
         }
+        self._append(session_id, record)
+
+    def append_model_change(
+        self, session_id: str, *, model: str = "", effort: str = ""
+    ) -> None:
+        """记录配置热切换:model_change entry 追加(读侧后写覆盖 header)。"""
+        record: dict[str, Any] = {"type": "model_change", "timestamp": _now()}
+        if model:
+            record["model"] = model
+        if effort:
+            record["effort"] = effort
         self._append(session_id, record)
 
     def set_meta(self, session_id: str, key: str, value: Any) -> None:
@@ -321,15 +336,17 @@ class JsonFileStore:
         _validate_header(entries[0], path)
         return entries
 
-    def _scan(self, path: Path) -> tuple[dict[str, Any], str, str]:
-        """单遍流式扫描:header / 首条 user 消息 / 最新 meta name。
+    def _scan(self, path: Path) -> tuple[dict[str, Any], str, str, str, str]:
+        """单遍流式扫描:header / 首条 user 消息 / 最新 meta name / 最新配置。
 
-        不能提前终止——meta name 可能写在首条 user 消息之后(后写覆盖),
-        提前终止会漏掉显式命名。内存 O(1),只保留需要的三个值。
+        不能提前终止——meta name 与 model_change 可能写在首条 user 消息之后
+        (后写覆盖),提前终止会漏掉显式命名与热切换配置。内存 O(1)。
         """
         header: dict[str, Any] | None = None
         first_user = ""
         last_name = ""
+        model = ""
+        effort = ""
         with _lock_for(path):
             for line_no, line in enumerate(
                 path.read_text(encoding="utf-8").splitlines(), start=1
@@ -343,15 +360,22 @@ class JsonFileStore:
                 if header is None:
                     _validate_header(entry, path)
                     header = entry
+                    model = entry.get("model", "") or ""
+                    effort = entry.get("effort", "") or ""
                 elif entry.get("type") == "message" and not first_user:
                     if entry.get("role") == "user":
                         first_user = entry.get("content", "") or ""
                 elif entry.get("type") == "meta" and entry.get("key") == "name":
                     if entry.get("value") is not None:
                         last_name = str(entry["value"])
+                elif entry.get("type") == "model_change":
+                    if entry.get("model") is not None:
+                        model = str(entry["model"])
+                    if entry.get("effort") is not None:
+                        effort = str(entry["effort"])
         if header is None:
             raise ValueError(f"会话文件缺少 header: {path}")
-        return header, first_user, last_name
+        return header, first_user, last_name, model, effort
 
 
 class MemoryStore:
@@ -408,6 +432,17 @@ class MemoryStore:
 
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> None:
         self._compactions.append((session_id, entry))
+
+    def append_model_change(
+        self, session_id: str, *, model: str = "", effort: str = ""
+    ) -> None:
+        """记录配置热切换(内存态,读侧后写覆盖 create 时的 header 值)。"""
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        ref = self._sessions[session_id]
+        self._sessions[session_id] = replace(
+            ref, model=model or ref.model, effort=effort or ref.effort
+        )
 
     def set_meta(self, session_id: str, key: str, value: Any) -> None:
         if session_id not in self._sessions:
