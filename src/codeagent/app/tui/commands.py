@@ -102,6 +102,9 @@ def default_registry() -> dict[str, CommandSpec]:
             "fork", "从指定消息分叉会话(缺省最近用户消息)", args=("message-id",)
         ),
         "compact": CommandSpec("compact", "压缩当前会话上下文"),
+        "skills": CommandSpec(
+            "skills", "列出可用技能 / 加载指定技能", args=("name",)
+        ),
     }
 
 

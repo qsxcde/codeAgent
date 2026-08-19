@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
     "pydantic-settings>=2.14.2",
+    "pyyaml>=6.0.3",
     "textual>=2.1.0",
 ]
 

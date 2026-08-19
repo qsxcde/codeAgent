@@ -435,12 +435,12 @@ def test_bash_normal_command_unaffected_by_no_color(monkeypatch):
 
 # ── registry ──────────────────────────────────────────
 
-def test_make_tools_returns_seven_atomic_tools():
+def test_make_tools_returns_all_atomic_tools():
     tools = create_tools()
     assert isinstance(tools, list)
-    assert len(tools) == 7
+    assert len(tools) == 8
     names = {t.name for t in tools}
-    assert names == {"read", "write", "edit", "bash", "grep", "find", "ls"}
+    assert names == {"read", "write", "edit", "bash", "grep", "find", "ls", "skill"}
     from codeagent.tools.base import AtomicTool
 
     assert all(isinstance(t, AtomicTool) for t in tools)

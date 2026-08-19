@@ -25,7 +25,7 @@ def test_create_agent_ports_returns_ports():
 
         ports = create_agent_ports()
     assert isinstance(ports, AgentPorts)
-    assert len(ports.tools) == 7
+    assert len(ports.tools) == 8
     assert ports.model.model_id == "fake-model"
 
 
@@ -313,6 +313,38 @@ def test_system_prompt_only_once_and_hot_swap_stable(tmp_path, monkeypatch):
         roles = [m["role"] for m in call["messages"]]
         assert roles.count("system") == 1  # 每轮恰好一条
         assert roles[0] == "system"
+
+
+def test_ports_inject_skills_section_and_tool(tmp_path, monkeypatch):
+    """组合根装配:system prompt 追加技能段 + skill 工具携带渲染注册表。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".codeagent" / "skills" / "fmt").mkdir(parents=True)
+    (tmp_path / ".codeagent" / "skills" / "fmt" / "SKILL.md").write_text(
+        "---\ndescription: 格式化。\n---\n格式化正文", encoding="utf-8"
+    )
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        model = FakeClient(response="测试回复")
+        mock_llm.return_value = model
+        from codeagent.app.container import create_agent_ports
+
+        ports = create_agent_ports()
+    import asyncio
+
+    from codeagent.core import run_turn
+
+    events: list = []
+    asyncio.run(run_turn(ports, events.append, "你好", history=[]))
+    first = model.call_history[0]["messages"][0]
+    assert "<available_skills>" in first["content"]
+    assert "- fmt: 格式化。 (来源:" in first["content"]
+    assert "格式化正文" not in first["content"]  # 正文不预载
+    skill_tool = next(t for t in ports.tools if getattr(t, "name", "") == "skill")
+    out = skill_tool.invoke(skill_tool.Args(name="fmt"))
+    assert "格式化正文" in out
+    out = skill_tool.invoke(skill_tool.Args(name="nope"))
+    assert "技能不存在" in out
 
 
 # -- 上下文压缩装配(session-compaction)----------------------------------------

@@ -101,7 +101,7 @@ class StubBackend:
 
 
 class FakeSession:
-    """假会话:订阅回调可按需触发事件;abort 记录调用。"""
+    """假会话:订阅回调可按需触发事件;abort 记录调用;run 记录文本。"""
 
     def __init__(self, session_id: str = "") -> None:
         self.session_id = session_id or f"fake-{len(FakeSession._created)}"
@@ -109,6 +109,7 @@ class FakeSession:
         self.subscribers: list[Any] = []
         self.aborted = False
         self.approvals: list[tuple[str, bool]] = []
+        self.run_texts: list[str] = []
 
     _created: list["FakeSession"] = []
 
@@ -117,6 +118,8 @@ class FakeSession:
         return lambda: None
 
     def run(self, text: str):
+        self.run_texts.append(text)
+
         async def _run() -> None:
             self._emit(AgentEvent(EventType.SESSION_STARTED, payload=text))
             self._emit(AgentEvent(EventType.TEXT_DELTA, payload="ok"))
@@ -427,8 +430,10 @@ def test_submit_command_help_renders_without_run():
     app, backend, manager = _make_app()
     manager.current.run_called = False  # 记录:命令不应触发 run
     backend.submit("/help")
-    text = _rendered_text(app, backend)
-    assert "/fork" in text and "/compact" in text  # 帮助含新增命令(头行可能被视口裁剪)
+    # 无界高度渲染全文(命令表变长后视口会裁剪行首,不影响命令语义)。
+    text = "\n".join(app.model.transcript.all_lines(240))
+    assert "/fork" in text and "/compact" in text
+    assert "/skills" in text
 
 
 def test_submit_unknown_command_shows_error():
@@ -1181,3 +1186,114 @@ def test_login_disables_suggestions():
     backend.input_changed("/pro")
     assert app._suggestions == []
     assert backend.suggestion_lines[-1] == []
+
+
+# -- 技能命令(skills-system)--------------------------------------------------
+
+
+def _sample_skills():
+    from codeagent.app.skills import Skill
+
+    return [
+        Skill("fmt", "格式化代码。", "/skills/fmt/SKILL.md", "格式化正文"),
+        Skill("audit", "依赖审计。", "/skills/audit/SKILL.md", "审计正文"),
+    ]
+
+
+def _make_skills_app(skills=None, diagnostics=None):
+    """构造注入技能注册表与诊断的 app(离线断言 /skills /status)。"""
+    backend = StubBackend()
+    manager = FakeManager()
+    app = TuiApp(manager, backend, skills=(skills or [], diagnostics or []))
+    backend.on_submit(app._submit)
+    backend.on_input_changed(app._on_input_changed)
+    backend.on_suggestion_confirm(app._on_suggestion_confirm)
+    backend.on_suggestion_navigate(app._on_suggestion_navigate)
+    return app, backend, manager
+
+
+def test_skills_command_lists_skills():
+    """/skills 无参 → 聊天区列出技能(名称/描述/来源,按名称排序)。"""
+    app, backend, _ = _make_skills_app(_sample_skills())
+    backend.submit("/skills")
+    text = _rendered_text(app, backend)
+    assert "可用技能:" in text
+    assert "fmt — 格式化代码。 (来源: /skills/fmt/SKILL.md)" in text
+    assert text.index("audit") < text.index("fmt")  # 按名称排序
+    assert manager_run_texts(app) == []
+
+
+def test_skills_command_without_skills():
+    """/skills 无技能 → 明确说明。"""
+    app, backend, _ = _make_skills_app([])
+    backend.submit("/skills")
+    assert "技能: (无)" in _rendered_text(app, backend)
+
+
+def test_skills_command_loads_skill():
+    """/skills <name> → 渲染块以标注技能名的消息进入会话并触发一轮回复。"""
+    app, backend, manager = _make_skills_app(_sample_skills())
+
+    async def _run() -> None:
+        backend.submit("/skills fmt")
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+    session = manager.current
+    assert len(session.run_texts) == 1
+    text = session.run_texts[0]
+    assert "[用户手动加载技能: fmt]" in text
+    assert '<skill name="fmt" location="/skills/fmt/SKILL.md">' in text
+    assert "格式化正文" in text
+
+
+def test_skills_command_unknown_skill():
+    """/skills <未知名> → 明确错误并列出可用技能,不注入不运行。"""
+    app, backend, manager = _make_skills_app(_sample_skills())
+    backend.submit("/skills nope")
+    text = _rendered_text(app, backend)
+    assert "未知技能: nope" in text
+    assert "fmt" in text and "audit" in text
+    assert manager.current.run_texts == []
+
+
+def test_skills_suggestion_candidates():
+    """/skills ␣ → 技能名模糊候选(输入框补全)。"""
+    app, backend, _ = _make_skills_app(_sample_skills())
+    backend.input_changed("/skills f")
+    assert app._suggestions == ["fmt"]
+    backend.input_changed("/skills ")
+    assert set(app._suggestions) == {"fmt", "audit"}
+
+
+def test_skills_suggestion_confirm_fills_command():
+    """技能候选确认 → 填入 /skills <name>,再次 Enter 即加载。"""
+    app, backend, _ = _make_skills_app(_sample_skills())
+    backend.input_changed("/skills au")
+    backend.suggestion_confirm()
+    assert backend.input_texts[-1] == "/skills audit"
+    assert app._suggestions == []
+    # 再次提交 → 执行手动加载
+    async def _run() -> None:
+        backend.submit("/skills audit")
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+    assert "[用户手动加载技能: audit]" in app._manager.current.run_texts[0]
+
+
+def test_status_shows_skills_and_diagnostics():
+    """/status → 技能列表 + 加载诊断可见。"""
+    diags = ["shadowed: project 技能 'fmt' 被更高优先级遮蔽", "parse_failed: xxx"]
+    app, backend, _ = _make_skills_app(_sample_skills(), diags)
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "技能:" in text
+    assert "fmt — 格式化代码。" in text
+    assert "技能诊断:" in text
+    assert "shadowed" in text and "parse_failed" in text
+
+
+def manager_run_texts(app: TuiApp) -> list[str]:
+    """当前会话的 run 记录(断言命令不触发对话)。"""
+    return list(app._manager.current.run_texts)

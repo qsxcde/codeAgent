@@ -141,7 +141,7 @@ agent 运行中,用户 SHALL 可中断当前运行;中断后状态 SHALL 回到�
 
 ### Requirement: alt 屏渲染与滚动
 
-TUI SHALL 在 alt 屏渲染,应用自己管理滚动;流式输出 SHALL 自动跟随底部,用户上滚浏览历史后 SHALL 解除跟随,滚回底部 SHALL 恢复跟随;滚动输入 SHALL 支持滚轮与 PageUp/PageDown 键,输入框聚焦时按键归属 SHALL 显式分派。
+TUI SHALL 在 alt 屏渲染,应用自己管理滚动;流式输出 SHALL 自动跟随底部,用户上滚浏览历史后 SHALL 解除跟随,滚回底部 SHALL 恢复跟随;滚动输入 SHALL 支持滚轮与 PageUp/PageDown 键;PageUp/PageDown SHALL 无论输入框是否聚焦均按页滚动聊天区视口。
 
 #### Scenario: 流式跟底
 
@@ -165,8 +165,8 @@ TUI SHALL 在 alt 屏渲染,应用自己管理滚动;流式输出 SHALL 自动�
 
 #### Scenario: 键盘滚动
 
-- **WHEN** 输入框未聚焦且用户按 PageUp/PageDown
-- **THEN** 视口按页滚动,按键不被输入区吞掉;输入框聚焦时按键归属输入区
+- **WHEN** 用户按 PageUp/PageDown(无论输入框是否聚焦)
+- **THEN** 视口按页滚动,按键不被输入区分派吞掉;上滚解除跟随,滚回底部恢复跟随
 
 ### Requirement: 退出完整文档
 
@@ -212,7 +212,7 @@ TUI SHALL 支持以 `/` 起始的斜杠命令;命令 SHALL 经注册表校验与
 #### Scenario: 发送斜杠命令
 
 - **WHEN** 用户提交以 `/` 起始且命中注册表的文本
-- **THEN** 执行对应命令,不发起对话;`/help` 显示命令帮助、`/clear` 清空聊天区、`/status` 显示会话状态、`/sessions` 列出并可切换会话、`/tools` 列出可用工具、`/provider` `/model` `/effort` 切换模型配置、`/fork` 从指定消息分叉会话、`/compact` 压缩当前会话上下文
+- **THEN** 执行对应命令,不发起对话;`/help` 显示命令帮助、`/clear` 清空聊天区、`/status` 显示会话状态、`/sessions` 列出并可切换会话、`/tools` 列出可用工具、`/provider` `/model` `/effort` 切换模型配置、`/fork` 从指定消息分叉会话、`/compact` 压缩当前会话上下文、`/skills` 列出或手动加载技能
 
 #### Scenario: 压缩会话命令
 
@@ -227,7 +227,7 @@ TUI SHALL 支持以 `/` 起始的斜杠命令;命令 SHALL 经注册表校验与
 #### Scenario: 状态含指令来源
 
 - **WHEN** 用户提交 `/status`
-- **THEN** 除会话状态外,显示本次会话加载的分层上下文文件来源列表(AGENTS.md 等);无加载时明确说明
+- **THEN** 除会话状态外,显示本次会话加载的分层上下文文件来源列表(AGENTS.md 等)与已加载技能列表及诊断;无加载时明确说明
 
 #### Scenario: 未知命令
 
@@ -248,6 +248,98 @@ TUI SHALL 支持以 `/` 起始的斜杠命令;命令 SHALL 经注册表校验与
 
 - **WHEN** 建议浮层激活,用户以确认键(Enter/Tab)填入建议后再次按 Enter
 - **THEN** 输入内容被提交执行(不因浮层仍在而被再次消费为确认动作)
+
+### Requirement: 技能命令
+
+TUI SHALL 提供 `/skills` 斜杠命令:无参提交 SHALL 在聊天区列出已加载技能(名称/描述/来源路径,按名称排序);带参 `/skills <name>` SHALL 手动加载该技能——技能正文经注入消息进入会话并立即触发一轮回复;输入框内容为 `/skills ` 时 SHALL 弹出技能名模糊补全候选;加载不存在的技能 SHALL 反馈明确错误并列出可用技能名。
+
+#### Scenario: 无参列出技能
+
+- **WHEN** 用户提交 `/skills`
+- **THEN** 聊天区列出已加载技能(名称/描述/来源路径),按名称排序;无技能时明确说明
+
+#### Scenario: 带参手动加载
+
+- **WHEN** 用户提交 `/skills <name>` 且技能已注册
+- **THEN** 技能正文以标注技能名与来源的注入消息进入会话,并立即触发一轮回复
+
+#### Scenario: 技能名补全候选
+
+- **WHEN** 输入框内容为 `/skills `(命令后尾随空格)
+- **THEN** 弹出技能名模糊补全候选,确认填入后提交即加载
+
+#### Scenario: 加载不存在的技能
+
+- **WHEN** 用户提交 `/skills <name>` 且技能未注册
+- **THEN** 反馈明确错误并列出可用技能名,不注入任何内容
+
+### Requirement: 密钥配置命令
+
+TUI SHALL 提供 `/login` 斜杠命令配置 provider 的 API key:无参提交 SHALL 弹出 provider 选择器(与 `/provider` 同款候选与筛选);带参 `/login <provider>` SHALL 直通该 provider;选择或直通后 SHALL 进入密钥输入流程;无需密钥的 provider(fake)SHALL 明确提示、不进入输入流程;保存成功后 SHALL 切换到该 provider(等价 `/provider` 热切换,状态栏与反馈更新);保存失败 SHALL 就地提示且不切换。
+
+#### Scenario: 无参命令弹选择器
+
+- **WHEN** 用户提交 `/login`
+- **THEN** 弹出 provider 选择器,候选列表与筛选行为与 `/provider` 一致
+
+#### Scenario: 带参直通
+
+- **WHEN** 用户提交 `/login deepseek`
+- **THEN** 直接进入 deepseek 的密钥输入流程,不弹选择器
+
+#### Scenario: 无需密钥的 provider
+
+- **WHEN** 用户对 fake 执行 `/login`
+- **THEN** 提示该 provider 无需密钥,不进入密钥输入流程
+
+#### Scenario: 保存并切换
+
+- **WHEN** 用户提交有效密钥
+- **THEN** 密钥写入配置,立即切换到该 provider,反馈保存结果
+
+#### Scenario: 保存失败
+
+- **WHEN** 配置不可写或保存出错
+- **THEN** 就地提示错误,不切换 provider
+
+#### Scenario: 已配置状态标记
+
+- **WHEN** 登录选择器展示 provider 候选
+- **THEN** 已配置密钥的 provider 带可见的已配置标记(如 `✓`)
+
+### Requirement: 密钥掩码输入
+
+密钥输入期间 TUI SHALL 隐藏明文显示(逐字符掩码,内部保留原文供提交);输入框 SHALL 显示可操作提示(目标键名、Enter 保存 / Esc 取消);输入期间建议浮层 SHALL 不弹出;空密钥提交 SHALL 提示并要求重新输入;Esc SHALL 取消输入回到空闲,不发起任何写入;提交或取消后输入框 SHALL 恢复普通输入形态(掩码解除、提示清除)。密钥 SHALL 不进入聊天区、会话历史与日志。
+
+#### Scenario: 掩码显示
+
+- **WHEN** 用户键入密钥
+- **THEN** 输入框以掩码字符显示,不显示明文
+
+#### Scenario: 操作提示
+
+- **WHEN** 进入密钥输入
+- **THEN** 输入框显示目标键名与 Enter 保存 / Esc 取消的键位提示
+
+#### Scenario: 空值拒绝
+
+- **WHEN** 用户空提交密钥
+- **THEN** 提示密钥不能为空,保持在输入态
+
+#### Scenario: 取消输入
+
+- **WHEN** 用户按 Esc
+- **THEN** 退出输入态回到空闲,不写入任何内容
+
+#### Scenario: 明文不外泄
+
+- **WHEN** 密钥输入或提交
+- **THEN** 聊天区、会话历史与日志均不出现密钥明文
+
+#### Scenario: 恢复普通输入
+
+- **WHEN** 密钥提交或取消
+- **THEN** 输入框恢复普通输入形态(掩码解除、提示清除)
 
 ### Requirement: 模糊补全与选择器
 
@@ -285,7 +377,7 @@ TUI SHALL 支持以 `/` 起始的斜杠命令;命令 SHALL 经注册表校验与
 
 ### Requirement: 确认交互
 
-TUI SHALL 在收到确认请求时显示确认提示:呈现待确认的工具摘要与原因;用户 SHALL 可批准、拒绝或拒绝并中止本轮;确认提示激活期间按键归属 SHALL 显式分派(不被输入框吞掉);确认结果 SHALL 反馈会话并反映到聊天区工具块状态;无交互形态(headless)下 SHALL 不呈现确认提示,由装配策略决定(默认拒绝)。
+TUI SHALL 在收到确认请求时显示确认提示:呈现待确认的工具摘要与原因;用户 SHALL 可批准、拒绝或拒绝并中止本轮;确认提示激活期间按键归属 SHALL 显式分派(不被输入框吞掉);确认未激活时确认键位 SHALL 不拦截输入;确认结果 SHALL 反馈会话并反映到聊天区工具块状态;无交互形态(headless)下 SHALL 不呈现确认提示,由装配策略决定(默认拒绝)。
 
 #### Scenario: 确认提示显示
 
@@ -309,7 +401,35 @@ TUI SHALL 在收到确认请求时显示确认提示:呈现待确认的工具摘
 - **WHEN** 确认提示激活且用户按键
 - **THEN** 批准/拒绝/中止键归属确认提示;输入框不吞掉这些按键,提示收起后输入恢复正常
 
+#### Scenario: 确认未激活不拦截输入
+
+- **WHEN** 无激活的确认提示,用户输入或粘贴含 y/n 字符的文本(含突发/批量输入)
+- **THEN** 全部字符按原顺序进入输入框,无丢失、无重排
+
 #### Scenario: 多个请求逐个呈现
 
 - **WHEN** 同一轮存在多个待确认请求
 - **THEN** 一次只呈现一个,响应后呈现下一个
+
+### Requirement: 终端背景融合
+
+TUI 顶层屏幕与聊天区的背景 SHALL 与终端自身背景融合:未显式设置背景的区域(如 agent 正文、工具摘要之外的空白)SHALL 不渲染不透明实色背景,呈现终端默认背景;显式背景样式(用户消息全宽深灰块、composer 输入条等)不受影响,SHALL 保持既有视觉区分。
+
+#### Scenario: 启动后背景与终端一致
+
+- **WHEN** TUI 启动并完成首屏渲染
+- **THEN** 顶层屏幕与聊天区未显式设背景的区域不输出不透明背景色码,背景随终端背景呈现
+
+#### Scenario: 显式背景块保持区分
+
+- **WHEN** 渲染用户消息背景块或 composer 输入条
+- **THEN** 其显式深灰背景正常显示,与聊天区其余区域视觉可区分,不被背景融合消除
+
+### Requirement: 认证失败引导
+
+会话层认证失败提示 SHALL 在 API Key 无效或未配置时给出可操作引导(指向 `/login` 命令),不只有错误本身。
+
+#### Scenario: 401 引导文案
+
+- **WHEN** 模型调用返回认证失败(如 HTTP 401)
+- **THEN** 错误提示说明 API Key 无效或未配置,并引导使用 `/login` 命令配置密钥

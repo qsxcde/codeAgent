@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from codeagent.app.skills import Skill, format_skill_invocation
 from codeagent.app.tui.backend import TuiBackend
 from codeagent.app.tui.commands import (
     Command,
@@ -60,6 +61,7 @@ class TuiApp:
         rebuild_ports: Any = None,
         candidates: dict[str, Any] | None = None,
         agents_sources: list[str] | None = None,
+        skills: tuple[list[Skill], list[str]] | None = None,
         save_key: Any = None,
         configured_providers: set[str] | None = None,
     ) -> None:
@@ -68,6 +70,8 @@ class TuiApp:
         ``candidates`` 为选择器候选(provider/model/effort 各一份,组合根注入);
         ``agents_sources`` 为分层上下文文件来源列表(agents-md-hierarchy,
         /status 展示加载结果;None = 未注入);
+        ``skills`` 为 (技能列表, 诊断消息列表)(skills-system,/skills 列表与
+        手动加载、/status 展示;None = 未注入);
         ``save_key(provider, key) -> (model, effort)`` 为组合根注入的密钥保存
         回调(/login 命令用:写 .env + 热切换;None = 不支持);
         ``configured_providers`` 为已配置 key 的 provider 集(登录选择器 ✓
@@ -77,6 +81,9 @@ class TuiApp:
         self._rebuild_ports = rebuild_ports
         self._candidates = candidates or {}
         self._agents_sources = agents_sources or []
+        self._skills = list(skills[0]) if skills else []
+        self._skill_diagnostics = list(skills[1]) if skills else []
+        self._skills_by_name = {s.name: s for s in self._skills}
         self._save_key = save_key
         self._configured_providers = set(configured_providers or [])
         #: 待输入密钥的 provider(/login 登录态;None = 普通输入)。
@@ -179,6 +186,7 @@ class TuiApp:
         - ``/pro`` → 命令名候选;单独 ``/`` → 空查询展示全量命令(D2);
         - ``/provider dee`` → provider 候选;``/provider ``(仅尾随空格)→
           空查询展示全量候选(D4);
+        - ``/skills dee`` → 技能名候选(输入框补全,skills-system);
         - 非 ``/`` 起始或无候选 → None(不弹浮层);
         - 登录态(/login 密钥输入)恒不弹浮层(tui-login-command)。
         """
@@ -190,19 +198,21 @@ class TuiApp:
         if sep == "":
             # 无空格:命令名补全(name 可为空 = 裸 "/" 全量)。
             return name, list(_COMMANDS)
-        if name in ("provider", "model", "effort", "login"):
+        if name in ("provider", "model", "effort", "login", "skills"):
             # 有空格:选择器候选(rest 可为空 = 全量候选)。
             return rest, self._picker_candidates(name)
         return None
 
     def _picker_candidates(self, name: str) -> list[str]:
         """picker 值候选:model 按当前 provider 过滤(组合根注入 provider→模型表);
-        login 与 provider 同表(候选 = 全部 provider)。"""
+        login 与 provider 同表(候选 = 全部 provider);skills 为已加载技能名。"""
         if name == "model":
             by_provider = self._candidates.get("model", {})
             return list(by_provider.get(self._provider, []))
         if name == "login":
             return list(self._candidates.get("login", []) or self._candidates.get("provider", []))
+        if name == "skills":
+            return [s.name for s in self._skills]
         return list(self._candidates.get(name, []))
 
     def _on_input_changed(self, text: str) -> None:
@@ -258,6 +268,12 @@ class TuiApp:
                 if cmd_name == "provider":
                     self._provider = name
             self._schedule_render()
+            return
+        if self._suggestion_kind == "value" and cmd_name == "skills":
+            # /skills 值候选确认:填入 "/skills <name>",再次 Enter 即加载
+            # (技能名补全候选,skills-system)。
+            self._suppress_next_suggestions = True
+            self._backend.set_input_text(f"/skills {name}")
             return
         # 置位后再填入:set_input_text 引发的异步变更通知将被抑制,浮层不重弹(D1)。
         self._suppress_next_suggestions = True
@@ -411,6 +427,7 @@ class TuiApp:
             "sessions": self._cmd_sessions,
             "fork": self._cmd_fork,
             "compact": self._cmd_compact,
+            "skills": self._cmd_skills,
             "provider": self._cmd_provider,
             "login": self._cmd_login,
             "model": self._cmd_model,
@@ -445,7 +462,47 @@ class TuiApp:
             lines.extend(f"  {source}" for source in self._agents_sources)
         else:
             lines.append("上下文文件: (无)")
+        # 已加载技能与诊断(skills-system:加载结果可见可断言)。
+        if self._skills:
+            lines.append("技能:")
+            lines.extend(f"  {s.name} — {s.description}" for s in self._skills)
+        else:
+            lines.append("技能: (无)")
+        if self._skill_diagnostics:
+            lines.append("技能诊断:")
+            lines.extend(f"  {message}" for message in self._skill_diagnostics)
         self.model.append_info("\n".join(lines))
+
+    def _cmd_skills(self, cmd: Command) -> None:
+        """/skills:无参列出已加载技能;带参手动加载(立即注入正文并触发一轮回复)。
+
+        手动加载是用户显式触发(提示词表达不出时的确定性出口):渲染块以
+        标注技能名的 user 消息进入会话,模型收到后直接执行——不依赖模型
+        自主调用 skill 工具(design skills-system §3)。
+        """
+        if not cmd.args:
+            if not self._skills:
+                self.model.append_info("技能: (无)")
+                return
+            lines = ["可用技能:"]
+            # 显示层按名称排序(注册表已排,防御性保证展示顺序确定)。
+            for skill in sorted(self._skills, key=lambda s: s.name):
+                lines.append(f"  {skill.name} — {skill.description} (来源: {skill.path})")
+            self.model.append_info("\n".join(lines))
+            return
+        name = cmd.args[0]
+        skill = self._skills_by_name.get(name)
+        if skill is None:
+            names = ", ".join(s.name for s in self._skills) or "(无)"
+            self.model.append_info(f"未知技能: {name}(可用: {names})")
+            return
+        session = self._manager.current
+        if session is None:
+            self.model.append_info("(无当前会话)")
+            return
+        block = format_skill_invocation(skill)
+        loop = asyncio.get_running_loop()
+        loop.create_task(session.run(f"[用户手动加载技能: {name}]\n{block}"))
 
     def _cmd_tools(self, cmd: Command) -> None:
         names = [getattr(tool, "name", "") for tool in self._manager.tools]

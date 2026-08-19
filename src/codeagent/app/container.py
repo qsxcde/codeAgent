@@ -17,31 +17,53 @@ from codeagent.core.messages import Message, ToolCall
 from codeagent.core.ports import AgentPorts, ModelResponse, PolicyDecision, StreamEvent
 
 
-def create_tools(cfg: Any = None) -> list[Any]:
-    """工具层接线:产出自研原子工具列表。"""
+def create_tools(cfg: Any = None, skills: dict[str, str] | None = None) -> list[Any]:
+    """工具层接线:产出自研原子工具列表。
+
+    ``skills`` 为技能名 → 渲染块 注册表(组合根预渲染,注入 skill 工具)。
+    """
     from codeagent.tools.registry import make_tools
 
-    return make_tools(cfg)
+    return make_tools(cfg, skills=skills)
 
 
-# -- 系统提示词(agents-md-hierarchy)------------------------------------------
+# -- 系统提示词(agents-md-hierarchy + skills)---------------------------------
 
 
-def _build_system_prompt(cfg: Any = None) -> str:
-    """组装 system prompt:基础提示词 + 分层 AGENTS.md(全局→项目→子目录)。
+def _workspace(cfg: Any = None) -> str:
+    """解析装配工作目录(配置 cwd,缺省进程启动目录)——多装配点同源。"""
+    workspace = getattr(cfg, "cwd", None) if cfg is not None else None
+    return str(Path(workspace or Path.cwd()).expanduser().resolve())
+
+
+def _load_skills(cfg: Any = None) -> tuple[list[Any], list[Any]]:
+    """加载技能注册表与诊断(组合根装配点共用;热切换重读,同 cwd 幂等)。"""
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.app.skills import load_skills
+
+    return load_skills(_workspace(cfg), CONFIG_DIR)
+
+
+def _build_system_prompt(cfg: Any = None, skills: list[Any] | None = None) -> str:
+    """组装 system prompt:基础提示词 + 分层 AGENTS.md + 技能描述段。
 
     - cwd 与 policy/工具同源(配置 cwd,缺省进程启动目录);
     - config_dir 取 ``app.config.CONFIG_DIR``(全局上下文文件所在地);
+    - ``skills`` 缺省自行加载(既有调用兼容);技能段位于分层上下文之后,
+      仅名称/描述/来源(渐进式披露,正文不预载);
     - 热切换(rebuild_ports)再次调用本函数,同 cwd 幂等。
     """
     from codeagent.app import agents
     from codeagent.app.config import CONFIG_DIR
 
-    workspace = getattr(cfg, "cwd", None) if cfg is not None else None
-    workspace = str(Path(workspace or Path.cwd()).expanduser().resolve())
-    return agents.build_system_prompt(
-        agents.read_base_prompt(), agents.load_agents_files(workspace, CONFIG_DIR)
+    base = agents.build_system_prompt(
+        agents.read_base_prompt(), agents.load_agents_files(_workspace(cfg), CONFIG_DIR)
     )
+    if skills is None:
+        skills, _ = _load_skills(cfg)
+    from codeagent.app.skills import build_skills_prompt
+
+    return build_skills_prompt(base, skills)
 
 
 def agents_sources(cfg: Any = None) -> list[str]:
@@ -49,9 +71,16 @@ def agents_sources(cfg: Any = None) -> list[str]:
     from codeagent.app.agents import load_agents_files
     from codeagent.app.config import CONFIG_DIR
 
-    workspace = getattr(cfg, "cwd", None) if cfg is not None else None
-    workspace = str(Path(workspace or Path.cwd()).expanduser().resolve())
-    return [path for path, _ in load_agents_files(workspace, CONFIG_DIR)]
+    return [path for path, _ in load_agents_files(_workspace(cfg), CONFIG_DIR)]
+
+
+def skills_view(cfg: Any = None) -> tuple[list[Any], list[str]]:
+    """技能加载结果视图(技能列表 + 诊断消息;供 TUI /status 与 /skills 展示)。
+
+    诊断消息为一行文本(遮蔽/解析失败等),加载结果可见可断言(T-52)。
+    """
+    skills, diagnostics = _load_skills(cfg)
+    return skills, [f"{d.code}: {d.message}" for d in diagnostics]
 
 
 class LlmSummarizer:
@@ -265,6 +294,7 @@ def create_agent_ports(
     ``approval_mode`` 见 ``_create_policy``(缺省 deny = headless 安全优先)。
     """
     from codeagent.ai.factory import create_llm
+    from codeagent.app.skills import format_skill_invocation
 
     client = create_llm(
         cfg=cfg,
@@ -273,9 +303,12 @@ def create_agent_ports(
         provider=provider,
         model=model,
     )
+    # 技能一次加载两处消费:system prompt 描述段 + skill 工具渲染块注册表。
+    skills, _diagnostics = _load_skills(cfg)
+    rendered_skills = {s.name: format_skill_invocation(s) for s in skills}
     return AgentPorts(
-        model=ChatModelPort(client, system_prompt=_build_system_prompt(cfg)),
-        tools=create_tools(cfg),
+        model=ChatModelPort(client, system_prompt=_build_system_prompt(cfg, skills)),
+        tools=create_tools(cfg, skills=rendered_skills),
         policy=_create_policy(cfg, approval_mode),
     )
 
@@ -437,6 +470,7 @@ def create_tui_app(
         rebuild_ports=rebuild_ports,
         candidates=candidates,
         agents_sources=agents_sources(cfg),  # 上下文文件来源(/status 展示)
+        skills=skills_view(cfg),  # 技能列表 + 诊断(/skills /status 展示)
         save_key=save_key,  # /login 密钥保存 + 热切换(tui-login-command)
         configured_providers=_configured_providers(),  # 登录选择器 ✓ 标记
     )
