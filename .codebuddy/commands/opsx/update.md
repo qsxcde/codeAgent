@@ -1,9 +1,7 @@
 ---
 name: "OPSX: Update"
 description: "Update a change - revise existing planning artifacts and keep them coherent (Experimental)"
-allowed-tools: Bash(openspec:*)
-category: "Workflow"
-tags: ["workflow", "artifacts", "experimental"]
+argument-hint: "[command arguments]"
 ---
 
 Revise a change's existing planning artifacts and keep them coherent. Never edit code.
