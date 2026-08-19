@@ -294,3 +294,81 @@ def test_on_mount_installs_background_blending():
             assert app.composer.input.styles.background == ansi_default
 
     asyncio.run(_run())
+
+
+# -- 登录掩码输入(tui-login-command) ----------------------------------------
+
+
+def test_input_mask_switches_composer_components():
+    """(tui-login-command)set_input_mask:普通输入 ↔ 密码输入 display 互斥。"""
+    from codeagent.app.tui.textual_backend import TextualBackend
+
+    async def _run() -> None:
+        backend = TextualBackend()
+        composer = backend._app.composer
+        async with backend._app.run_test(size=(80, 24)) as pilot:
+            assert composer.input.display  # 初始为普通输入
+            assert not composer.key_input.display
+
+            backend.set_input_mask(True)
+            await pilot.pause()  # focus() 经消息循环排队生效
+            assert not composer.input.display
+            assert composer.key_input.display
+            assert backend._app.focused is composer.key_input
+
+            backend.set_input_mask(False)
+            await pilot.pause()
+            assert composer.input.display
+            assert not composer.key_input.display
+            assert backend._app.focused is composer.input
+            # 退出掩码:普通输入提示还原,密码输入内容清空
+            assert composer.input.placeholder == "输入消息..."
+
+    asyncio.run(_run())
+
+
+def test_key_input_submits_plaintext_and_clears():
+    """(tui-login-command)掩码提交:通知原文(非掩码字符),提交后清空。"""
+    from codeagent.app.tui.textual_backend import TextualBackend
+
+    async def _run() -> None:
+        backend = TextualBackend()
+        submits: list[str] = []
+        backend.on_submit(submits.append)
+        async with backend._app.run_test(size=(80, 24)) as pilot:
+            backend.set_input_mask(True)
+            backend.set_input_placeholder("输入 DEEPSEEK_API_KEY")
+            assert backend._app.composer.key_input.placeholder == "输入 DEEPSEEK_API_KEY"
+
+            key_input = backend._app.composer.key_input
+            key_input.value = "sk-secret-123"
+            key_input.action_submit()
+            await pilot.pause()  # post_message 异步分发
+            assert submits == ["sk-secret-123"]  # 提交的是原文
+            assert key_input.value == ""  # 提交后清空
+
+    asyncio.run(_run())
+
+
+def test_key_input_does_not_consume_escape():
+    """(tui-login-command)Esc 不绑定在密码输入上:冒泡到应用层由视图取消。"""
+    from codeagent.app.tui.textual_backend import _KeyInput
+
+    assert "escape" not in [b.key for b in _KeyInput.BINDINGS]
+
+
+def test_key_input_empty_submit_ignored():
+    """(tui-login-command)空白提交不触发通知(空值由视图层提示)。"""
+    from codeagent.app.tui.textual_backend import TextualBackend
+
+    async def _run() -> None:
+        backend = TextualBackend()
+        submits: list[str] = []
+        backend.on_submit(submits.append)
+        async with backend._app.run_test(size=(80, 24)):
+            key_input = backend._app.composer.key_input
+            key_input.value = "   "
+            key_input.action_submit()
+            assert submits == []
+
+    asyncio.run(_run())

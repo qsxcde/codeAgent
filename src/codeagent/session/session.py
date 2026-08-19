@@ -340,7 +340,11 @@ class AgentSession:
         if isinstance(exc, httpx.HTTPStatusError):
             status = exc.response.status_code
             if status in (401, 403):
-                return f"认证失败(HTTP {status}):API Key 无效或未配置,请检查 .env / ~/.codeagent 配置"
+                # /login 引导(tui-login-command):TUI 内可直接配置密钥。
+                return (
+                    "认证失败(HTTP {status}):API Key 无效或未配置,"
+                    "请检查 .env / ~/.codeagent 配置,或在 TUI 中使用 /login 配置密钥"
+                )
             if status == 404:
                 return f"模型或端点不存在(HTTP {status}):请检查 provider/model 配置"
             if status == 429:

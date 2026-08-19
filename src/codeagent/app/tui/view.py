@@ -45,6 +45,7 @@ _PICKER_HINTS = {
     "provider": "/provider <name>: 切换模型提供方",
     "model": "/model <model[:effort]>: 切换模型(支持内联思考强度)",
     "effort": "/effort <level>: 切换思考强度",
+    "login": "/login <provider>: 配置该 provider 的 API key 并切换",
 }
 
 
@@ -59,17 +60,27 @@ class TuiApp:
         rebuild_ports: Any = None,
         candidates: dict[str, Any] | None = None,
         agents_sources: list[str] | None = None,
+        save_key: Any = None,
+        configured_providers: set[str] | None = None,
     ) -> None:
         """``rebuild_ports(provider, model, effort) -> (model, effort)`` 为组合根
         注入的配置热切换回调(/provider /model /effort 命令用;None = 不支持);
         ``candidates`` 为选择器候选(provider/model/effort 各一份,组合根注入);
         ``agents_sources`` 为分层上下文文件来源列表(agents-md-hierarchy,
-        /status 展示加载结果;None = 未注入)。"""
+        /status 展示加载结果;None = 未注入);
+        ``save_key(provider, key) -> (model, effort)`` 为组合根注入的密钥保存
+        回调(/login 命令用:写 .env + 热切换;None = 不支持);
+        ``configured_providers`` 为已配置 key 的 provider 集(登录选择器 ✓
+        标记;组合根注入,None = 空)。"""
         self._manager = manager
         self._backend = backend
         self._rebuild_ports = rebuild_ports
         self._candidates = candidates or {}
         self._agents_sources = agents_sources or []
+        self._save_key = save_key
+        self._configured_providers = set(configured_providers or [])
+        #: 待输入密钥的 provider(/login 登录态;None = 普通输入)。
+        self._login_pending: str | None = None
         self._suggestions: list[str] = []
         self._suggestion_index = 0
         #: 建议浮层候选语境:"command" = 命令名补全,"value" = picker 值候选。
@@ -168,24 +179,30 @@ class TuiApp:
         - ``/pro`` → 命令名候选;单独 ``/`` → 空查询展示全量命令(D2);
         - ``/provider dee`` → provider 候选;``/provider ``(仅尾随空格)→
           空查询展示全量候选(D4);
-        - 非 ``/`` 起始或无候选 → None(不弹浮层)。
+        - 非 ``/`` 起始或无候选 → None(不弹浮层);
+        - 登录态(/login 密钥输入)恒不弹浮层(tui-login-command)。
         """
+        if self._login_pending is not None:
+            return None
         if not text.startswith("/"):
             return None
         name, sep, rest = text[1:].partition(" ")
         if sep == "":
             # 无空格:命令名补全(name 可为空 = 裸 "/" 全量)。
             return name, list(_COMMANDS)
-        if name in ("provider", "model", "effort"):
+        if name in ("provider", "model", "effort", "login"):
             # 有空格:选择器候选(rest 可为空 = 全量候选)。
             return rest, self._picker_candidates(name)
         return None
 
     def _picker_candidates(self, name: str) -> list[str]:
-        """picker 值候选:model 按当前 provider 过滤(组合根注入 provider→模型表)。"""
+        """picker 值候选:model 按当前 provider 过滤(组合根注入 provider→模型表);
+        login 与 provider 同表(候选 = 全部 provider)。"""
         if name == "model":
             by_provider = self._candidates.get("model", {})
             return list(by_provider.get(self._provider, []))
+        if name == "login":
+            return list(self._candidates.get("login", []) or self._candidates.get("provider", []))
         return list(self._candidates.get(name, []))
 
     def _on_input_changed(self, text: str) -> None:
@@ -234,7 +251,10 @@ class TuiApp:
         if self._suggestion_kind == "value" and spec is not None and spec.picker:
             self._suppress_next_suggestions = True
             self._backend.set_input_text("")
-            if self._apply_config(**self._picker_apply_kwargs(cmd_name, name)):
+            if cmd_name == "login":
+                # /login:选中 provider 即进入密钥输入态(不是配置切换)。
+                self._begin_login(name)
+            elif self._apply_config(**self._picker_apply_kwargs(cmd_name, name)):
                 if cmd_name == "provider":
                     self._provider = name
             self._schedule_render()
@@ -247,7 +267,6 @@ class TuiApp:
         if not self._suggestions:
             self._backend.set_suggestions([])
             return
-        current = self._current_picker_value() if self._suggestion_kind == "value" else ""
         lines: list[list[Span]] = []
         for index, name in enumerate(self._suggestions):
             active = index == self._suggestion_index
@@ -258,20 +277,36 @@ class TuiApp:
                 spans.append(Span(f"/{name}", fg=fg))
                 spans.append(Span(f" — {_COMMANDS[name].summary}", fg=DIM))
             else:
-                # 值候选:纯名称,当前生效项打 ✓。
-                marked = bool(current) and name == current
+                # 值候选:当前生效项打 ✓;login 语境 = 已配置 key 的 provider 打 ✓。
+                marked = self._value_marked(name) if self._suggestion_kind == "value" else False
                 spans.append(Span("✓ " if marked else "  ", fg=SUCCESS if marked else DIM))
                 spans.append(Span(name, fg=fg))
             lines.append(spans)
         self._backend.set_suggestions(lines)
 
+    def _value_marked(self, name: str) -> bool:
+        """值候选的 ✓ 标记:model/effort/provider 标记当前生效项;login 标记
+        已配置 key 的 provider(组合根注入的 ``configured_providers``)。"""
+        cmd_name = self._last_text[1:].partition(" ")[0]
+        if cmd_name == "login":
+            return name in self._configured_providers
+        return bool(self._current_picker_value()) and name == self._current_picker_value()
+
     # -- 内联选择(/provider /model /effort)--------------------------------
 
     def _open_inline_picker(self, kind: str) -> None:
         """无参 picker 命令 → 输入框填 ``/kind `` 弹候选浮层(与命令补全同款 UX:
-        ↑↓ 导航、键入过滤、Enter 生效、Esc 收起)。候选缺失或未注入热切换时
-        回退用法提示。"""
-        if not self._picker_candidates(kind) or self._rebuild_ports is None:
+        ↑↓ 导航、键入过滤、Enter 生效、Esc 收起)。候选缺失或未注入对应回调时
+        回退用法提示(login 依赖密钥保存器,其余依赖端口重建器)。"""
+        if not self._picker_candidates(kind):
+            self.model.append_info(_PICKER_HINTS[kind])
+            self._schedule_render()
+            return
+        if kind == "login" and self._save_key is None:
+            self.model.append_info("当前环境不支持保存密钥(未注入密钥保存器)")
+            self._schedule_render()
+            return
+        if kind != "login" and self._rebuild_ports is None:
             self.model.append_info(_PICKER_HINTS[kind])
             self._schedule_render()
             return
@@ -297,11 +332,17 @@ class TuiApp:
     # -- 输入 / 打断 / 退出 ------------------------------------------------
 
     def _submit(self, text: str) -> None:
-        """输入框提交:先经命令解析——命令就地执行,字面量发起对话。"""
+        """输入框提交:先经命令解析——命令就地执行,字面量发起对话。
+
+        登录态(/login 密钥输入)优先:提交内容即密钥,走保存分支。
+        """
         if self.model.running:
             return
         text = text.strip()
         if not text:
+            return
+        if self._login_pending is not None:
+            self._submit_login_key(text)
             return
         parsed = parse(text, _COMMANDS)
         if isinstance(parsed, Literal):
@@ -313,6 +354,42 @@ class TuiApp:
             self._schedule_render()
         else:
             self._dispatch_command(parsed)
+
+    def _submit_login_key(self, key: str) -> None:
+        """登录态提交:经组合根注入的保存器写 .env + 热切换;空值提示停留。"""
+        provider = self._login_pending
+        if provider is None:  # 理论不可达:_submit 已按登录态分派
+            return
+        if not key:
+            self.model.append_info("密钥不能为空")
+            self._schedule_render()
+            return
+        if self._save_key is None:
+            self._end_login()
+            self.model.append_info("当前环境不支持保存密钥(未注入密钥保存器)")
+            self._schedule_render()
+            return
+        try:
+            new_model, new_effort = self._save_key(provider, key)
+        except ValueError as exc:
+            self._end_login()
+            self.model.append_info(str(exc))
+            self._schedule_render()
+            return
+        except OSError as exc:
+            self._end_login()
+            self.model.append_info(f"保存失败:{exc}")
+            self._schedule_render()
+            return
+        self._end_login()
+        self.model.status.model = new_model
+        self.model.status.effort = new_effort
+        self._provider = provider
+        self._configured_providers.add(provider)
+        self.model.append_info(
+            f"已保存 {provider.upper()}_API_KEY 并切换到 {provider}"
+        )
+        self._schedule_render()
 
     def _run_conversation(self, text: str) -> None:
         """在当前会话发起一轮对话。"""
@@ -335,6 +412,7 @@ class TuiApp:
             "fork": self._cmd_fork,
             "compact": self._cmd_compact,
             "provider": self._cmd_provider,
+            "login": self._cmd_login,
             "model": self._cmd_model,
             "effort": self._cmd_effort,
         }.get(cmd.name)
@@ -450,6 +528,43 @@ class TuiApp:
             return
         self._apply_config(provider=cmd.args[0])
 
+    def _cmd_login(self, cmd: Command) -> None:
+        """/login:配置 provider 的 API key 并切换。
+
+        无参 → provider 选择器(复用 picker 浮层);带参 → 校验后直通密钥输入态;
+        登录态下输入框切换为掩码输入,提交保存、Esc 取消(见 _begin_login)。
+        """
+        if not cmd.args:
+            self._open_inline_picker("login")
+            return
+        provider = cmd.args[0]
+        if provider not in self._picker_candidates("login"):
+            self.model.append_info(f"未知 provider: {provider}")
+            return
+        self._begin_login(provider)
+
+    def _begin_login(self, provider: str) -> None:
+        """进入密钥输入态:输入框切换掩码 + 提示;fake 无需密钥直通提示。"""
+        if provider == "fake":
+            # fake 无 API key 概念(离线脚本化客户端)。
+            self.model.append_info("fake 无需密钥")
+            self._schedule_render()
+            return
+        self._login_pending = provider
+        self._suggestions = []
+        self._backend.set_suggestions([])
+        self._backend.set_input_mask(True)
+        self._backend.set_input_placeholder(
+            f"输入 {provider.upper()}_API_KEY,Enter 保存 / Esc 取消"
+        )
+        self.model.append_info(f"/login {provider}:请输入 API key(输入将隐藏)")
+        self._schedule_render()
+
+    def _end_login(self) -> None:
+        """退出密钥输入态:恢复普通输入(掩码解除、提示还原)。"""
+        self._login_pending = None
+        self._backend.set_input_mask(False)
+
     def _cmd_model(self, cmd: Command) -> None:
         if not cmd.args:
             self._open_inline_picker("model")
@@ -483,10 +598,16 @@ class TuiApp:
         return True
 
     def _interrupt(self) -> None:
-        """Esc:运行中打断当前会话;浮层激活时收起浮层;空闲提示退出方式。
+        """Esc:登录态取消 → 浮层收起 → 运行中打断 → 空闲提示退出方式。
 
         退出键位已拆分为 Ctrl+C / Ctrl+Q(见 ``_quit``)。
         """
+        if self._login_pending is not None:
+            # 密钥输入态:Esc 取消,不写入任何内容(登录态无建议浮层)。
+            self._end_login()
+            self.model.append_info("已取消密钥输入")
+            self._schedule_render()
+            return
         if self._suggestions and not self.model.running:
             # 选择浮层激活:Esc 仅收起(值语境 = 取消选择,连同输入清空)。
             self._suggestions = []

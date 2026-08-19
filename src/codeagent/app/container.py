@@ -416,6 +416,20 @@ def create_tui_app(
         manager.replace_ports(new_ports, model=model_id, effort=effort)
         return model_id, effort
 
+    def save_key(provider: str, key: str) -> tuple[str, str]:
+        """/login 密钥保存回调(唯一跨层点):写 .env + 热切换。
+
+        - 写回固定配置目录 .env(行级替换 ``<PREFIX>_API_KEY``,config 层实现);
+        - 随后走 ``rebuild_ports``:provider Config 每次实例化重读 .env,新 key
+          自然生效,无需任何缓存失效;
+        - 返回 (model, effort) 供视图更新状态栏;未知 provider / 写失败抛
+          ValueError / OSError 由视图就地提示、不切换。
+        """
+        from codeagent.app import config as app_config
+
+        app_config.write_env_key(provider, key, app_config.CONFIG_ENV_FILE)
+        return rebuild_ports(new_provider=provider)
+
     return TuiApp(
         manager,
         backend,
@@ -423,7 +437,19 @@ def create_tui_app(
         rebuild_ports=rebuild_ports,
         candidates=candidates,
         agents_sources=agents_sources(cfg),  # 上下文文件来源(/status 展示)
+        save_key=save_key,  # /login 密钥保存 + 热切换(tui-login-command)
+        configured_providers=_configured_providers(),  # 登录选择器 ✓ 标记
     )
+
+
+def _configured_providers() -> set[str]:
+    """已配置非空 key 的 provider 集(登录选择器 ✓ 标记,tui-login-command)。
+
+    从固定配置目录 .env 解析;动态访问 ``CONFIG_ENV_FILE`` 以支持测试注入。
+    """
+    from codeagent.app import config as app_config
+
+    return app_config.configured_providers(app_config.CONFIG_ENV_FILE)
 
 
 def _resolve_candidates(cfg: Any = None, registry: Any = None) -> dict[str, Any]:
@@ -440,6 +466,7 @@ def _resolve_candidates(cfg: Any = None, registry: Any = None) -> dict[str, Any]
     models = {p: sorted(reg.available(p)) for p in providers if reg.available(p)}
     return {
         "provider": providers,
+        "login": providers,  # /login 选择器候选 = 全部 provider(tui-login-command)
         "model": models,
         "effort": ["low", "medium", "high"],
     }

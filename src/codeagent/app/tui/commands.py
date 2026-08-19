@@ -91,6 +91,9 @@ def default_registry() -> dict[str, CommandSpec]:
         "sessions": CommandSpec("sessions", "列出 / 新建 / 切换会话", args=("action",)),
         "tools": CommandSpec("tools", "列出可用工具"),
         "provider": CommandSpec("provider", "切换 provider", args=("name",), picker=True),
+        "login": CommandSpec(
+            "login", "配置 provider 的 API key 并切换", args=("provider",), picker=True
+        ),
         "model": CommandSpec(
             "model", "切换模型(支持 model:effort)", args=("model",), picker=True
         ),

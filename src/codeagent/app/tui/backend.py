@@ -59,6 +59,13 @@ class TuiBackend(Protocol):
     def set_input_text(self, text: str) -> None:
         """替换输入框全文(建议确认填入;design T-45)。"""
 
+    def set_input_mask(self, masked: bool) -> None:
+        """切换输入框掩码模式(登录等敏感输入:tui-login-command):
+        True = 显示层逐字符掩码、内部保留原文、提交取原文;False = 普通输入。"""
+
+    def set_input_placeholder(self, text: str) -> None:
+        """替换输入框占位提示(登录态显示操作提示;tui-login-command)。"""
+
     def on_submit(self, handler: SubmitHandler) -> None:
         """注册输入提交处理器。"""
 

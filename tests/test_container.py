@@ -407,3 +407,68 @@ def test_tui_app_gets_compaction_capable_manager():
         app = create_tui_app(backend=StubBackend())
     assert app._manager.current is not None
     assert app._manager._summarizer is not None  # /compact 可用
+
+
+# -- /login 密钥保存(tui-login-command) --------------------------------------
+
+
+def test_create_tui_app_injects_save_key(tmp_path, monkeypatch):
+    """组合根注入 save_key:/login 写 .env(<PREFIX>_API_KEY)并热切换。"""
+    from codeagent.app import config as app_config
+
+    env_file = tmp_path / ".codeagent" / ".env"
+    monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", env_file)
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_tui_app
+
+        app = create_tui_app(provider="deepseek", backend=_StubBackend())
+    assert app._save_key is not None
+    model_id, effort = app._save_key("deepseek", "sk-ds-1")
+    content = env_file.read_text(encoding="utf-8")
+    assert "DEEPSEEK_API_KEY=sk-ds-1" in content
+    # 热切换生效:manager 端口重建,model/effort 按装配解析返回
+    assert app._manager._ports is not None
+    assert (model_id, effort) == ("deepseek-v4-flash", "high")
+
+
+def test_save_key_unknown_provider_raises(tmp_path, monkeypatch):
+    """save_key 对未知 provider 抛 ValueError(视图就地提示)。"""
+    from codeagent.app import config as app_config
+
+    monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", tmp_path / ".env")
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_tui_app
+
+        app = create_tui_app(provider="fake", backend=_StubBackend())
+    import pytest
+
+    with pytest.raises(ValueError):
+        app._save_key("nosuch", "sk-x")
+
+
+def test_create_tui_app_injects_configured_providers(tmp_path, monkeypatch):
+    """configured_providers 从 .env 解析:仅非空 key 的 provider 进入登录 ✓ 集。"""
+    from codeagent.app import config as app_config
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "DEEPSEEK_API_KEY=sk-1\nGLM_API_KEY=\nKIMI_API_KEY=\"sk-2\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", env_file)
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_tui_app
+
+        app = create_tui_app(provider="fake", backend=_StubBackend())
+    assert app._configured_providers == {"deepseek", "kimi"}
+    # 登录选择器候选 = provider 全表
+    assert app._candidates["login"] == app._candidates["provider"]

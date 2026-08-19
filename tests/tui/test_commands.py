@@ -95,9 +95,19 @@ def test_help_text_markup_available():
 
 
 def test_picker_flag_only_for_config_commands():
-    """picker 面板数据驱动:仅 provider/model/effort 置位,其余命令保持纯文本补全。"""
+    """picker 面板数据驱动:仅 provider/model/effort/login 置位,其余命令保持纯文本补全。"""
     assert {name for name, spec in REGISTRY.items() if spec.picker} == {
         "provider",
         "model",
         "effort",
+        "login",
     }
+
+
+def test_login_command_registered():
+    """(tui-login-command)/login 注册:带 provider 参数、帮助文案可见。"""
+    spec = REGISTRY["login"]
+    assert spec.args == ("provider",)
+    assert spec.picker
+    assert "API key" in spec.summary
+    assert "/login" in help_text(REGISTRY)

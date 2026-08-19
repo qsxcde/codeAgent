@@ -245,7 +245,14 @@ def test_friendly_error_classifies_http_and_network_errors():
 
     import httpx
 
-    assert "认证失败" in friendly(httpx.HTTPStatusError("e", request=httpx.Request("GET", "http://x"), response=httpx.Response(401)))
+    auth_msg = friendly(
+        httpx.HTTPStatusError(
+            "e", request=httpx.Request("GET", "http://x"), response=httpx.Response(401)
+        )
+    )
+    assert "认证失败" in auth_msg
+    # (tui-login-command)认证失败文案带 /login 引导
+    assert "/login" in auth_msg
     assert "过于频繁" in friendly(httpx.HTTPStatusError("e", request=httpx.Request("GET", "http://x"), response=httpx.Response(429)))
     assert "超时" in friendly(httpx.TimeoutException("t"))
     assert "连接" in friendly(httpx.ConnectError("c"))

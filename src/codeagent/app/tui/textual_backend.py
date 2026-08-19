@@ -23,7 +23,7 @@ from textual.containers import HorizontalGroup, VerticalGroup
 from textual.events import Click, Key, MouseScrollDown, MouseScrollUp, Resize
 from textual.filter import LineFilter
 from textual.message import Message
-from textual.widgets import Label, Rule, Static, TextArea
+from textual.widgets import Input, Label, Rule, Static, TextArea
 
 from codeagent.app.tui.backend import (
     ClickHandler,
@@ -198,6 +198,25 @@ class _InputArea(TextArea):
             event.stop()
             self._backend._notify_confirmation_response(False)
 
+class _KeyInput(Input):
+    """登录掩码输入(单行,tui-login-command):``password=True`` 原生掩码。
+
+    - 复用 ``InputSubmitted`` 消息与普通输入同路径提交(原文取 ``value``,
+      掩码只影响显示,不出现在任何渲染/日志);
+    - 不绑定 Esc:冒泡到应用层,由视图在登录态优先取消;
+    - 提交后清空,与 ``_InputArea.action_submit`` 行为一致。
+    """
+
+    def __init__(self, placeholder: str = "") -> None:
+        super().__init__(password=True, placeholder=placeholder)
+
+    def action_submit(self) -> None:
+        text = self.value
+        if text.strip():
+            self.post_message(InputSubmitted(text))
+        self.value = ""
+
+
 class _Transcript(Static):
     """显示组件渲染行、转发点击与滚轮的 transcript widget。
 
@@ -254,6 +273,12 @@ class _Composer(VerticalGroup):
         self.input.soft_wrap = True
         self.input.show_line_numbers = False
         self.input.styles.height = 1
+        #: 登录掩码输入(tui-login-command):常驻 compose、display 互斥切换,
+        #: 初始隐藏;``_normal_placeholder`` 供退出登录态时恢复普通提示。
+        self.key_input = _KeyInput()
+        self.key_input.styles.height = 1
+        self.key_input.display = False
+        self._normal_placeholder = placeholder
         # 输入行数缓存:_refresh_height 可在无事件上下文(set_suggestions 路径)使用。
         self._input_lines = 1
 
@@ -264,7 +289,27 @@ class _Composer(VerticalGroup):
         with self.input_row:
             yield self.prompt
             yield self.input
+            yield self.key_input
         yield self.bottom_rule
+
+    def set_mask(self, masked: bool, placeholder: str = "") -> None:
+        """登录态掩码切换(tui-login-command):普通输入 ↔ 密码输入 display 互斥。
+
+        进入:密码输入清空、显示并聚焦,提示文案就位;退出:恢复普通输入、
+        提示文案还原。组件常驻避免异步 mount;焦点显式归属可见组件。
+        """
+        if masked:
+            self.key_input.placeholder = placeholder
+            self.key_input.value = ""
+            self.key_input.display = True
+            self.input.display = False
+            self.key_input.focus()
+        else:
+            self.input.display = True
+            self.key_input.display = False
+            self.input.placeholder = self._normal_placeholder
+            self.input.focus()
+        self._refresh_height()
 
     def _refresh_height(self) -> None:
         """高度自适应:渲染行数 1..MAX_HEIGHT + 上下分隔线 + 确认条/建议条行数(D3)。
@@ -333,6 +378,7 @@ class _TextualApp(App):
         self.screen.styles.background = "ansi_default"
         self.transcript.styles.background = "ansi_default"
         self.composer.input.styles.background = "ansi_default"
+        self.composer.key_input.styles.background = "ansi_default"
         self.composer.input.focus()
         # 首次渲染(等布局尺寸稳定后触发 resize 处理器)。
         self.call_after_refresh(self._backend._notify_resize)
@@ -423,6 +469,15 @@ class TextualBackend:
         """替换输入框全文(建议确认填入)并把光标移到末尾。"""
         self._app.composer.input.text = text
         self._app.composer.input.move_cursor(self._app.composer.input.document.end)
+
+    def set_input_mask(self, masked: bool) -> None:
+        """切换登录掩码输入(tui-login-command):True = 密码输入(原生掩码),
+        False = 恢复普通多行输入与提示。"""
+        self._app.composer.set_mask(masked)
+
+    def set_input_placeholder(self, text: str) -> None:
+        """设置登录密码输入的提示文案(占位;普通输入提示在退出掩码时还原)。"""
+        self._app.composer.key_input.placeholder = text
 
     def on_submit(self, handler: SubmitHandler) -> None:
         self._submit_handler = handler

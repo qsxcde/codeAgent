@@ -10,6 +10,9 @@ provider 专属配置各自住在 ``ai/providers/*`` 里(如 ``DeepSeekConfig``)
 from __future__ import annotations
 
 import logging
+import os
+import re
+import tempfile
 from pathlib import Path
 
 from pydantic import model_validator
@@ -112,6 +115,95 @@ def warn_cwd_env() -> None:
         ".env,请将密钥/端点迁移到 %s。",
         CONFIG_ENV_FILE,
     )
+
+
+#: provider → key 环境变量名的约定前缀(与各 provider Config 的 env_prefix 一致):
+#: ``deepseek`` → ``DEEPSEEK_API_KEY``。config 层不持有 provider 注册表(防循环
+#: import:providers 依赖本模块的 CONFIG_ENV_FILE),故按 provider 名大写推导。
+def _api_key_env_name(provider: str) -> str:
+    """``deepseek`` → ``DEEPSEEK_API_KEY``(与 provider Config env_prefix 命名一致)。"""
+    return f"{provider.upper()}_API_KEY"
+
+
+def _quote_env_value(value: str) -> str:
+    """dotenv 值转义:含 ``#``/``=``/空白/引号时用双引号包裹并转义内部引号。
+
+    保证写回后 python-dotenv 解析结果与原值一致(不因注释符/分隔符截断)。
+    """
+    if re.search(r'[\s#"=]', value):
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
+
+
+def write_env_key(
+    provider: str, key: str, env_file: Path | None = None
+) -> Path:
+    """写入/替换 ``<PROVIDER>_API_KEY`` 到 env 文件(行级,保留注释与其它行)。
+
+    - 键名约定 ``{provider.upper()}_API_KEY``(与 provider Config 的 env_prefix
+      一致;未知 provider 名也可写,由调用方保证有效);
+    - 原子写:临时文件 + ``os.replace``,防崩溃半写;文件权限收紧 0600
+      (Windows 跳过,依赖用户主目录 ACL);
+    - 空 key 拒绝(登录流程已拦截空值,此处兜底防御);
+    - ``env_file`` 可注入(测试用),缺省 ``CONFIG_ENV_FILE``。
+    """
+    if not key:
+        raise ValueError("API key 不能为空")
+    env_file = env_file or CONFIG_ENV_FILE
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    target = _api_key_env_name(provider)
+    new_line = f"{target}={_quote_env_value(key)}"
+    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if line.startswith(f"{target}="):
+            out.append(new_line)
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(new_line)
+    fd, tmp_name = tempfile.mkstemp(dir=env_file.parent, prefix=".env.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+        if os.name != "nt":
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, env_file)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return env_file
+
+
+def configured_providers(env_file: Path | None = None) -> set[str]:
+    """解析 env 文件中已配置非空 key 的 provider 集(如 {"deepseek", "glm"})。
+
+    供 TUI 登录选择器展示已配置标记;只认 ``<NAME>_API_KEY=<非空>`` 行,
+    跳过注释与空值;env 文件不存在或不可读时返回空集(不抛错)。
+    """
+    env_file = env_file or CONFIG_ENV_FILE
+    configured: set[str] = set()
+    if not env_file.exists():
+        return configured
+    try:
+        content = env_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return configured
+    pattern = re.compile(r"^([A-Z][A-Z0-9_]*)_API_KEY=(.+)$")
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = pattern.match(stripped)
+        if match is None:
+            continue
+        value = match.group(2).strip().strip('"').strip()
+        if value:
+            configured.add(match.group(1).lower())
+    return configured
 
 
 class Settings(BaseSettings):

@@ -32,6 +32,8 @@ class StubBackend:
         self.confirmation_lines: list[Any] = []
         self.suggestion_lines: list[Any] = []
         self.input_texts: list[str] = []
+        self.mask_calls: list[bool] = []
+        self.placeholders: list[str] = []
         self.exited: list[str] | None = None
 
     def run(self) -> None:  # pragma: no cover - stub
@@ -51,6 +53,12 @@ class StubBackend:
 
     def set_input_text(self, text: str) -> None:
         self.input_texts.append(text)
+
+    def set_input_mask(self, masked: bool) -> None:
+        self.mask_calls.append(masked)
+
+    def set_input_placeholder(self, text: str) -> None:
+        self.placeholders.append(text)
 
     def on_submit(self, handler) -> None:
         self.submit = handler
@@ -1017,3 +1025,159 @@ def test_picker_fallback_usage_hint_without_rebuild_ports():
     backend.submit("/model")
     assert backend.input_texts == []
     assert "/model <model" in _rendered_text(app, backend)
+
+
+# -- /login 密钥配置(tui-login-command) --------------------------------------
+
+
+def _make_login_app(
+    save_fn=None, configured: list[str] | None = None
+) -> tuple[TuiApp, StubBackend, list[tuple[str, str]]]:
+    """带 login 候选 + 密钥保存器的 app(组合根注入的桩)。"""
+    backend = StubBackend()
+    manager = FakeManager()
+    saved: list[tuple[str, str]] = []
+
+    def save_key(provider: str, key: str) -> tuple[str, str]:
+        saved.append((provider, key))
+        if save_fn is not None:
+            return save_fn(provider, key)
+        return "deepseek-v4-flash", "high"
+
+    app = TuiApp(
+        manager,
+        backend,
+        rebuild_ports=lambda *a, **k: ("m-a", "low"),
+        save_key=save_key,
+        configured_providers=set(configured or []),
+        footer=FooterInfo(model="m-a", effort="low", cwd="/w", provider="p-a"),
+    )
+    backend.on_submit(app._submit)
+    backend.on_interrupt(app._interrupt)
+    backend.on_input_changed(app._on_input_changed)
+    backend.on_suggestion_navigate(app._on_suggestion_navigate)
+    backend.on_suggestion_confirm(app._on_suggestion_confirm)
+    app._candidates = {"login": ["deepseek", "glm", "fake"]}
+    return app, backend, saved
+
+
+def test_login_without_args_opens_picker():
+    """无参 /login → 输入框填 "/login " 弹 provider 候选浮层(复用选择器)。"""
+    app, backend, _ = _make_login_app()
+    backend.submit("/login")
+    assert backend.input_texts[-1] == "/login "
+    backend.input_changed("/login ")
+    assert app._suggestions == ["deepseek", "glm", "fake"]
+
+
+def test_login_with_provider_enters_mask_mode():
+    """带参 /login deepseek → 掩码输入态:提示文案 + 掩码开启。"""
+    app, backend, _ = _make_login_app()
+    backend.submit("/login deepseek")
+    assert app._login_pending == "deepseek"
+    assert backend.mask_calls == [True]
+    assert backend.placeholders[-1] == "输入 DEEPSEEK_API_KEY,Enter 保存 / Esc 取消"
+
+
+def test_login_fake_skips_input():
+    """/login fake → 提示无需密钥,不进入掩码输入态。"""
+    app, backend, _ = _make_login_app()
+    backend.submit("/login fake")
+    assert app._login_pending is None
+    assert backend.mask_calls == []
+
+
+def test_login_unknown_provider_rejected():
+    """/login <未知> → 就地提示,不进入输入态。"""
+    app, backend, _ = _make_login_app()
+    backend.submit("/login nosuch")
+    assert app._login_pending is None
+    assert backend.mask_calls == []
+
+
+def test_login_picker_value_confirm_enters_mask():
+    """登录选择器值确认 → 进入掩码输入态(非配置切换)。"""
+    app, backend, _ = _make_login_app()
+    backend.submit("/login")
+    backend.input_changed("/login ")
+    backend.suggestion_confirm()  # 首项 deepseek
+    assert app._login_pending == "deepseek"
+    assert backend.mask_calls == [True]
+
+
+def test_login_picker_marks_configured_providers():
+    """登录选择器:已配置 key 的 provider 打 ✓(组合根注入 configured_providers)。"""
+    app, backend, _ = _make_login_app(configured=["glm"])
+    backend.submit("/login")
+    backend.input_changed("/login ")
+    rows = _strip_rows(backend)
+    assert any("✓" in r and "glm" in r for r in rows)
+    assert not any("✓" in r and "deepseek" in r for r in rows)
+
+
+def test_login_empty_key_stays_in_input():
+    """空密钥提交 → 提示并停留输入态(不退出掩码、不保存)。"""
+    app, backend, saved = _make_login_app()
+    backend.submit("/login deepseek")
+    backend.submit("")
+    assert app._login_pending == "deepseek"  # 仍在登录态
+    assert backend.mask_calls == [True]  # 掩码未解除
+    assert saved == []
+
+
+def test_login_esc_cancels_without_saving():
+    """登录态 Esc → 取消输入,掩码解除,不保存任何内容。"""
+    app, backend, saved = _make_login_app()
+    backend.submit("/login deepseek")
+    backend.interrupt()
+    assert app._login_pending is None
+    assert backend.mask_calls == [True, False]
+    assert saved == []
+
+
+def test_login_save_success_switches_provider():
+    """保存成功 → 写 .env(经注入回调)、状态栏更新、provider 与已配置集更新。"""
+    app, backend, saved = _make_login_app()
+    backend.submit("/login deepseek")
+    backend.submit("sk-secret-1")
+    assert saved == [("deepseek", "sk-secret-1")]
+    assert app._login_pending is None
+    assert backend.mask_calls == [True, False]
+    assert app._provider == "deepseek"
+    assert app.model.status.model == "deepseek-v4-flash"
+    assert "deepseek" in app._configured_providers
+    assert "glm" not in app._configured_providers
+
+
+def test_login_save_value_error_feedback():
+    """保存抛 ValueError(未知 provider 等)→ 提示错误并退出输入态。"""
+    def boom(provider: str, key: str) -> tuple[str, str]:
+        raise ValueError(f"未知的 provider: {provider!r}")
+
+    app, backend, saved = _make_login_app(save_fn=boom)
+    backend.submit("/login deepseek")
+    backend.submit("sk-x")
+    assert app._login_pending is None
+    assert backend.mask_calls == [True, False]
+    assert saved == [("deepseek", "sk-x")]  # 回调确被调用
+
+
+def test_login_save_os_error_feedback():
+    """保存抛 OSError(磁盘不可写等)→ 提示保存失败并退出输入态。"""
+    def boom(provider: str, key: str) -> tuple[str, str]:
+        raise OSError("disk full")
+
+    app, backend, _ = _make_login_app(save_fn=boom)
+    backend.submit("/login deepseek")
+    backend.submit("sk-x")
+    assert app._login_pending is None
+    assert backend.mask_calls == [True, False]
+
+
+def test_login_disables_suggestions():
+    """登录态建议浮层禁用:输入变化不弹任何候选。"""
+    app, backend, _ = _make_login_app()
+    backend.submit("/login deepseek")
+    backend.input_changed("/pro")
+    assert app._suggestions == []
+    assert backend.suggestion_lines[-1] == []
