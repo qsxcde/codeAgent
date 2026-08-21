@@ -1,8 +1,8 @@
 # codeagent 需求分析文档(完整版)
 
-> 版本: v0.2(完整版)
-> 更新日期: 2026-08-13
-> 编制口径: 以 `docs/design/` 下四份文档(需求分析报告 v0.1、架构设计、功能表 GAP 分析、编排自研蓝图)为需求来源综合而成,并对照 **2026-08-13 代码库实测状态**校准(校准明细见附录 B)。
+> 版本: v0.3(完整版,含 §0.1 状态勘误)
+> 更新日期: 2026-08-21(§0.1 勘误;正文为 2026-08-13 校准基线,历史快照保留)
+> 编制口径: 以 `docs/design/` 下四份文档(需求分析报告 v0.1、架构设计、功能表 GAP 分析、编排自研蓝图)为需求来源综合而成,并对照 **2026-08-13 代码库实测状态**校准(校准明细见附录 B)。**架构现状以 §0.1 勘误 + architecture.md(v0.3) 为准**。
 > 本版本与 `requirements-analysis.md`(v0.1)的关系:本文为完整合并版,新增架构需求(AR)、数据需求(DR)、接口需求(IR)、验收标准、需求追踪矩阵等章节,并吸收功能表 GAP 分析的修订功能清单(F-01~F-28)与编排自研蓝图的演进路线。v0.1 报告已由本文完全取代并于 2026-08-13 归档删除(原文可从 git 历史提交 5b137b4 恢复)。
 
 ---
@@ -36,6 +36,32 @@
 | P3 | 远期 | 远期 |
 
 **状态图例**:✅ 已落地 / 🔲 待实现 / 📝 规划中 / ⚠️ 已移除或口径已变化(详见说明列与附录 B)。
+
+---
+
+## 0.1 状态勘误(2026-08-21,自研编排已落地)
+
+> 本文档编制于 2026-08-13(彼时编排自研仍处"第二步暂缓")。2026-08-14 `self-built-orchestration` 落地后,**编排层已全面自研**,文中把 langgraph/langchain 当作"当前实现"的描述已过时。本节统一勘误:后续工作以本节 + [architecture.md](./architecture.md)(v0.3) 为架构事实源,以 `docs/iteration/v0.1.md` ~ `v0.3.md` 为演进记录;文中竞品对比 / GAP 分析 / 决策记录里的历史提及保留原貌(历史快照),不再逐条改动。
+
+### 现状口径(2026-08-21 代码树实测)
+
+| 条目 | 本文档原文口径 | 现状 |
+|---|---|---|
+| 编排引擎 | LangGraph(StateGraph / ToolNode / checkpointer;FR-4、AR-5、IR-2) | **自研 ReAct 主循环**(`core/loop.py` `run_turn`,模型→工具→继续/结束,事件直接 emit)+ 消息归约(`core/messages.py`,按 tool_call_id 归属,uuid7) |
+| AgentPorts | `bound_model / tool_executor / checkpointer`(IR-1、AR-2) | `model / tools / policy`(无 store;core 循环不落盘,存储经会话层注入) |
+| 编排自研第二步(FR-4.8 / AR-5) | 📝 暂缓,三未决问题待答 | ✅ **已落地**(2026-08-14,spike 双跑 diff 通过;平台部署非刚需、JSONL 树形为格式结论) |
+| 事件类型(FR-6.1 / NFR-O1) | 10 类 | **11 类**(新增 `confirmation_requested`,执行前安全确认环事件) |
+| 工具数量(附录 B #11) | 7 | **8**(新增 `skill` 技能寻址工具,v0.3 阶段 1) |
+| 会话持久化(DR-3 / FR-5.4) | 🔲 v0.2 线性 | ✅ **JSONL 树形**(`SessionStore` 按 id/parentId,v0.2 已落地,含 fork) |
+| 会话生命周期(FR-5.5 / FR-5.10) | 🔲 v0.2 / 🔲 未落地 | ✅ `SessionManager`(create/switch/fork/dispose)+ `steer`/`followup`/`abort` 已落地 |
+| 上下文压缩(FR-5.6) | 🔲 v0.2 | ✅ 已落地(`compaction`,手动 + 阈值) |
+| 安全确认环(FR-8.2 / NFR-S3) | 🔲 v0.2 | ✅ 已落地(`security-permissions`:ApprovalPolicy + tools/security.py 三档分类器,headless 缺省 fail closed) |
+| AGENTS.md 分层(F-16) | 🔲 v0.2 规划 | ✅ 已落地(`app/agents.py`,全局→项目→子目录分层注入) |
+| 平台部署 `langgraph.json`(F-24 / IR-10) | 📝 P2 | **永久调整**:随自研编排改写为 HTTP/事件订阅入口(并入 F-27,v0.3 阶段 7) |
+| 测试基线(附录 B) | 336(2026-08-14) | **590 收集**(2026-08-19 Skills 阶段 1 后基线 590/590;2026-08-21 Windows 实测 588/590,两条失败为测试自身平台/环境缺陷,见审计) |
+| 解耦扫描测试(NFR-M1 / AR-4) | 已移除待恢复 | ✅ 已重写恢复(`tests/test_decoupling.py`,2026-08-14,AST 扫描 + anti-wargaming 守卫) |
+
+> 权威架构描述见 [architecture.md](./architecture.md)(v0.3);迭代与验收见 `docs/iteration/v0.2.md` / `v0.3.md`;审计见 `docs/review/audit-2026-08-21.md`。
 
 ---
 
@@ -87,7 +113,7 @@
 
 ### 2.1 项目背景
 
-`codeagent` 是基于 **LangGraph** 的编程 Agent,采用 Pi-Agent 设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态)+ 端口-适配器(hexagonal)横切解耦。v0.1 已打通"可对话 + 可调用工具 + 事件流可订阅"的最小闭环。
+`codeagent` 是基于**自研编排**(2026-08-14 起,已弃用 langgraph/langchain)的编程 Agent,采用 Pi-Agent 设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态)+ 端口-适配器(hexagonal)横切解耦。v0.1 已打通"可对话 + 可调用工具 + 事件流可订阅"的最小闭环,v0.2 完成会话完善(持久化/分叉/安全确认/TUI 命令体系),v0.3 阶段 1(Skills)已落地。
 
 ### 2.2 产品愿景
 
@@ -107,7 +133,7 @@
 | **横切轴:依赖方向** | config / 工具 / 编排 / 调用之间谁认识谁 | 端口-适配器(hexagonal) |
 | **纵切轴:生命周期** | 装配(Factory)/ 单个对话(Session)/ 会话生命周期(Runtime) | Pi-Agent 三层协作 |
 
-Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph 提供无状态循环(编译后的图),有状态外壳由 `session/` 层补齐。
+Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 ReAct 主循环**(`core/loop.py` `run_turn`)提供无状态循环(模型→工具→继续/结束),有状态外壳由 `session/` 层补齐。
 
 ### 2.4 差异化定位
 
@@ -145,7 +171,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | 主要形态 | 终端(headless CLI 当前形态) | 插件 / IDE / CLI | 终端 CLI | 终端 CLI(开源)+ macOS App |
 | 底层模型 | DeepSeek / OpenAI / Qwen / GLM / Kimi / MiniMax / fake | 腾讯混元系 + 多云多栈 | Claude 系列 | GPT-5.2-Codex、o3/o4-mini |
 | 模型开放性 | **多供应商中立,可自接** | 以云厂商模型为主 | 绑定 Claude | 绑定 OpenAI |
-| 技术栈 | Python + LangGraph(+ 自研模型客户端) | Node.js | TypeScript(闭源) | TypeScript(开源) |
+| 技术栈 | Python + 自研编排(ReAct 主循环 + JSONL 树形,无 langgraph) | Node.js | TypeScript(闭源) | TypeScript(开源) |
 | 核心能力 | 事件驱动 Agent 编排 + 供应商中立 | AST / RAG / Agent 全流程 | Sub-agents + Skills + Agent Teams | 多智能体并行 + 工作树隔离 + Skills + Automations |
 | 开源程度 | 开源 | 客户端开源 | 闭源(生态开放) | CLI 完全开源 |
 | 国内使用 | **原生适配** | 国内云原生 | 需中转/网络/支付门槛 | 需中转/网络 |
@@ -182,8 +208,8 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | 离线可测(fake 模型) | ⬜ | ⬜ | ⬜ | ⬜ | ✅ | ✅ 领先 |
 | 终端 TUI | ✅ | ✅ | ✅ | ✅ | ⚠️ 曾落地,当前代码树为 headless(附录 B) | P1 差距 |
 | 工具集 read/write/edit/bash | ✅ | ✅ | ✅ | ✅ | ✅ 已落地 | 齐平 |
-| ReAct 编排(LangGraph) | ✅ | ✅ | ✅ | ✅ | ✅ 已落地(全异步,工具并行+错误归属精确) | 齐平 |
-| 事件流/可感知 | 部分 | 部分 | 部分 | 部分 | ✅ AgentEvent 10 类全生命周期 | 领先 |
+| ReAct 编排(自研) | ✅ | ✅ | ✅ | ✅ | ✅ 已落地(全异步自研循环,工具并行+错误归属精确,无 langgraph) | 齐平 |
+| 事件流/可感知 | 部分 | 部分 | 部分 | 部分 | ✅ AgentEvent 11 类全生命周期 | 领先 |
 | 会话持久化/恢复 | ✅ | ✅ | ✅ | ✅ | 🔲 v0.2 | **P1 差距** |
 | 会话回滚 /undo | 部分 | 需求中(297👍) | 部分 | ✅ 快照回滚 | 🔲 v0.2 规划 | **P1 差距** |
 | 分层指令 AGENTS.md | ✅ | ✅ | 部分 | 提案被关 | 🔲 v0.2 规划 | **P1 差距** |
@@ -196,7 +222,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | 多智能体/Teams | ✅ | ✅ | 部分 | ⬜ | 📝 P3 | P3 |
 | 定时任务 Automations | 部分 | ✅ | 部分 | ⬜ | 📝 P3 | P3 |
 | SDK 编程接入 | ✅ | ✅ | ✅ | 部分 | ✅ 事件流天然适配 | P2/P3 |
-| 平台部署 langgraph.json | ✅ | ✅ | ✅ | 部分 | 📝 架构已设计 | P2/P3 |
+| 平台部署 | ✅ | ✅ | ✅ | 部分 | ⚠️ `langgraph.json` 废弃,改写为 HTTP/事件订阅(F-27,v0.3) | P2/P3 |
 
 ### 3.5 codeagent 的机会空间与劣势
 
@@ -256,7 +282,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | FR-2.5 | 运行时思考强度切换 | `model:effort` 内联 / `/effort` 命令,优先级:内联>参数>配置默认 | P0 | ✅(`model_pattern.py` 单一解析实现) |
 | FR-2.6 | 缺失密钥可操作报错 | 缺 API Key 报"请配置 DEEPSEEK_API_KEY"而非 SDK 原始错误 | P0 | ✅ |
 | FR-2.7 | 模型列表探测 | 调用供应商 `/models` 自动发现模型(当前目录静态兜底) | P2 | 📝 |
-| FR-2.8 | 模型客户端自研(ModelRuntime) | 框架无关协议层 + OpenAI 兼容传输层,替代 langchain 模型客户端(自研蓝图第一步) | P0 | ✅ 已落地:`protocol/`(ChatClient 协议/SSE 解析)+ `transport/openai_compat.py`(httpx);`bridge/langchain.py` 仅作编排桥接 |
+| FR-2.8 | 模型客户端自研(ModelRuntime) | 框架无关协议层 + OpenAI 兼容传输层,替代 langchain 模型客户端(自研蓝图第一步) | P0 | ✅ 已落地:`protocol/`(ChatClient 协议/SSE 解析)+ `transport/openai_compat.py`(httpx);`ai/bridge/` 已随自研编排删除,组合根直接适配 |
 | FR-2.9 | 默认注册表缓存 | `create_llm` 不每次重建/重读 models.json(性能优化 M11) | P0 | ✅ |
 
 ### 4.4 FR-3 工具系统
@@ -283,7 +309,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | FR-4.5 | 循环条件 | `should_continue` 只看 state 形状,不 import 具体工具 | P0 | ✅ |
 | FR-4.6 | Checkpointer | 图级持久化(thread_id);默认内存 InMemorySaver,会话维度累积 | P0 | ✅ |
 | FR-4.7 | 多智能体协作 | 多 Agent 编排(远期) | P2 | 📝 |
-| FR-4.8 | 编排自研(第二步) | ReAct 主循环 / 消息归约 / 持久化 / 工具调度 / 控制流自研,替代 langgraph 编排层 | P3 | 📝 蓝图已存档,**暂缓**,启动前须回答三个未决问题(§5.5) |
+| FR-4.8 | 编排自研(第二步) | ReAct 主循环 / 消息归约 / 持久化 / 工具调度 / 控制流自研,替代 langgraph 编排层 | P3 | ✅ **已落地**(2026-08-14 `self-built-orchestration`:三未决问题已答——平台部署非刚需、归约 spike 通过、JSONL 树形为格式结论;详见 §0.1) |
 
 ### 4.6 FR-5 会话层
 
@@ -292,19 +318,19 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | FR-5.1 | AgentSession | 全异步 `run` + `subscribe` + `run_sync`;会话维度 thread 累积 | P0 | ✅ |
 | FR-5.2 | 事件总线 | `EventBus.subscribe / emit`,CLI / Web / 测试统一订阅 | P0 | ✅ |
 | FR-5.3 | 事件流翻译 | `graph.astream(thread_id, [messages, updates])` → `AgentEvent` 序列 | P0 | ✅ |
-| FR-5.4 | 会话持久化 | SessionStore 线性存储,重启可恢复 | P1 | 🔲 v0.2 |
-| FR-5.5 | SessionManager | create / fork / switch / dispose | P1 | 🔲 v0.2 |
-| FR-5.6 | 上下文压缩 | 手动 + 阈值触发 compaction | P1 | 🔲 v0.2 |
-| FR-5.7 | 会话树/分叉 | 分支会话、对比探索 | P2 | 📝 |
+| FR-5.4 | 会话持久化 | SessionStore 存储,重启可恢复 | P1 | ✅ 已落地(v0.2:**JSONL 树形**,按 id/parentId) |
+| FR-5.5 | SessionManager | create / fork / switch / dispose | P1 | ✅ 已落地(v0.2,含 `replace_ports` 热切换) |
+| FR-5.6 | 上下文压缩 | 手动 + 阈值触发 compaction | P1 | ✅ 已落地(v0.2) |
+| FR-5.7 | 会话树/分叉 | 分支会话、对比探索 | P2 | ✅ fork 已落地(v0.2,JSONL 树形);树导航 v0.3 |
 | FR-5.8 | 运行中断 abort | `abort()` 中断当前运行并广播 `run_cancelled` | P0 | ✅ 已落地 |
-| FR-5.9 | 图形热替换 | `replace_graph()` 切换 provider/model/effort 时重建图并保留 thread 上下文 | P0 | ✅ 已落地 |
-| FR-5.10 | steer / followup | 运行中注入消息 / 结束后追问一轮 | P1 | 🔲 v0.2(自研蓝图"收益 2"指出:自研编排后此两项从规划变几行代码) |
+| FR-5.9 | 端口热替换 | `replace_ports()` 切换 provider/model/effort 时重建端口 | P0 | ✅ 已落地(`SessionManager.replace_ports`) |
+| FR-5.10 | steer / followup | 运行中注入消息 / 结束后追问一轮 | P1 | ✅ 已落地(v0.2;自研循环下为几行代码,验证蓝图"收益 2") |
 
 ### 4.7 FR-6 可观测性与事件
 
 | ID | 需求 | 说明 | 优先级 | 状态 |
 |---|---|---|---|---|
-| FR-6.1 | AgentEvent 类型 | 10 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage` | P0 | ✅(比 v0.1 报告多出 thinking_delta / run_cancelled / usage) |
+| FR-6.1 | AgentEvent 类型 | **11 类**:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`(确认环事件) | P0 | ✅(比 v0.1 报告多出 thinking_delta / run_cancelled / usage;`confirmation_requested` 随 security-permissions 加入) |
 | FR-6.2 | 事件订阅接口 | 对外暴露可编程订阅(`EventBus.subscribe`,订阅方异常隔离) | P0 | ✅ |
 | FR-6.3 | 状态栏实时反馈 | TUI 运行态/错误态/取消态可视化 | P0 | ✅(随 TUI 恢复:E9~E11 状态栏 + 状态色,运行/错误/取消可见) |
 | FR-6.4 | token 用量事件 | `usage` 事件透传模型 usage_metadata | P0 | ✅ 已落地 |
@@ -316,16 +342,16 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 |---|---|---|---|---|
 | FR-7.1 | Skills 按需加载 | `resources/skills/` 技能文件渐进式披露 | P2 | 🔲 目录已建 |
 | FR-7.2 | 插件系统 | `extensions/` 两阶段(注册→绑定)扩展机制 | P2 | 🔲 占位 |
-| FR-7.3 | 平台部署 | `langgraph.json` 与 CLI 共享同一份图定义 | P2 | 📝(自研蓝图"代价 4":若自研编排落地,平台入口需重设计,启动前须决策) |
+| FR-7.3 | 平台部署 | 平台入口 | P2 | ⚠️ **永久调整**(v0.2 定案):`langgraph.json` 随自研编排废弃,改写为 HTTP/事件订阅入口(并入 F-27,v0.3 阶段 7) |
 | FR-7.4 | Web / API 暴露 | 事件流天然适配 Web 订阅 | P2 | 📝 |
 
 ### 4.9 FR-8 安全与权限(上线前刚需,GAP F-14)
 
 | ID | 需求 | 说明 | 优先级 | 状态 |
 |---|---|---|---|---|
-| FR-8.1 | 危险命令黑名单 | `rm -rf /` 等价写法拦截,拒绝带审计信息(命中原因) | P0 | ✅ 已落地 |
-| FR-8.2 | bash 确认环 | 敏感/未确认命令默认拒绝或需用户确认 | P1 | 🔲 v0.2(对标 Claude Code 手动挡) |
-| FR-8.3 | 文件访问边界 | read/write/edit 默认限定工作区,跨工作区访问需显式确认 | P1 | 🔲 v0.2 |
+| FR-8.1 | 危险命令黑名单 | `rm -rf /` 等价写法拦截,拒绝带审计信息(命中原因) | P0 | ✅ 已落地(字符串正则 + shlex 分词语义级检测) |
+| FR-8.2 | bash 确认环 | 敏感/未确认命令默认拒绝或需用户确认 | P1 | ✅ 已落地(v0.2 `security-permissions`:ApprovalPolicy 三档 deny/ask/allow;headless 缺省 fail closed,`--yes` 逃生舱) |
+| FR-8.3 | 文件访问边界 | read/write/edit 默认限定工作区,跨工作区访问需显式确认 | P1 | ✅ 已落地(`tools/security.py` `classify_file`:越界读 allow+warning,越界写 ask;bash 经 `_dangerous_intent` + 边界判定) |
 | FR-8.4 | Prompt 注入防护 | 工具返回内容按"数据"处理,不拼进 system prompt 当指令执行 | P0 | ✅ 设计约束,持续保持 |
 
 ### 4.10 修订版功能实现清单(合并 GAP 分析 §5,F-01~F-28)
@@ -338,39 +364,39 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 |---|---|---|
 | F-01 | `tools/` 原子工具 read/write/edit/bash + 注册表 | ✅ 已落地(08-09) |
 | F-02 | ~~`tools/pipeline.py` 拦截管道~~ | ❌ 已删除(危险命令由 bash 黑名单承担) |
-| F-03 | `core/ports.py` AgentPorts | ✅ 已落地 |
-| F-04 | `core/state.py` AgentState + `core/loop.py` build_graph | ✅ 已落地(全异步 ReAct) |
-| F-05 | `core/nodes/` agent & tools 节点 | ✅ 已落地(并行执行 + 单失败错误归属) |
-| F-06 | `core/events.py` AgentEvent 类型 | ✅ 已落地(10 类事件) |
+| F-03 | `core/ports.py` AgentPorts | ✅ 已落地(**自研版:`model / tools / policy`,无 store**) |
+| F-04 | `core/messages.py` 消息模型 + `core/loop.py` `run_turn` | ✅ 已落地(自研编排后 `state.py`/`build_graph` 删除,改为自研 ReAct 主循环,2026-08-14) |
+| F-05 | ~~`core/nodes/` agent & tools 节点~~ | ⚠️ 随自研编排删除(循环内直接 emit,工具并行经 `asyncio.gather`) |
+| F-06 | `core/events.py` AgentEvent 类型 | ✅ 已落地(**11 类事件**,含 `confirmation_requested`) |
 | F-07 | `session/bus.py` 事件总线 | ✅ 已落地 |
-| F-08 | `session/session.py` AgentSession | ✅ 已落地(含 abort / replace_graph) |
-| F-09 | `container.py` 接线(现 `app/container.py`) | ✅ 已落地 |
+| F-08 | `session/session.py` AgentSession | ✅ 已落地(含 abort / steer / followup;自研版) |
+| F-09 | `container.py` 接线(现 `app/container.py`) | ✅ 已落地(create_agent_ports / create_agent_session / create_session_manager / create_tui_app) |
 | F-10 | 流式回复渲染 | ⚠️ 事件→StreamChunk 渲染层随 TUI 移除;headless 事件聚合保留 |
 
 **P1 — v0.2:好用的刚需(1–2 周)**
 
 | ID | 功能 | 说明 | 依据 |
 |---|---|---|---|
-| F-11 | `session/store.py` 会话持久化 | 线性存储,重启恢复 | 竞品标配 |
-| F-12 | `session/manager.py` SessionManager | create/switch/dispose | 竞品标配 |
-| F-13 | `session/compaction.py` 上下文压缩 | 手动 + 阈值 | 长会话刚需 |
-| F-14 | 安全权限模型 `[竞品对标]` | bash 确认环 + 文件边界白名单(黑名单已兜底) | Claude Code 手动挡 |
-| F-15 | 会话回滚 `/undo` `[竞品对标]` | 回滚到指定消息及文件变更 | Codex 297👍 / OpenCode 快照 |
-| F-16 | AGENTS.md 分层指令 `[竞品对标]` | 全局→项目→子目录层级加载 | 行业标准化 |
-| F-17 | 会话列表与切换 | SessionManager 配套 UI/CLI 命令 | 竞品标配 |
-| F-17b | TUI 形态恢复(FR-1.11) | 交互式终端形态重建,复用 AgentSession 事件接口 | 本项目演进 |
+| F-11 | `session/store.py` 会话持久化 | ✅ JSONL 树形,重启恢复 | 竞品标配 |
+| F-12 | `session/manager.py` SessionManager | ✅ create/switch/fork/dispose | 竞品标配 |
+| F-13 | `session/compaction.py` 上下文压缩 | ✅ 手动 + 阈值 | 长会话刚需 |
+| F-14 | 安全权限模型 `[竞品对标]` | ✅ 已落地(security-permissions:三档分类器 + 确认环) | Claude Code 手动挡 |
+| F-15 | 会话回滚 `/undo` `[竞品对标]` | ⚠️ **改写为 `/fork`**(v0.2 T-42 定案:回滚语义以分支会话替代,F-23 提前) | Codex 297👍 / OpenCode 快照 |
+| F-16 | AGENTS.md 分层指令 `[竞品对标]` | ✅ 已落地(agents-md-hierarchy:全局→项目→子目录,`app/agents.py`) | 行业标准化 |
+| F-17 | 会话列表与切换 | ✅ 已落地(`/sessions`,订阅跟随切换) | 竞品标配 |
+| F-17b | TUI 形态恢复(FR-1.11) | ✅ 已落地(v0.2 T-44/T-45:命令/补全/选择器/Markdown/滚动) | 本项目演进 |
 
 **P2 — v0.3:生态与差异化(2–3 周)**
 
 | ID | 功能 | 说明 | 依据 |
 |---|---|---|---|
-| F-18 | `resources/skills/` 技能系统 | 渐进式披露 | Claude/Codex Skills |
-| F-19 | `extensions/` 插件系统 | 两阶段注册→绑定 | Claude 本地插件 |
-| F-20 | MCP 客户端适配 `[竞品对标]` | 外部工具接入(注意工具数分组预算) | 竞品标配 |
-| F-21 | 轻量记忆 `~/.codeagent/memory` `[竞品对标]` | 跨会话偏好/事实 | Codex Memories |
-| F-22 | 成本透明 `[竞品对标]` | token 用量 + 费用估算入状态栏/事件流 | 信任赤字诉求 |
-| F-23 | 分支会话 fork | 会话树、对比探索 | Pi fork 语义 |
-| F-24 | 平台部署 `langgraph.json` | 与 CLI 共享同一份图 | 架构已设计 |
+| F-18 | `resources/skills/` 技能系统 | ✅ 已落地(v0.3 阶段 1,skills-system:三源发现 + 渐进式披露 + `/skills`) | Claude/Codex Skills |
+| F-19 | `extensions/` 插件系统 | 🔲 v0.3 阶段 2(两阶段注册→绑定) | Claude 本地插件 |
+| F-20 | MCP 客户端适配 `[竞品对标]` | 🔲 v0.3 阶段 3(外部工具接入 + 工具数分组预算) | 竞品标配 |
+| F-21 | 轻量记忆 `~/.codeagent/memory` `[竞品对标]` | 🔲 v0.3 阶段 4(跨会话偏好/事实) | Codex Memories |
+| F-22 | 成本透明 `[竞品对标]` | 🔲 v0.3 阶段 5(usage 落库 + 费用估算) | 信任赤字诉求 |
+| F-23 | 分支会话 fork | ✅ 已落地(v0.2,JSONL 树形);会话树导航 v0.3 阶段 6 | Pi fork 语义 |
+| F-24 | 平台部署 `langgraph.json` | ⚠️ **永久调整**(v0.2 定案):随自研编排废弃,改写为 HTTP/事件订阅入口,并入 F-27 | — |
 
 **P3 — 远期**
 
@@ -379,7 +405,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | F-25 | 多智能体协作 | Teams 级;事件流天然适配 |
 | F-26 | Automations 定时任务 | 后台触发 agent |
 | F-27 | Web / HTTP API | 事件流订阅暴露 |
-| F-28 | Windows 验证 | ✅ 已闭环:bash 探测链适配 + fix-bash-test-assertions 断言修复(2026-08-13)+ WSL 转发器探测修复(2026-08-14,336/336 全绿) |
+| F-28 | Windows 验证 | ✅ 已闭环:bash 探测链适配 + fix-bash-test-assertions 断言修复(2026-08-13)+ WSL 转发器探测修复(2026-08-14,336/336 全绿);2026-08-21 实测 590 收集/588 通过,两条为测试自身平台/环境缺陷待修(见审计) |
 
 ### 4.11 GAP 差距分析结论(合并 GAP 分析 §4)
 
@@ -402,7 +428,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 | `app/config.py` | 全局配置(仅 provider 无关字段) | — | core、session、cli |
 | `ai/` | 模型配置层(protocol/catalog/transport/bridge/providers + factory) | config | core、session、container 的反向 |
 | `tools/` | 工具层:原子工具 + 注册表 | config | 模型、编排 |
-| `core/` | 编排层:端口、状态、图、节点、事件 | 只有 `ports.py`(及 langchain/langgraph) | config、ai、tools、session |
+| `core/` | 编排层:端口、消息、循环、事件 | 只有 `ports.py`(及 core 内部) | config、ai、tools、session |
 | `session/` | 有状态会话 + 事件分发 | core(ports/loop)、bus、store | ai、tools、config |
 | `app/container.py` | 组合根,创建图与会话 | 全部(唯一交汇点) | — |
 | `app/main.py` | 命令行入口(headless) | container、session、bus | core、ai、tools |
@@ -411,43 +437,44 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:LangGraph
 
 ### 5.2 AR-2 核心契约(P0,✅ 已落地)
 
-**AgentPorts(编排认识外部世界的唯一窗口)**:
+**AgentPorts(编排认识外部世界的唯一窗口,自研版)**:
 
 ```python
 @dataclass(frozen=True)
 class AgentPorts:
-    bound_model: BaseChatModel            # 已 bind 工具(由组合根负责 bind)
-    tool_executor: Runnable               # 工具执行器,对 loop 是黑盒
-    checkpointer: object | None = None    # 持久化,由组合根决定
+    model: ModelPort               # 模型端口(组合根适配 ai 层 ChatClient)
+    tools: list[Any]               # 工具列表(自研 AtomicTool 实例,直接 invoke)
+    policy: ApprovalPolicy | None = None   # 执行前安全策略(可空 = 无确认环)
 ```
 
-- 设计理由:编排层连"工具"概念都不需要知道——`bind_tools` 是组合根的事,加/换工具时 `core/` 零改动。
+- 设计理由:编排层不绑定具体工具——工具列表作为数据传入循环按名查找 `invoke`,加/换工具时 `core/` 零改动;`store` 不在端口内(core 循环不落盘,存储经会话层注入)。
 
-**build_graph(纯组装,零副作用)**:
+**run_turn(自研 ReAct 主循环)**:
 
 ```python
-def build_graph(ports: AgentPorts) -> CompiledGraph:
-    # START → agent →(有 tool_calls)→ tools → agent;否则 END
-    # 模块顶层无任何副作用(不建模型、不发请求、不读 key)
+async def run_turn(session, model, tools, policy, ...) -> None:
+    # for 循环:模型 → 工具 → 继续/结束
+    # 有 tool_calls → 逐个经 policy.decide → emit(tool_call / tool_result)
+    # 无 tool_calls → 结束本轮
 ```
 
-- `should_continue` 只看 state 形状(最后一条消息有没有 `tool_calls`),不 import 任何具体工具。
+- 循环条件由消息形状驱动(最后一条有没有 `tool_calls`),不 import 任何具体工具;事件在循环内直接 emit(无翻译层)。
 
 **AgentSession(有状态会话壳)**:
 
 ```python
 class AgentSession:
-    def __init__(self, graph, bus, recursion_limit=50): ...
-    async def run(self, text, recursion_limit=None) -> None: ...  # 发布事件,不返回值
-    def run_sync(self, text) -> None: ...                         # 同步便捷入口
+    def __init__(self, ports, bus, store=None, session_id=None,
+                 recursion_limit=50, tool_timeout=None, summarizer=None): ...
+    async def run(self, text) -> None: ...    # 直接驱动 run_turn,发布事件,不返回值
+    async def steer(self, text) -> None: ...  # 运行中注入消息
+    async def followup(self) -> None: ...     # 结束后续跑一轮
     def subscribe(self, fn) -> Subscriber: ...                    # 订阅事件
     def abort(self) -> None: ...                                  # 中断运行,广播 run_cancelled
-    def replace_graph(self, graph) -> None: ...                   # 切换模型时换图保留 thread
 ```
 
-- 会话维度 thread 累积:构造时分配稳定 thread_id,同一会话所有 `run()` 打进同一 LangGraph thread;
-- v0.1 存储:靠 checkpointer 兜底(InMemorySaver),`SessionStore` 延后 v0.2;
-- `steer / followup` 未落地,延后 v0.2(生命周期由 SessionManager 承接)。
+- 会话历史自研 `Message` 列表;成功轮次才落盘 `SessionStore`(JSONL 树形),失败/取消内存回滚;
+- `steer / followup / abort` 已落地(v0.2,自研循环下为几行代码,验证蓝图"收益 2");热切换经 `SessionManager.replace_ports`。
 
 ### 5.3 AR-3 配置命名空间隔离(P0,✅ 已落地,防回归测试覆盖)
 
@@ -465,28 +492,22 @@ class AgentSession:
 | 换会话存储 | `store.py` + `container` | `cli.py` / `core/` | ❌ 泄漏 |
 | 加会话分叉 | `session/` | `core/` | ❌ 泄漏 |
 
-> ⚠️ 2026-08-13 实测:`tests/test_decoupling.py` 已不在当前代码树(随 TUI 层重构移除)。**AR-4 的自动校验回归列入 v0.2 验收项**(见 §12),需按当前分层(app/ 包结构)重写解耦扫描测试。
+> ✅ 2026-08-14 已重写恢复:`tests/test_decoupling.py` AST 扫描强制校验(70+ 项断言),并带 anti-wargaming 守卫(`test_scan_has_content` / `test_composition_roots_exist` / `test_textual_only_in_engine_backend`),规则写错或例外文件被删都会被抓住。
 
-### 5.5 AR-5 演进蓝图:自研两阶段(P3,📝 蓝图存档)
+### 5.5 AR-5 演进蓝图:自研两阶段(P3,✅ 两步均已落地)
 
 「不依赖 langchain 自研统一封装」分两步走:
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 第一步:自研 ModelRuntime | 替代 langchain 模型客户端层(`ai/`) | ✅ 已落地(`protocol/` + `transport/` + `providers/`,pyproject 已移除 langchain-openai) |
-| 第二步:自研 ReAct 编排 | 替代 langgraph 编排层(`core/` + `session/` 部分) | 📝 **暂缓**,蓝图见 self-built-orchestration-blueprint.md |
+| 第二步:自研 ReAct 编排 | 替代 langgraph 编排层(`core/` + `session/` 部分) | ✅ **已落地**(2026-08-14 `self-built-orchestration`:三未决问题已答——平台部署非刚需、归约 spike 通过(5 场景双跑 diff)、JSONL 树形为格式结论;pyproject 移除 langchain-core/langgraph) |
 
-**第二步蓝图要点**(启动前必读):
+**第二步蓝图要点**(已落地,2026-08-14 验证):
 
-- 现状:langgraph 承担 4 件事——①状态归约 `add_messages` ②图遍历 `astream` ③工具执行 `ToolNode` ④持久化 `InMemorySaver`;
-- 需自研 5 组件:R1 ReAct 主循环(100-200 行)/ R2 消息归约(约 30 行,最关键)/ R3 会话持久化(JSONL 树形)/ R4 工具调度(并行 gather + 单 call 错误归属)/ R5 控制流(recursion_limit / abort / 工具超时);
-- 5 个真收益:事件流原生化(翻译层消失)/ steer-followup-abort 变几行代码 / 会话树分叉变一个字典 / 工具层解耦加深 / 控制流全是普通代码;
-- 4 项代价:消息归约需 spike 验证 / 会话恢复格式自设计 / 编排相关测试(约 80+)重写 / `langgraph.json` 平台部署入口失效;
-- **三个未决问题**(第二步启动前必须回答):
-  1. 平台部署是不是刚需?(决定是否值得放弃 langgraph 生态)
-  2. 消息归约正确性 spike(工具结果按 tool_call_id 归属,写错则工具链断裂);
-  3. 会话持久化格式:对齐 Pi 的 JSONL 树形,还是先线性?
-- 边界:SSE 流式解析(归模型层,已做)、工具 schema(pydantic 已提供)、平台部署入口均不自研。
+- 蓝图主张:自研 5 组件(R1 ReAct 主循环 / R2 消息归约(约 30 行,最关键)/ R3 会话持久化(JSONL 树形)/ R4 工具调度(并行 gather + 单 call 错误归属)/ R5 控制流(recursion_limit / abort / 工具超时)),收益为事件流原生化、steer/followup/abort 变几行代码、会话树分叉变一个字典、工具层解耦加深、控制流全是普通代码——均已兑现。
+- 三未决问题结论(2026-08-14 评估定案):①平台部署**非刚需**,可放弃 langgraph 生态(F-24 改写为 HTTP/事件订阅入口);②消息归约 spike 为**正确性 gate**,5 场景双跑 diff ALL PASS;③会话持久化定案 **JSONL 树形**(按 id/parentId)。
+- 边界:SSE 流式解析(归模型层)、工具 schema(pydantic 已提供)不自研;平台部署入口经自研后重设计(见上)。
 
 ---
 
@@ -516,7 +537,7 @@ class AgentSession:
 | NFR-S3 | 危险命令防护 | bash 工具默认需确认/白名单 | 未确认不得执行;白名单外命令默认拒绝 | 🔲 黑名单已落地(FR-8.1),确认环 v0.2(FR-8.2) |
 | NFR-S4 | 文件访问边界 | read/write/edit 默认限定工作区 | 跨工作区访问需用户显式确认 | 🔲 v0.2(FR-8.3) |
 | NFR-S5 | Prompt 注入 | 工具返回内容按"数据"处理 | 不把工具结果当指令拼接进 system prompt 执行 | ✅ 设计约束 |
-| NFR-S6 | 依赖供应链 | 锁定精确版本 | `uv.lock`;依赖面最小化(当前仅 httpx / langchain-core / langgraph / pydantic-settings) | ✅ |
+| NFR-S6 | 依赖供应链 | 锁定精确版本 | `uv.lock`;依赖面最小化(自研编排后:httpx / pydantic / pydantic-settings / textual,无 langchain/langgraph) | ✅ |
 | NFR-S7 | 数据隐私 | 会话数据默认本地存储 | 不上传遥测;事件流不携带密钥 | ✅ 设计保证 |
 | NFR-S8 | 命令审计 | bash 危险命令拒绝带审计信息(黑名单命中原因) | 为确认环/回滚预留 | ✅ 已落地(FR-8.1) |
 
@@ -541,14 +562,14 @@ class AgentSession:
 | NFR-R2 | 幂等性 | headless 逐行处理互不干扰 | 每行独立上下文,单行失败不拖垮整体 | ✅ |
 | NFR-R3 | 超时与取消 | LLM 调用可中断 | `abort()` 中断运行;取消态事件正确广播 | ✅ |
 | NFR-R4 | 重试策略 | 网络抖动可重试 | 传输层 httpx 重试;为 LLM 调用重试预留 | ✅(openai_compat 已含重试) |
-| NFR-R5 | 图级可回放 | 同一 state 可重跑 | LangGraph checkpointer 提供天然基础 | ✅ |
+| NFR-R5 | 会话可回放 | 同一历史可重跑 | JSONL 树形存储提供回放基础(自研编排后替代 checkpointer) | ✅ |
 
 ### 6.5 可维护性(NFR-M)
 
 | 编号 | 指标 | 要求 | 验收口径 | 状态 |
 |---|---|---|---|---|
 | NFR-M1 | 分层解耦 | 跨层 import 仅发生在 `app/container.py` / `app/main.py` | `tests/test_decoupling.py` AST 强制校验(2026-08-14 重写,70 项断言) | ✅ |
-| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-14 实测 336 项测试全绿(见附录 B) | ✅ |
+| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-19 实测 590 项收集(基线 590/590;2026-08-21 Windows 588/590,两条测试自身缺陷待修,见审计) | ✅(覆盖率测量工具待补,见审计) |
 | NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentPorts` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
@@ -561,7 +582,7 @@ class AgentSession:
 | NFR-E1 | 供应商扩展 | 新增 provider = 新增 1 文件 + 环境变量 | `PROVIDERS` 注册表分发 |
 | NFR-E2 | 工具扩展 | 新增工具不触碰 core | `bind_tools` 在组合根唯一交汇 |
 | NFR-E3 | 会话扩展 | 多会话并发互不干扰 | SessionManager 设计 |
-| NFR-E4 | 形态扩展 | 同图定义多平台部署 | `langgraph.json` 与 CLI 共享 |
+| NFR-E4 | 形态扩展 | 事件流多平台订阅 | CLI / Web / 测试 / CI 均可订阅;Web/HTTP 入口 v0.3 阶段 7(F-27) |
 | NFR-E5 | 感知扩展 | 事件流订阅方任意 | CLI / Web / 测试 / CI 均可订阅 |
 
 ### 6.7 兼容性(NFR-C)
@@ -570,14 +591,14 @@ class AgentSession:
 |---|---|---|---|
 | NFR-C1 | Python | ≥ 3.12 | pyproject 声明;类型注解使用 `from __future__` |
 | NFR-C2 | 终端 | 支持真彩/ANSI 的现代终端 | TUI 恢复时生效 |
-| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ 已闭环:bash 含 Git for Windows / WSL 探测链(2026-08-14 修复 WSL 转发器命中,Windows 336/336 全绿) |
+| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ 已闭环:bash 含 Git for Windows / WSL 探测链(2026-08-14 修复 WSL 转发器命中;v0.3 后 Windows 实测 588/590,两条为测试自身平台/环境缺陷,见审计) |
 | NFR-C4 | 安装 | 无系统级污染 | uv 虚拟环境隔离 |
 
 ### 6.8 可观测性(NFR-O)
 
 | 编号 | 指标 | 要求 | 说明 |
 |---|---|---|---|
-| NFR-O1 | 事件流 | 10 类事件覆盖全生命周期 | FR-6.1 |
+| NFR-O1 | 事件流 | 11 类事件覆盖全生命周期 | FR-6.1 |
 | NFR-O2 | 订阅编程接口 | `subscribe(fn)` 任意方接入 | 替代"只拿返回值"模式 |
 | NFR-O3 | 日志分级 | 可开关、不泄漏密钥 | 生产可用级别可调 |
 
@@ -587,13 +608,13 @@ class AgentSession:
 
 | ID | 数据对象 | 结构/格式 | 生命周期 | 状态 |
 |---|---|---|---|---|
-| DR-1 | 会话状态 | `AgentState`(MessagesState 扩展),thread 维度累积,checkpointer 快照 | 会话内累积;v0.1 内存(InMemorySaver),进程退出即失 | ✅ v0.1;持久化待 DR-3 |
-| DR-2 | 事件流 | `AgentEvent`(type + payload + metadata)10 类,发射即弃(订阅制) | 单轮对话生命周期 | ✅ |
-| DR-3 | 会话存储 | v0.2:`SessionStore` 线性存储(每轮 append);自研蓝图 R3 建议 JSONL 树形(id/parentId,天然支持分叉/回放) | 跨进程持久 | 🔲 v0.2 |
+| DR-1 | 会话状态 | 自研 `Message`(role/content/tool_calls/tool_call_id/id/parentId,uuid7),会话维度累积 | 会话内累积;v0.1 内存,进程退出即失;v0.2 起落盘 DR-3 | ✅ |
+| DR-2 | 事件流 | `AgentEvent`(type + payload + metadata)**11 类**,发射即弃(订阅制) | 单轮对话生命周期 | ✅ |
+| DR-3 | 会话存储 | v0.2 定案:**JSONL 树形**(每轮 append,按 id/parentId,天然支持分叉/回放;替代 checkpointer) | 跨进程持久 | ✅ 已落地(v0.2,含 fork) |
 | DR-4 | 模型目录 | 内置目录(代码静态)+ `~/.codeagent/models.json` 用户覆盖,**upsert 合并**(同 id 覆盖、新 id 追加、内置保留) | 启动加载,可运行时重建(缓存 M11) | ✅ |
 | DR-5 | 配置 | `~/.codeagent/.env` 命名空间隔离(全局 `LLM_PROVIDER` 与各 `PROVIDER_*`);首次启动幂等生成模板 | 启动加载 | ✅ |
 | DR-6 | token 用量 | 模型 `usage_metadata` 透传为 `usage` 事件;v0.3 落库供成本透明(F-22) | 每轮产生 | ✅ 事件已落地;落库 P2 |
-| DR-7 | 技能/提示词资源 | `resources/skills/`、`resources/prompts/` markdown 文件,按需加载(渐进式披露) | v0.3 启用 | 🔲 目录已建 |
+| DR-7 | 技能/提示词资源 | `resources/skills/` markdown 文件,按需加载(渐进式披露:描述入 prompt,正文经 skill 工具) | v0.3 阶段 1 启用 | ✅ 已落地(三源发现,同名遮蔽 个人>项目>内建) |
 
 ---
 
@@ -601,8 +622,8 @@ class AgentSession:
 
 | ID | 接口 | 契约要点 | 消费方 | 状态 |
 |---|---|---|---|---|
-| IR-1 | `AgentPorts` | frozen dataclass:`bound_model`(已 bind 工具)/ `tool_executor`(Runnable 黑盒)/ `checkpointer`(可选) | core/loop | ✅ |
-| IR-2 | `build_graph(ports) -> CompiledGraph` | 纯组装零副作用;条件边 `should_continue` 只看 state 形状 | container / langgraph.json | ✅ |
+| IR-1 | `AgentPorts` | frozen dataclass:`model`(ModelPort)/ `tools`(list[Any])/ `policy`(ApprovalPolicy,可选);**无 store**(core 不落盘) | core/loop | ✅ 已落地(自研版) |
+| IR-2 | `run_turn(session, model, tools, policy, ...)` | 自研 ReAct 主循环;循环内直接 emit 事件;循环条件看消息形状 | session/session | ✅ 已落地(自研版,替代 build_graph) |
 | IR-3 | `AgentSession.run(text, recursion_limit=None)` | async;发布事件不返回值;thread 累积;可被 `abort()` 中断 | CLI / Web / 测试 | ✅ |
 | IR-4 | `AgentSession.run_sync(text)` | 同步便捷入口(新线程 + asyncio.run) | 脚本 / 无 loop 环境 | ✅ |
 | IR-5 | `EventBus.subscribe(fn)` / `emit(ev)` | 订阅方异常隔离;返回退订函数 | 任意感知方 | ✅ |
@@ -610,9 +631,9 @@ class AgentSession:
 | IR-7 | `ChatClient` 协议 + `SSEParser` | 框架无关消息/流协议;thinking/usage 全量透传 | ai/protocol | ✅ |
 | IR-8 | `make_tools(cfg) -> list[BaseTool]` | 原子工具注册表枚举 | container | ✅ |
 | IR-9 | CLI(headless) | `codeagent [--prompt P]`;无 `--prompt` 时 stdin 逐行;输出事件聚合文本 | 终端用户 / 脚本 | ✅ |
-| IR-10 | `langgraph.json` 平台入口 | `graphs.agent` → `create_agent_graph`;与 CLI 共享同一份图定义 | LangGraph 平台 | 📝 P2 |
-| IR-11 | `SessionManager`(v0.2) | `create / fork / switch / dispose` | CLI / TUI | 🔲 v0.2 |
-| IR-12 | `SessionStore`(v0.2) | 线性存储 `append(entry)` / 恢复加载 | SessionManager | 🔲 v0.2 |
+| IR-10 | ~~`langgraph.json` 平台入口~~ | ⚠️ 随自研编排废弃(v0.2 定案);改写为 HTTP/事件订阅入口,并入 F-27 | Web/HTTP | 📝 v0.3 阶段 7 |
+| IR-11 | `SessionManager` | `create / fork / switch / dispose` + `replace_ports` 热切换 | CLI / TUI | ✅ 已落地(v0.2) |
+| IR-12 | `SessionStore` | JSONL 树形 `append(entry)`(按 id/parentId)/ 恢复加载 | SessionManager | ✅ 已落地(v0.2) |
 
 ---
 
@@ -625,12 +646,11 @@ class AgentSession:
 | 依赖 | 版本(uv.lock) | 成熟度 | 承担角色 |
 |---|---|---|---|
 | httpx | ≥ 0.28.1 | 稳定 | OpenAI 兼容传输层(自研模型客户端) |
-| langchain-core | ≥ 1.5.3 | 稳定 | BaseChatModel / 消息抽象 |
-| langgraph | ≥ 1.2.10 | 稳定 | StateGraph / ToolNode / checkpointer |
-| pydantic-settings | ≥ 2.14.2 | 稳定 | 分层配置 |
+| pydantic / pydantic-settings | ≥ 2.x | 稳定 | 工具 Args schema / 分层配置 |
+| textual | ≥ 2.1.0 | 稳定 | TUI 引擎(仅 `app/tui/textual_backend.py` 加载) |
 | pytest | ≥ 9.1.1 | 稳定 | 测试基建 |
 
-(注:langchain-openai 与 textual 已随自研模型层与 TUI 移除而退出依赖表,依赖面进一步收窄。)
+(注:langchain-core / langgraph / langchain-openai 已随自研编排与模型层落地**全部移除**——2026-08-14 自研编排后运行时依赖收敛为 httpx / pydantic / pydantic-settings / textual。)
 
 **关键风险与对策**:
 
@@ -642,7 +662,7 @@ class AgentSession:
 | 多平台验证成本 | 低~中 | ✅ 已闭环:bash 含 Git for Windows / WSL 探测链,环境差异经断言修复与 WSL 转发器排除(2026-08-14) |
 | 编排自研(第二步) | 中(暂缓) | 三未决问题回答后启动;消息归约先行 spike |
 
-**结论**:核心依赖全部成熟稳定,架构文档已定稿,编排层契约(AgentPorts / build_graph / AgentSession)已落地。**技术风险可控,无颠覆性难点。**
+**结论**:核心依赖全部成熟稳定,架构文档已定稿,编排层契约(AgentPorts / run_turn / AgentSession)已落地(自研版)。**技术风险可控,无颠覆性难点。**
 
 ### 9.2 市场定位可行性
 
@@ -695,10 +715,10 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 | 编号 | 类别 | 风险 | 概率 | 影响 | 对策 |
 |---|---|---|---|---|---|
-| R1 | 技术 | 编排自研第二步中断 langgraph 平台部署入口 | 中 | 高 | 启动前回答三未决问题;平台部署刚需则重新评估净收益 |
-| R2 | 技术 | 自研消息归约(工具结果按 tool_call_id 归属)写错 → 工具链断裂 | 中 | 高 | 启动前 spike 验证 |
-| R3 | 技术 | Windows 平台 bash 行为差异(路径显示、PIPESTATUS) | 高 | 低~中 | 4 项失败测试回归;按环境归一化断言或补平台适配 |
-| R4 | 质量 | 解耦扫描测试缺失,分层泄漏回归无法自动发现 | 中 | 中 | v0.2 重写 test_decoupling 覆盖 app/ 新结构 |
+| R1 | 技术 | ~~编排自研中断 langgraph 平台部署入口~~ | 中 | 高 | ✅ 已消解(2026-08-14 定案:平台部署非刚需,F-24 改写为 HTTP/事件订阅入口并入 F-27) |
+| R2 | 技术 | 自研消息归约(工具结果按 tool_call_id 归属)写错 → 工具链断裂 | 中 | 高 | ✅ 已消解(2026-08-14 spike 5 场景双跑 diff ALL PASS) |
+| R3 | 技术 | Windows 平台 bash 行为差异(路径显示、PIPESTATUS) | 高 | 低~中 | ✅ 4 项失败测试已修复;2026-08-21 残留 2 条测试自身平台/环境缺陷待修(见审计) |
+| R4 | 质量 | 解耦扫描测试缺失,分层泄漏回归无法自动发现 | 中 | 中 | ✅ 已重写恢复(2026-08-14,AST 扫描 70+ 断言) |
 | R5 | 质量 | 文档与代码漂移(219 vs 304 vs 204 测试、TUI 状态、provider 数) | 已发生 | 中 | 以本文档为基线,版本更新时同步校准(附录 B 机制) |
 | R6 | 市场 | 无自研模型,受第三方 API 制约;头部放开多供应商则差异化压缩 | 中 | 中 | 强化"工程底座"定位;成本透明(F-22)对冲信任赤字 |
 | R7 | 进度 | 单人维护可持续性、社区获取不足 | 高 | 中 | 开发者指南(接入新 provider/工具)、文档与示例投入 |
@@ -711,30 +731,30 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### 12.1 全局验收基线(每个版本发布前必须满足)
 
-1. **测试全绿**:`uv run pytest` 全量通过(当前 336 项全绿,2026-08-14 实测);核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
-2. **解耦判据**:解耦扫描测试(恢复后)强制校验跨层 import 仅出现在 `app/container.py` / `app/main.py`;
+1. **测试全绿**:`uv run pytest` 全量通过(2026-08-19 后基线 590 项收集;2026-08-21 Windows 实测 588/590,两条测试自身缺陷待修);核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
+2. **解耦判据**:解耦扫描测试强制校验跨层 import 仅出现在 `app/container.py` / `app/main.py`(2026-08-14 已重写恢复);
 3. **离线可体验**:无任何 API Key 时以 `fake` provider 完整跑通"对话→工具调用→事件流"闭环;
 4. **配置隔离**:全部配置类 `extra="ignore"`,防回归测试通过;
 5. **安全底线**:密钥不出现在日志/事件流/输出;危险命令拒绝带审计信息。
 
 ### 12.2 v0.2 验收(F-11~F-17b)
 
-- 会话持久化:重启进程后 `SessionStore` 恢复历史会话;`SessionManager` 支持 create/switch/dispose;
-- 上下文压缩:手动触发 + 阈值自动触发,压缩后对话语义不丢失(回归测试);
-- 安全权限:bash/write 敏感操作默认确认,未确认不执行;文件访问默认限定工作区,越界需显式确认;
-- 回滚 `/undo`:回滚到指定消息及对应文件变更;
-- AGENTS.md:全局→项目→子目录分层加载并注入系统提示词,越近优先级越高;
-- TUI 增强:交互式终端 MVP 已恢复(2026-08-13,E9~E11),v0.2 补齐斜杠命令/模糊补全/选择器、Markdown 渲染与滚动交互;
-- 解耦扫描测试恢复并通过。
+- ✅ 会话持久化:`SessionStore`(JSONL 树形)重启恢复历史会话;`SessionManager` 支持 create/switch/fork/dispose;
+- ✅ 上下文压缩:手动触发 + 阈值自动触发,压缩后对话语义不丢失(回归测试);
+- ✅ 安全权限:bash/write 敏感操作默认确认,未确认不执行;文件访问默认限定工作区,越界需显式确认;
+- ⚠️ 回滚 `/undo`:改写为 `/fork`(分支会话语义,见 F-15);
+- ✅ AGENTS.md:全局→项目→子目录分层加载并注入系统提示词,越近优先级越高;
+- ✅ TUI 增强:斜杠命令/模糊补全/选择器、Markdown 渲染与滚动交互已落地(T-44/T-45);`/login` 于 v0.3 追加;
+- ✅ 解耦扫描测试恢复并通过(AST 扫描,70+ 断言)。
 
 ### 12.3 v0.3 验收(F-18~F-24)
 
-- Skills 按需加载:`resources/skills/` 渐进式披露生效;
-- 插件两阶段(注册→绑定)可用;
-- MCP 外部工具接入(含工具数分组预算策略);
-- 轻量记忆跨会话生效;
-- 成本透明:token 用量/费用估算可见(状态栏或输出);
-- 分支会话 fork 可用;`langgraph.json` 平台入口可部署。
+- ✅ Skills 按需加载:`resources/skills/` 渐进式披露生效(2026-08-19 阶段 1 落地,590/590 基线);
+- 🔲 插件两阶段(注册→绑定)可用(v0.3 阶段 2);
+- 🔲 MCP 外部工具接入(含工具数分组预算策略)(v0.3 阶段 3);
+- 🔲 轻量记忆跨会话生效(v0.3 阶段 4);
+- 🔲 成本透明:token 用量/费用估算可见(v0.3 阶段 5);
+- ✅ 分支会话 fork 可用(v0.2 提前落地,JSONL 树形);⚠️ `langgraph.json` 平台入口永久废弃,改写为 HTTP/事件订阅(F-27,v0.3 阶段 7)。
 
 ### 12.4 远期验收(F-25~F-28)
 
@@ -759,29 +779,29 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | FR-2.8 | 模型客户端自研(ModelRuntime) | P0 | ✅ | B §1; C | — |
 | FR-2.9 | 注册表缓存 | P0 | ✅ | C | — |
 | FR-3.1~3.8 | 工具系统 | P0/P1 | ✅(3.5 待 v0.2) | R §3.1; C | F-01, F-02(删) |
-| FR-4.1~4.7 | 编排引擎 | P0/P2 | ✅(4.7 规划) | R §3.1; A §5 | F-03~F-05 |
-| FR-4.8 | 编排自研第二步 | P3 | 📝 蓝图暂缓 | B 全文 | — |
-| FR-5.1~5.3 | AgentSession/总线/翻译 | P0 | ✅ | R; A §5.3; C | F-06~F-08 |
-| FR-5.4~5.6 | 持久化/Manager/压缩 | P1 | 🔲 v0.2 | R; A §5.4 | F-11~F-13 |
-| FR-5.7 | 会话树/分叉 | P2 | 📝 | R | F-23 |
-| FR-5.8~5.9 | abort / replace_graph(新增) | P0 | ✅ | C | — |
-| FR-5.10 | steer / followup | P1 | 🔲 v0.2 | A §5.3; B 收益2 | — |
-| FR-6.1~6.5 | 可观测性与事件 | P0 | ✅(6.3 随 TUI 恢复) | R; C | — |
-| FR-7.1~7.4 | 扩展与部署 | P2 | 🔲/📝 | R; G §5 | F-18~F-24 |
-| FR-8.1~8.4 | 安全与权限 | P0/P1 | ✅ 黑名单;其余 v0.2 | G §4.2 G7 | F-14 |
+| FR-4.1~4.7 | 编排引擎 | P0/P2 | ✅ 已落地(自研版;F-04/05 形态变化见 §0.1) | R §3.1; A §5 | F-03~F-05 |
+| FR-4.8 | 编排自研第二步 | P3 | ✅ **已落地**(2026-08-14) | B 全文 | — |
+| FR-5.1~5.3 | AgentSession/总线/循环 | P0 | ✅(自研版:run_turn 直接驱动) | R; A §5.3; C | F-06~F-08 |
+| FR-5.4~5.6 | 持久化/Manager/压缩 | P1 | ✅ 已落地(v0.2,JSONL 树形) | R; A §5.4 | F-11~F-13 |
+| FR-5.7 | 会话树/分叉 | P2 | ✅ fork 已落地;树导航 v0.3 | R | F-23 |
+| FR-5.8~5.9 | abort / replace_ports(新增) | P0 | ✅ | C | — |
+| FR-5.10 | steer / followup | P1 | ✅ 已落地(v0.2) | A §5.3; B 收益2 | — |
+| FR-6.1~6.5 | 可观测性与事件 | P0 | ✅(11 类事件;6.3 随 TUI 落地) | R; C | — |
+| FR-7.1~7.4 | 扩展与部署 | P2 | 🔲/📝(7.1 ✅ Skills;7.3 改写为 F-27) | R; G §5 | F-18~F-24 |
+| FR-8.1~8.4 | 安全与权限 | P0/P1 | ✅ 黑名单 + 确认环 + 文件边界已落地 | G §4.2 G7 | F-14 |
 
 ### A.2 非功能需求追踪
 
 | 组 | 条目 | 状态要点 | 出处 |
 |---|---|---|---|
 | NFR-P1~P10 | 性能 | 设计保证 + 待实测(部分随 TUI 恢复生效) | R §4.1 |
-| NFR-S1~S8 | 安全 | 黑名单/审计已落地;确认环 v0.2 | R §4.2 |
-| NFR-U1~U8 | 可用性 | 0 配置/fake 已落地;TUI 相关恢复时生效 | R §4.3 |
-| NFR-R1~R5 | 可靠性 | abort 已落地;持久化 v0.2 | R §4.4 |
-| NFR-M1~M6 | 可维护性 | ✅ 解耦扫描测试已重写恢复(2026-08-14) | R §4.5; C |
-| NFR-E1~E5 | 可扩展性 | 契约已落地 | R §4.6 |
-| NFR-C1~C4 | 兼容性 | ✅ Windows 4 项 bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions) | R §4.7; C |
-| NFR-O1~O3 | 可观测性 | 10 类事件已落地 | R §4.8; C |
+| NFR-S1~S8 | 安全 | ✅ 黑名单/审计/确认环/文件边界全部落地(v0.2) | R §4.2 |
+| NFR-U1~U8 | 可用性 | 0 配置/fake 已落地;TUI 相关随 TUI 落地生效 | R §4.3 |
+| NFR-R1~R5 | 可靠性 | ✅ abort/steer/followup 落地;JSONL 持久化落地 | R §4.4 |
+| NFR-M1~M6 | 可维护性 | ✅ 解耦扫描测试已重写恢复(2026-08-14,70+ 断言) | R §4.5; C |
+| NFR-E1~E5 | 可扩展性 | 契约已落地;E4 改写为事件流订阅(F-27) | R §4.6 |
+| NFR-C1~C4 | 兼容性 | ✅ Windows 4 项 bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions);2026-08-21 残留 2 条测试缺陷待修 | R §4.7; C |
+| NFR-O1~O3 | 可观测性 | 11 类事件已落地 | R §4.8; C |
 
 ---
 
@@ -812,6 +832,20 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 3. 测试数量口径统一为"`uv run pytest` 实测结果 + 失败项环境说明";
 4. TUI 已恢复落地(2026-08-13,E9~E11):FR-1.1~1.6/1.8、FR-6.3、NFR-U2~U3 状态已由 ⚠️ 恢复为 ✅;斜杠命令/模糊补全/选择器仍列 v0.2。
 
+### B.3 2026-08-21 复核(自研编排落地后)
+
+| # | 差异项 | B.1 记录(08-14) | 2026-08-21 复核 |
+|---|---|---|---|
+| 1 | 测试数量 | 336 项全绿 | **590 项收集**(2026-08-19 Skills 阶段 1 后基线 590/590;2026-08-21 Windows 实测 588/590,两条失败为测试自身平台/环境缺陷:`test_unreadable_file_skipped` 平台断言 + `test_create_tui_app_injects_save_key` mock 作用域,见 `docs/review/audit-2026-08-21.md`) |
+| 5 | 事件类型 | 10 类 | **11 类**(新增 `confirmation_requested`,security-permissions) |
+| 6 | 会话接口 | abort / replace_graph | `abort` / `steer` / `followup`;热切换改 `SessionManager.replace_ports` |
+| 7 | 模型客户端 | 自研,langchain-core/langgraph 保留于编排侧 | **langchain-core/langgraph 全部移除**(2026-08-14 自研编排;`ai/bridge/` 删除) |
+| 9 | 解耦扫描测试 | 不在代码树 | ✅ **已重写恢复**(2026-08-14,AST 扫描 70+ 断言,带 anti-wargaming 守卫) |
+| 11 | 工具数量 | 7 | **8**(新增 `skill` 技能寻址工具,v0.3 阶段 1) |
+| — | 会话持久化 | 🔲 v0.2 线性 | ✅ **JSONL 树形已落地**(含 fork) |
+| — | 安全确认环 | 🔲 v0.2 | ✅ 已落地(ApprovalPolicy + 三档分类器) |
+| — | 平台部署 | `langgraph.json` 待设计 | ⚠️ 永久废弃,改写为 HTTP/事件订阅(F-27) |
+
 ---
 
-*本文档合并自 docs/design/ 四份文档并经 2026-08-13 代码实测校准;对原文的引用以编号(R/A/G/B/C)标注于附录 A。*
+*本文档合并自 docs/design/ 四份文档并经 2026-08-13 代码实测校准(2026-08-21 追加 §0.1 勘误与附录 B.3 复核);对原文的引用以编号(R/A/G/B/C)标注于附录 A。架构现状以 §0.1 勘误 + architecture.md(v0.3) 为准。*

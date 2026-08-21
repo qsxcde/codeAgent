@@ -1,12 +1,13 @@
 # codeagent 架构设计文档
 
-> 版本: v0.1(已落地)
-> 适用范围: 基于 LangGraph 的 Code Agent 项目
-> 更新日期: 2026-08-14(校准至当前树:app/ 包重组、TUI 恢复、255 测试、工具 4→7)
+> 版本: v0.3(阶段 1 Skills 落地后校准)
+> 适用范围: 自研编排(2026-08-14 起,已弃用 langgraph/langchain)的 Code Agent 项目
+> 更新日期: 2026-08-21(校准至当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills 系统、TUI 命令体系)
+> 事实来源: 本文描述当前代码树;演进决策见 [self-built-orchestration-blueprint.md](./self-built-orchestration-blueprint.md)(决策与收益记录)、迭代记录 `docs/iteration/v0.1.md` / `v0.2.md` / `v0.3.md`
 
 ## 1. 背景与目标
 
-本项目是一个基于 **LangGraph** 的编程 Agent(codeagent)。设计目标:
+本项目是基于**自研编排**的编程 Agent(codeagent)。设计目标:
 
 1. **可演进**:从"单个工具调用型 Agent"平滑演进到多 Agent / 多会话 / 平台部署。
 2. **可替换**:更换模型供应商(DeepSeek / OpenAI / Qwen / GLM / Kimi / MiniMax)、更换工具集、更换存储,均不触碰 Agent 编排代码。
@@ -14,6 +15,8 @@
 4. **可测试**:核心编排层零网络、零密钥即可运行(注入 fake 模型)。
 
 设计参考:Pi-Agent(`earendil-works/pi`)的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。
+
+**编排演进**:v0.1 曾基于 langgraph(StateGraph / ToolNode / checkpointer)。2026-08-14 自研编排落地(`self-built-orchestration` change):自研 ReAct 主循环 + 消息归约 + JSONL 树形会话替换 langgraph,pyproject 移除 langchain-core/langgraph。当前树**无任何 langgraph/langchain 依赖**。
 
 ## 2. 设计原则:两条正交轴
 
@@ -27,54 +30,62 @@
 - **横切轴**解决"零件怎么装":依赖单向流动,组合根是唯一交汇点。
 - **纵切轴**解决"装好之后会话怎么活":三层生命周期不同、变化率不同,不该绑在一个类里。
 
-**Loop 双层(无状态循环 / 有状态 Agent)在 Pi 里是另一条正交结构**:本项目里 LangGraph 已经提供了无状态循环(编译后的图),有状态外壳由 `session/` 层补齐。不要把它与横切/纵切混淆。
+**Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构**:无状态循环是自研 ReAct 主循环(`core/loop.py` 的 `run_turn`,模型→工具→继续/结束,直接 emit 事件),有状态外壳由 `session/` 层补齐(会话历史、落盘、abort/steer/followup)。不要把它与横切/纵切混淆。
 
 ## 3. 现状
 
 - 工具链:`uv` + `src` 布局,Python 3.12。
-- 依赖:`httpx`、`langchain-core>=1.5.3`、`langgraph>=1.2.10`、`pydantic-settings`、`textual`;dev 依赖 `pytest`。
+- 依赖:`httpx`、`pydantic`、`pydantic-settings`、`textual`;dev 依赖 `pytest`。**无 langchain/langgraph**。
 - 入口:`pyproject.toml` 中 `codeagent = "codeagent.app.main:main"`。
-- **已完成(v0.1)**:
+- **已完成(v0.1~v0.3 阶段 1)**:
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 仅存 `llm_provider`。
-- `ai/` 层:五层细分(providers / catalog / protocol / transport / bridge)+ `factory.create_llm()` 统一入口,支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传),经 `ai/bridge/langchain.py` 包装成 langchain Runnable 供编排层消费(2026-08-13 落地,pyproject 已移除 langchain-openai)。
-- 工具层(hexagonal,2026-08-13 重构):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls 七个工具;bash 带危险命令黑名单、树级进程击杀、默认 120s 超时、输出保尾截断。
-- `core/` 编排层:ports / state / loop / nodes / events(全异步 ReAct),模块顶层零副作用。
-- `session/` 会话层:bus + session(会话维度 thread 累积),`abort()` 运行中断、`replace_graph()` 换图保留 thread、失败自动回滚本轮消息。
-- 事件 10 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage`。
-- 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(MVP,2026-08-13 恢复,08-14 主流形态改造:多行 composer、命令记录行、工具块折叠点击展开、单行状态栏 + 上下文用量条、Esc 打断/退出、alt 屏)。
-- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **336 全绿**(2026-08-14 实测)。
+- `ai/` 层:五层细分(providers / catalog / protocol / transport + factory 统一入口),**无桥接层**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);适配自研循环的 `ChatModelPort` 在组合根 `app/container.py`。
+- 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个工具;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
+- `core/` 编排层:ports / loop / messages / events(全异步自研 ReAct),模块顶层零副作用。
+- `session/` 会话层:bus + session + manager + store(JSONL 树形)+ compaction;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
+- 事件 11 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
+- 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` 等命令体系)。
+- Skills 系统(v0.3 阶段 1):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
+- 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
+- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **590 项收集**(2026-08-19 Skills 阶段后基线 590/590;2026-08-21 Windows 实测 588/590,两条失败为测试自身平台/环境缺陷,见 `docs/review/audit-2026-08-21.md`)。
 
-**待办(v0.2 起)**:
-1. 会话持久化(`SessionStore`)、`SessionManager`、上下文压缩(`compaction`)、`steer / followup`。
-2. 解耦扫描测试按 `app/` 新分层重写(`test_decoupling.py` 已于 2026-08-13 移除)。
-3. TUI 增强:斜杠命令 / 模糊补全 / 选择器、Markdown 渲染、滚动交互。
-4. 资源层 `resources/skills`、扩展层 `extensions/`、平台部署(`langgraph.json` 已于 2026-08-13 移除,登记 v0.3 重建)。
+**待办(v0.3 起)**:
+
+1. 插件系统(`extensions/` 两阶段注册→绑定)、MCP 客户端(最小面 + 工具数分组预算)。
+2. 轻量记忆(`~/.codeagent/memory`)、成本透明(usage 落库 + 费用估算)。
+3. 会话树 UI(`/tree` 导航)、Web/HTTP 事件流订阅(F-27,承接 v0.2 对平台部署的改写决策)。
 
 ## 4. 总体结构
 
 ### 4.1 目录树
 
-```
+```text
 codeagent/
 ├── pyproject.toml / uv.lock          # 依赖、CLI 入口(codeagent.app.main:main)
 ├── README.md / CLAUDE.md             # 说明 + Claude Code 工作指南
 ├── .env.example                      # 密钥模板(不入库;实际密钥在 ~/.codeagent/.env)
-├── docs/                             # design/(需求/架构/蓝图)+ iteration/v0.1.md(权威)
+├── docs/                             # design/(需求/架构/蓝图)+ iteration/(权威)+ review/audit
 ├── openspec/                         # OpenSpec 规格与归档变更
 │
 ├── src/codeagent/
 │   ├── __init__.py / __main__.py     # 版本 + python -m codeagent
 │   │
 │   ├── app/                          # [组合根 + 入口] ★ 唯一跨层交汇点
-│   │   ├── container.py              #   组合根:create_agent_graph / create_agent_session / create_tui_app
+│   │   ├── container.py              #   组合根:create_agent_ports / create_agent_session
+│   │   │                             #     / create_session_manager / create_tui_app
 │   │   ├── main.py                   #   CLI 入口:--prompt / stdin / --tui
 │   │   ├── config.py                 #   全局 Settings + ~/.codeagent 模板幂等生成
-│   │   └── tui/                      #   [调用层·TUI] 交互式终端 MVP ✅ 已落地
+│   │   ├── agents.py                 #   AGENTS.md 分层加载 + 基础提示词
+│   │   ├── skills.py                 #   SKILL.md 三源加载 / 提示词构建 / 渲染块
+│   │   └── tui/                      #   [调用层·TUI] 交互式终端 ✅ 已落地
 │   │       ├── view.py               #     TuiApp 视图逻辑(事件→渲染,只依赖 TuiBackend 端口)
-│   │       ├── components.py         #     纯渲染组件树(Span 样式标签段,引擎无关可离线测)
+│   │       ├── components.py         #     纯渲染组件树(样式标签段,引擎无关可离线测)
 │   │       ├── backend.py            #     TuiBackend 端口协议
-│   │       ├── textual_backend.py    #     textual 引擎实现(当前唯一后端)
+│   │       ├── commands.py           #     斜杠命令注册表 + 解析纯函数
+│   │       ├── fuzzy.py              #     模糊补全纯函数
+│   │       ├── md_renderer.py        #     Markdown 渲染纯函数
 │   │       ├── theme.py              #     样式标签词表
+│   │       ├── textual_backend.py    #     textual 引擎实现(当前唯一后端)
 │   │       └── main.py               #     TUI 入口(--tui 转交此处,装配在组合根)
 │   │
 │   ├── ai/                           # [模型配置层]  ← pi-ai ✅ 已落地
@@ -90,61 +101,63 @@ codeagent/
 │   │   │   └── sse.py                #     StreamEvent / SSEParser(thinking/usage 全量透传)
 │   │   ├── transport/                #   OpenAI 兼容传输层
 │   │   │   └── openai_compat.py      #     OpenAICompatClient(httpx,重试/流式)
-│   │   ├── bridge/                   #   langchain 编排桥接(仅组合根消费)
-│   │   │   └── langchain.py          #     to_langchain_ai_message / to_langchain_runnable
 │   │   └── providers/                #   每 provider 一个文件,配置+工厂自包含
 │   │       ├── deepseek.py / openai.py / qwen.py / glm.py / kimi.py / minimax.py
 │   │       └── fake.py               #   FakeClient + make_llm(离线测试)
 │   │
 │   ├── core/                         # [编排层]  ← pi-agent-core ✅ 已落地
-│   │   ├── ports.py                  #   AgentPorts(编排认识的唯一外部世界)
-│   │   ├── state.py                  #   AgentState
-│   │   ├── loop.py                   #   build_graph(ports) 纯组装 + 条件边
-│   │   ├── events.py                 #   事件类型(10 类)+ AgentEvent
-│   │   └── nodes/
-│   │       ├── agent.py              #   make_agent_node(bound_model)
-│   │       └── tools.py              #   make_tools_node(tool_executor,按 call 粒度并行 + 兜底)
+│   │   ├── ports.py                  #   AgentPorts / ModelPort / ApprovalPolicy / Summarizer
+│   │   ├── messages.py               #   自研消息模型 + 归约(按 tool_call_id 归属,uuid7)
+│   │   ├── loop.py                   #   run_turn 自研 ReAct 主循环(模型→工具→继续/结束)
+│   │   └── events.py                 #   事件类型(11 类)+ AgentEvent
 │   │
 │   ├── session/                      # [Session + Runtime]  ← Pi 核心增量 ✅ 已落地
-│   │   ├── session.py                #   AgentSession: run / subscribe / run_sync / abort / replace_graph
-│   │   └── bus.py                    #   事件总线: subscribe/emit
+│   │   ├── session.py                #   AgentSession: run / subscribe / abort / steer / followup
+│   │   ├── manager.py                #   SessionManager: create / switch / fork / dispose
+│   │   ├── store.py                  #   SessionStore(JSONL 树形,id/parentId)
+│   │   ├── bus.py                    #   事件总线: subscribe/emit
+│   │   └── compaction.py             #   上下文压缩(窗口摘要,纯函数)
 │   │
 │   ├── tools/                        # [工具层] hexagonal ✅ 已落地
-│   │   ├── base.py                   #   AtomicTool 基类(Args pydantic schema → StructuredTool)
-│   │   ├── registry.py               #   make_tools 工厂(7 个工具,cwd/ops 注入)
-│   │   ├── atomic/                   #   read / write / edit / bash / grep / find / ls
+│   │   ├── base.py                   #   AtomicTool 基类(Args pydantic schema → invoke)
+│   │   ├── registry.py               #   make_tools 工厂(8 个工具,cwd/ops 注入)
+│   │   ├── security.py               #   执行前安全分类器(classify_bash/file/tool)
+│   │   ├── atomic/                   #   read / write / edit / bash / grep / find / ls / skill
 │   │   └── shared/                   #   FsOps 抽象 / paths / textfile / truncate / mutation_queue / ignore
 │   │
-│   ├── resources/                    # [资源层]  ← Pi 资源系统(轻做,延后)
+│   ├── resources/                    # [资源层]  ← Pi 资源系统(v0.3 阶段 1 已启用 skills)
 │   │   └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │   │
-│   └── extensions/                   # [扩展层]  ← 延后
+│   └── extensions/                   # [扩展层]  ← v0.3 阶段 2(占位)
 │       └── __init__.py               #   插件扩展占位
 │
-└── tests/                            # 按 src 模块镜像分包,336 全绿(2026-08-14 实测)
-    ├── conftest.py                   # _isolate_config_dir / fake_model / InMemoryFsOps 夹具
-    ├── test_cli.py / test_config.py / test_container.py   # 应用层(拍平到根)
-    ├── ai/                           # factory / fake_client / model_store / providers / sse / transport / bridge
-    ├── core/                         # loop / events
-    ├── session/                      # session(事件 / thread 累积 / abort / 回滚)
-    ├── tools/                        # test_tools.py(单文件覆盖整个工具包)
-    └── tui/                          # view / components
+└── tests/                            # 按 src 模块镜像分包,590 项(2026-08-19 后基线)
+    ├── conftest.py                   # _isolate_config_dir / memory_fsops 夹具
+    ├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
+    ├── test_decoupling.py            # 分层解耦 AST 扫描(AST 强制校验)
+    ├── ai/                           # factory / fake_client / model_store / providers / sse / transport
+    ├── core/                         # loop / messages / events
+    ├── session/                      # session / store / manager / compaction
+    ├── tools/                        # test_tools.py + test_security.py(单文件覆盖工具包)
+    └── tui/                          # view / components / commands / fuzzy / md_renderer / textual_backend
 ```
 
 ### 4.2 模块职责一览
 
 | 目录/文件 | 一句话职责 | 关键约束 |
 |---|---|---|
-| `app/container.py` | 组合根,创建图 / 会话 / TUI 应用 | 全项目唯一 import 所有层的地方 |
+| `app/container.py` | 组合根,创建端口 / 会话 / 会话管理器 / TUI 应用 | 全项目唯一 import 所有层的地方 |
 | `app/main.py` | CLI 入口(--prompt / stdin / --tui) | 与 container 同为跨层 import 允许点 |
 | `app/config.py` | 全局配置(仅 provider 无关字段)+ 模板生成 | 只被 container / ai 读取 |
+| `app/agents.py` | AGENTS.md 分层加载 + 基础提示词 | 纯函数,可离线测 |
+| `app/skills.py` | SKILL.md 三源加载 / 提示词构建 / 渲染块 | 纯函数,可离线测;三源同名遮蔽 个人>项目>内建 |
 | `ai/` | 模型配置层:五层细分 + factory 统一入口 | 不 import 工具、编排 |
-| `core/` | 编排层:端口、状态、图、节点、事件 | 不 import config / ai / tools / session |
-| `session/` | 有状态会话 + 事件分发 | 不 import ai / tools / config |
-| `tools/` | 工具层:原子工具 + 注册表 + 共享设施 | 不 import 模型、编排;`shared/` 只被 tools 内部使用 |
-| `app/tui/` | 交互式终端(视图/组件/后端端口) | view 只依赖 TuiBackend 端口;禁止 import textual(具体后端除外) |
-| `resources/` | 技能 / 提示词按需加载 | 延后可先空 |
-| `extensions/` | 插件:两阶段(注册→绑定) | 延后 |
+| `core/` | 编排层:端口、消息、循环、事件 | 不 import config / ai / tools / session |
+| `session/` | 有状态会话 + 事件分发 + 持久化 + 压缩 | 不 import ai / tools / config |
+| `tools/` | 工具层:原子工具 + 注册表 + 安全分类器 + 共享设施 | 不 import 模型、编排;`shared/` 只被 tools 内部使用 |
+| `app/tui/` | 交互式终端(视图/组件/命令/后端端口) | view 只依赖 TuiBackend 端口;禁止 import textual(具体后端除外) |
+| `resources/` | 技能 / 提示词按需加载 | v0.3 阶段 1 skills 已启用 |
+| `extensions/` | 插件:两阶段(注册→绑定) | v0.3 阶段 2 |
 
 ### 4.3 配置命名空间(重要)
 
@@ -164,134 +177,131 @@ codeagent/
 
 ```python
 # core/ports.py
-from dataclasses import dataclass
-from langchain_core.language_models import BaseChatModel
-from langchain_core.runnables import Runnable
-
 @dataclass(frozen=True)
 class AgentPorts:
-    bound_model: BaseChatModel            # 已 bind 工具(由组合根负责 bind)
-    tool_executor: Runnable               # 工具执行器,对 loop 是黑盒
-    checkpointer: object | None = None    # 持久化,由组合根决定
+    model: ModelPort               # 模型端口(组合根适配 ai 层 ChatClient)
+    tools: list[Any]               # 工具列表(自研 AtomicTool 实例,直接 invoke)
+    policy: ApprovalPolicy | None = None   # 执行前安全策略(可空 = 无确认环)
 ```
 
-**为什么 `bound_model` 而不是 `model + tools`**:编排层连"工具"这个概念都不需要知道。工具绑定是组合根的事(`llm.bind_tools(tools)`),这样加/换工具时 `core/` 零改动。
+**为什么 `model` 而不是 `model + tools` 绑定**:工具列表作为数据传入循环(循环按名查找 `invoke`),编排层不需要知道工具内部实现;加/换工具时 `core/` 零改动。
 
-### 5.2 build_graph —— 纯组装,零副作用
+**`store` 不在端口内**:core 循环从不落盘(成功轮次才写由会话层负责),会话存储只经 `AgentSession` / `SessionManager` 注入(`session-manager` change 清理死字段)。
+
+### 5.2 run_turn —— 自研 ReAct 主循环
 
 ```python
 # core/loop.py
-from langgraph.graph import StateGraph, START, END
-
-def build_graph(ports: AgentPorts, recursion_limit: int = 50) -> CompiledGraph:
-    agent = make_agent_node(ports.bound_model)
-    tools = make_tools_node(ports.tool_executor)
-
-    g = StateGraph(AgentState)
-    g.add_node("agent", agent)
-    g.add_node("tools", tools)
-    g.add_edge(START, "agent")
-    g.add_conditional_edges("agent", should_continue, {"tools": "tools", "end": END})
-    g.add_edge("tools", "agent")
-    return g.compile(checkpointer=ports.checkpointer)
+async def run_turn(session, model, tools, policy, ...) -> None:
+    # for 循环:模型 → 工具 → 继续/结束
+    # 模型调用 stream/generate → emit(text_delta / thinking_delta / agent_message)
+    # 有 tool_calls → 逐个经 policy.decide(allow/ask/deny) → emit(tool_call / tool_result)
+    # ask → emit(confirmation_requested) + 等确认队列;deny → error ToolResult
+    # 无 tool_calls → 结束本轮
 ```
 
 要点:
 - 模块顶层**没有任何副作用**(不建模型、不发请求、不读 key),平台可直接 import。
-- 循环条件 `should_continue` 只看 state 形状(最后一条消息有没有 `tool_calls`),**不 import 任何具体工具**。
-- `recursion_limit`(默认 50)是运行期 RunnableConfig 键,由 session 在 run config 中注入。
-- agent 节点用 `bound_model.astream` 逐增量聚合为单一 AIMessage(激活流式路径);tools 节点按 `tool_call` 粒度并行执行,单调用失败只回填该调用的错误 ToolMessage,不崩整图(P2-2 回归)。
+- 循环条件由消息形状驱动(最后一条有没有 `tool_calls`),**不 import 任何具体工具**。
+- 事件在循环内**直接 emit**(无翻译层),thinking / usage 事件原生化。
+- `recursion_limit`(默认 50)是循环计数;`abort()` 抛 CancelledError 自然传播;工具执行 `asyncio.to_thread` + 超时。
+- 安全策略经 `policy.decide` 在每个工具调用执行前调用。
 
 ### 5.3 AgentSession —— 有状态会话壳(单个对话)
 
 ```python
 # session/session.py
 class AgentSession:
-    def __init__(self, graph, bus, recursion_limit=50): ...
+    def __init__(self, ports, bus, store=None, session_id=None,
+                 recursion_limit=50, tool_timeout=None, summarizer=None): ...
 
-    async def run(self, text, recursion_limit=None) -> None: ...  # 发布事件,不返回值
-    def run_sync(self, text) -> None: ...                         # 同步便捷入口(CLI/脚本)
-    def subscribe(self, fn) -> Callable[[], None]: ...            # 订阅事件,返回退订函数
-    def abort(self) -> None: ...                                  # 取消当前 run
-    def replace_graph(self, graph) -> None: ...                   # 换图保留 thread_id
+    async def run(self, text) -> None: ...    # 直接驱动 run_turn,发布事件,不返回值
+    async def steer(self, text) -> None: ...  # 运行中注入消息
+    async def followup(self) -> None: ...     # 结束后续跑一轮
+    def subscribe(self, fn) -> Callable[[], None]: ...   # 订阅事件,返回退订函数
+    def abort(self) -> None: ...              # 取消当前 run
 ```
 
-- 持有 thread_id / 事件路由,`recursion_limit` 默认 50 且单轮可覆盖。
-- **`run` 发布事件流而不是返回单个 `AIMessage`**——CLI/TUI/Web/测试都通过 `subscribe` 感知进度。
-- **全异步**:`run()` 为 `async def`,用 `graph.astream(stream_mode=["messages","updates"])` 运行,把过程翻译成 `AgentEvent` 经 `EventBus` 分发;`run_sync()` 供无 loop 或已有 loop 的调用方使用(新线程 + `asyncio.run`)。
-- **会话维度 thread 累积**:构造时分配稳定 `thread_id`,同一会话所有 `run()` 打进同一 LangGraph thread;配合 checkpointer,多轮对话累积上下文(会话即状态)。
-- **失败回滚**:图级失败先按消息 id 快照回滚本轮已写入 thread 的消息(RemoveMessage),再发 `ERROR` 事件;`abort()` 触发 `RUN_CANCELLED` 后重抛。
-- **事件类型(10 类)**:`session_started` / `text_delta`(token 增量)/ `thinking_delta`(思考过程)/ `agent_message`(完整回复,增量已流出时去重)/ `tool_call` / `tool_result` / `turn_end` / `error` / `run_cancelled` / `usage`(token 用量)。
-- **存储**:v0.1 只靠 checkpointer 兜底(`AgentPorts.checkpointer`,默认 `InMemorySaver`),`SessionStore` 延后 v0.2。
-- `steer / followup` 未落地,延后 v0.2(会话生命周期由 SessionManager 承接)。
+- **`run` 发布事件流而不是返回单个回复**——CLI/TUI/Web/测试都通过 `subscribe` 感知进度。
+- **全异步**:`run()` 为 `async def`,直接驱动 `core/loop.py` 的 `run_turn`,把循环内事件经 `EventBus` 分发。
+- **成功才落盘**:本轮工作在局部历史副本上,`self._history` 仅成功时重赋值,store 循环在其后;失败/取消时内存回滚(历史从未被就地修改,回滚是空操作)。
+- **会话历史**:自研 `Message`(role/content/tool_calls/tool_call_id/id/parentId),`id` 用 uuid7;归约按 tool_call_id 归属、按 id 删除。
+- **事件类型(11 类)**:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
+- **上下文压缩**:`summarizer` 端口(session-compaction),自动/手动触发窗口摘要。
 
-### 5.4 SessionManager —— 会话生命周期(规划,未落地)
+### 5.4 SessionManager / SessionStore —— 会话生命周期与持久化
 
 ```python
-# session/manager.py(规划)
+# session/manager.py + store.py
 class SessionManager:
-    def __init__(self, store: SessionStore): ...
+    def __init__(self, ports, store=None, model="", effort="", ...): ...
     def create(self) -> SessionRef: ...
-    def fork(self, session_id: str) -> SessionRef: ...   # 延后可做
-    def switch(self, session_id: str) -> None: ...
-    def dispose(self, session_id: str) -> None: ...
+    def switch(self, session_id) -> None: ...
+    def fork(self, session_id) -> SessionRef: ...   # 分支会话(JSONL 树形)
+    def dispose(self, session_id) -> None: ...
+    def replace_ports(self, ports, *, model, effort) -> None: ...   # 热切换
+
+class SessionStore:
+    # JSONL 树形:每轮 append 一条(含消息),重启可恢复;fork 只读源文件、新文件带 parentId
 ```
 
-> 当前树未落地;`abort()` / `replace_graph()` 已直接落在 `AgentSession` 上(v0.1 增量),Manager + Store 列入 v0.2。
+- `SessionStore`(JSONL 树形,`id`/`parentId`):会话可恢复、可切换、可分叉;MemoryStore 镜像同一语义,两个后端行为一致。
+- `SessionManager` 薄管理器:ports 装配一次共享(模型端口 / 工具无状态,跨会话复用);`replace_ports` 支持 /provider /model /effort 热切换。
+- `fork`(v0.2 提前落地):只读源文件、新文件带 `parentSession`,按压缩切点拷贝保留窗口、父链重连。
 
 ## 6. 组合根:三层解耦的唯一交汇点
 
 ```python
 # app/container.py
-def create_agent_graph(cfg=None, *, registry=None, checkpointer=None,
-                       reasoning_effort=None, provider=None, model=None) -> CompiledGraph:
-    llm = create_llm(cfg, registry=registry, reasoning_effort=reasoning_effort,
-                     provider=provider, model=model)                   # ai/factory.create_llm
-    tools = create_tools(cfg)                                          # tools/registry.make_tools
-    bound = to_langchain_runnable(llm.bind_tools(tools))               # ★ 工具/模型唯一交汇行
-    ports = AgentPorts(
-        bound_model=bound,
-        tool_executor=ToolNode(tools),
-        checkpointer=checkpointer or InMemorySaver(),                  # v0.1 内存兜底
+def create_agent_ports(cfg=None, *, registry=None, reasoning_effort=None,
+                       provider=None, model=None, approval_mode="deny") -> AgentPorts:
+    client = create_llm(cfg, registry=registry, reasoning_effort=reasoning_effort,
+                        provider=provider, model=model)               # ai/factory.create_llm
+    skills, _ = _load_skills(cfg)                                     # 技能一次加载两处消费
+    rendered = {s.name: format_skill_invocation(s) for s in skills}
+    return AgentPorts(
+        model=ChatModelPort(client, system_prompt=_build_system_prompt(cfg, skills)),
+        tools=create_tools(cfg, skills=rendered),                     # tools/registry.make_tools
+        policy=_create_policy(cfg, approval_mode),                    # security 分类器适配
     )
-    return build_graph(ports)
 
-def create_agent_session(cfg=None, *, registry=None, checkpointer=None, # ← CLI 入口
-                         reasoning_effort=None, provider=None, model=None) -> AgentSession:
-    graph = create_agent_graph(cfg, registry=registry, checkpointer=checkpointer,
-                               reasoning_effort=reasoning_effort, provider=provider, model=model)
-    return AgentSession(graph, EventBus(),
-                        recursion_limit=getattr(cfg, "recursion_limit", None) or 50)
+def create_agent_session(cfg=None, *, registry=None, store=None, session_id=None, ...) -> AgentSession:
+    ports = create_agent_ports(cfg, registry=registry, ...)
+    return AgentSession(ports, EventBus(), store=store, session_id=session_id, ...)
 
-def create_tui_app(cfg=None, *, backend=None, ...) -> TuiApp:          # ← TUI 入口
-    # session + backend(缺省 TextualBackend)+ footer 的 model/effort 解析固化
+def create_session_manager(cfg=None, *, store=None, ...) -> SessionManager: ...
+def create_tui_app(cfg=None, *, backend=None, store=None, ...) -> TuiApp: ...
 ```
 
 要点:
-- langchain 只在 `ai/bridge/` 与 `app/container.py` 加载(启动路径轻量);`bridge` 只被组合根消费。
-- `checkpointer` / `registry` / `reasoning_effort` / `provider` / `model` 均可注入:运行时重建图(如切换模型/effort)时保留同一 thread 上下文(H8/M11)。
-- `langgraph.json` 平台入口已移除(2026-08-13),登记 v0.3 重建。
+
+- `approval_mode`(`deny` / `interactive` / `allow`):headless 缺省 `deny`(ask 降级 deny,fail closed),TUI 传 `interactive`(ask 由确认条响应),`--yes` 传 `allow`。
+- `store` 经 `AgentSession` / `SessionManager` 注入;**不进 `AgentPorts`**(core 循环不落盘)。
+- `registry` / `reasoning_effort` / `provider` / `model` 均可注入;`create_tui_app` 的 `rebuild_ports` 回调支持运行时热切换(/provider /model /effort /login)。
+- `create_agent_ports` 返回端口(平台 / 测试用);`create_agent_session` 供 CLI 入口消费。
 
 ## 7. 运行时生命周期
 
 ```
 启动:   app/main.py → ensure_config_files() → create_agent_session()
-        → ai/tools 各自产端口 → bind_tools 交汇 → build_graph(ports)
-        → AgentSession(graph, bus)
+        → create_agent_ports:create_llm + _load_skills + _build_system_prompt + make_tools + _create_policy
+        → AgentSession(ports, bus, store)
 
 一轮:   session.run(text)   [async]
-        → bus.emit(session_started)
-        → graph.astream(thread=thread_id, stream_mode=[messages, updates])
-            → 翻译成 AgentEvent(text_delta / thinking_delta / tool_call / tool_result / usage …)
-        → bus.emit(turn_end)
-        → [v0.2] store.append(entry)
+        → run_turn(ports)
+            → model.stream → emit(text_delta / thinking_delta / usage)
+            → agent_message(有 tool_calls 则继续)
+            → 逐个 tool_call → policy.decide(allow/ask/deny) → invoke → emit(tool_call / tool_result)
+            → 无 tool_calls → turn_end
+        → [成功] store.append(entry)   (失败/取消:内存回滚,不落盘)
 
 TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
-        → 订阅 AgentSession 事件 → TuiModel.apply 更新组件状态 → 合并渲染(≥30fps)
+        → 订阅 AgentSession 事件 → TuiModel.apply 更新组件状态 → 合并渲染
         → 提交:session.run(text);Esc:运行中 abort / 空闲退出打印完整文档
+        → /provider /model /effort → rebuild_ports() 热切换; /login → save_key() 写 .env + 热切换
 
-干预:   run_sync(text)   [CLI/脚本同步入口]
-生命周期: manager.create() / dispose()   [P1/v0.2]
+干预:   abort() 中断当前 run;steer() 运行中注入消息;followup() 结束后续跑一轮
+生命周期: manager.create() / switch() / fork() / dispose()
 ```
 
 ## 8. 依赖规则
@@ -300,8 +310,8 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 |---|---|---|
 | `app/config.py` | —(只被 container / ai 读取) | core、session、tools、app/tui |
 | `ai` / `tools` | config(工具层内部:shared) | core、session |
-| `core` | 只有 `ports.py`(及 langchain/langgraph) | config、ai、tools、session |
-| `session` | core(ports/loop/events)、bus | ai、tools、config |
+| `core` | 只有 `ports.py`(及 core 内部) | config、ai、tools、session |
+| `session` | core(ports/loop/events/messages)、bus | ai、tools、config |
 | `app/container.py` | 全部(唯一交汇点) | — |
 | `app/main.py` | container、session、bus | core、ai、tools(直接) |
 | `app/tui/` | session、core(events)、theme | ai、tools、config;textual 仅 textual_backend |
@@ -314,42 +324,46 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 |---|---|---|---|
 | 新增一个 provider | `ai/` + 环境变量 | `session.py` / `core/` | ❌ 泄漏 |
 | 新增/更换一个工具 | `tools/` | `core/loop.py` / `ai/` | ❌ 泄漏 |
-| 改编排形状(加节点/改循环) | `core/` | `ai/` / `tools/` | ❌ 泄漏 |
+| 改编排形状(改循环) | `core/` | `ai/` / `tools/` | ❌ 泄漏 |
 | 换会话存储 | `store.py` + `container` | `app/main.py` / `core/` | ❌ 泄漏 |
-| 加会话分叉 | `session/` | `core/graph.py` | ❌ 泄漏 |
+| 加会话分叉 | `session/` | `core/` | ❌ 泄漏 |
 
 最严格判据:**`core/` 里 grep 不到 `config / tools / ai / session` 字面量 → 横切解耦成立;`session/` 里 grep 不到 `ai / tools / config` → 纵切解耦成立。**
 
-> 注:`test_decoupling.py` 自动扫描测试已于 2026-08-13 移除,当前判据靠人工遵守;按 `app/` 新分层重写列入 v0.2 验收。
+> `tests/test_decoupling.py` 逐文件 AST 扫描强制校验(2026-08-14 重写,70+ 项断言),并带 anti-wargaming 守卫(`test_scan_has_content` / `test_composition_roots_exist` / `test_textual_only_in_engine_backend`),规则写错或例外文件被删都会被抓住。
 
 ## 10. 决策溯源
 
 | 结构 | 对应讨论结论 |
 |---|---|
 | `app/container.py` + `app/config.py` | 组合根 + 配置层独立(2026-08-13 由顶层迁入 `app/` 包) |
-| `ai/` + `tools/` | 工具层 / 模型配置层 / Agent 创建层三层解耦 |
-| `core/` | 端口-适配器、编排层独立 |
-| `session/` | Pi 三层协作的 Session + Runtime、会话即状态 |
-| `events.py` + `bus.py` | Pi 事件驱动,替代"返回单个 AIMessage" |
-| `ai/protocol|transport|bridge` | 模型客户端自研三层(2026-08-13,E1):框架无关协议 + OpenAI 兼容传输 + langchain 桥接 |
-| `app/tui/`(view/components/backend)| TUI 恢复 MVP(2026-08-13,E9~E11):视图逻辑只依赖 `TuiBackend` 端口,组件纯渲染可离线测 |
-| `tools/shared/`(FsOps 等) | 工具层 hexagonal 重构(2026-08-13,E8):文件系统抽象缝 + cwd 注入 |
-| `resources/` + `extensions/` | Pi 资源 / 扩展系统(延后档) |
+| 自研编排(`core/loop.py` + `core/messages.py`) | 2026-08-14 `self-built-orchestration`:自研 ReAct 主循环 + 消息归约替换 langgraph;删除 `ai/bridge`、`core/state.py`、`core/nodes/`;pyproject 移除 langchain-core/langgraph(决策见 blueprint.md) |
+| `core/` 端口(model / tools / policy) | 端口-适配器、编排层独立;`store` 不进端口(会话层负责落盘) |
+| `session/`(session/manager/store/bus/compaction) | Pi 三层协作的 Session + Runtime、会话即状态;JSONL 树形(2026-08-14 格式结论) |
+| `events.py` + `bus.py` | Pi 事件驱动,替代"返回单个 AIMessage";11 类事件 |
+| `tools/security.py` + `ApprovalPolicy` | 2026-08-15 `security-permissions`:执行前安全策略,ask 确认环 + headless fail closed |
+| `tools/`(AtomicTool + FsOps) | 2026-08-13 工具层 hexagonal 重构(E8):文件系统抽象缝 + cwd 注入 + 并发写锁 |
+| `app/skills.py` + `skill` 工具 | 2026-08-19 `skills-system`:三源发现 + 渐进式披露(描述入 prompt,正文经 skill 工具按需获取) |
+| `app/agents.py` | AGENTS.md 全局→项目→子目录分层加载(2026-08-15 `agents-md-hierarchy`) |
+| `app/tui/`(view/components/backend) | TUI 恢复 MVP(2026-08-13,E9~E11)+ 命令体系 / 补全 / 选择器(2026-08-14)+ /login(2026-08-19) |
+| `resources/` + `extensions/` | Pi 资源 / 扩展系统(资源 v0.3 阶段 1 已启用;扩展阶段 2) |
 
 ## 11. 落地路线
 
 | 阶段 | 范围 | 产物 |
 |---|---|---|
-| **v0.1 最小可跑** | `config + container + ai + tools + core + session(session+bus) + app(main/tui)` | CLI/TUI 可对话、可调用七个工具,事件流可订阅。进度:✅ 全部落地:`config` ✅、`ai` ✅(自研客户端)、`tools` ✅(7 工具 hexagonal)、`core` ✅(全异步 ReAct)、`session` ✅(bus+session+abort)、`container` ✅(graph/session/tui)、TUI ✅(MVP 恢复)、headless ✅。测试 336 全绿(2026-08-14 实测)。 |
-| **v0.2 会话完善** | `store(线性) + manager + compaction(手动) + 解耦扫描重写 + TUI 命令体系` | 会话可恢复、可切换、可压缩;斜杠命令/模糊补全恢复 |
-| **v0.3 资源扩展** | `resources/ + extensions/ + 分支 fork + langgraph.json` | 插件化、skills 按需加载、平台部署 |
+| **v0.1 最小可跑** | `config + container + ai + tools + core + session + app(main/tui)` | CLI/TUI 可对话、可调用七个工具(当时集;v0.3 加 skill 后为八工具),事件流可订阅 |
+| **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
+| **v0.3 生态成型** | Skills(✅ 阶段 1)+ 插件 + MCP + 轻量记忆 + 成本透明 + 会话树 UI + Web/HTTP 事件订阅(F-27) | 扩展生态、体验差异、平台导航 |
 
-v0.1 是最终结构树的**子集**,结构与定稿一致,延后目录先留空。
+v0.3 当前进度:阶段 1 Skills 已落地(590/590 基线);阶段 2~7(插件 / MCP / 记忆 / 成本 / 会话树 / Web)待排。
 
 ## 12. 参考
 
-- 迭代记录:[`docs/iteration/v0.1.md`](../iteration/v0.1.md)(任务分解与变更记录 E1~E12,权威)
+- 编排自研决策与收益:[`self-built-orchestration-blueprint.md`](./self-built-orchestration-blueprint.md)
+- 需求基线:[`requirements-analysis.md`](./requirements-analysis.md)(FR / NFR / F-xx 编号出处)
+- 迭代记录:[`docs/iteration/v0.1.md`](../iteration/v0.1.md) / [`v0.2.md`](../iteration/v0.2.md) / [`v0.3.md`](../iteration/v0.3.md)(权威)
+- 审计报告:[`docs/review/audit-2026-08-21.md`](../review/audit-2026-08-21.md)(文档漂移 / 安全 / 测试基线核查)
 - [earendil-works/pi](https://github.com/earendil-works/pi) — Pi Agent SDK(三层协作 / 双层 loop / 事件驱动 / 会话即状态)
 - [learning-pi-agent](https://github.com/yamsfeer/learning-pi-agent) — 架构深度笔记
 - [how-pi-agent-works](https://github.com/myxiaoao/how-pi-agent-works) — 中文教学实现
-- [LangGraph 文档](https://langchain-ai.github.io/langgraph/) — StateGraph / checkpointer / ToolNode

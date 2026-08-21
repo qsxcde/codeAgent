@@ -47,11 +47,11 @@ def get_available_providers(registry: ModelRegistry) -> list[str]:
 
 
 def create_llm(
-    provider: str | None = None,
-    model: str | None = None,
+    provider = None,
+    model = None,
     *,
     cfg: Settings | None = None,
-    reasoning_effort: str | None = None,
+    reasoning_effort = None,
     registry: ModelRegistry | None = None,
 ) -> "ChatClient":
     """按 provider + model 解析并构造未绑定工具的模型。
