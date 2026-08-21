@@ -106,6 +106,7 @@ def default_registry() -> dict[str, CommandSpec]:
             "skills", "列出可用技能 / 加载指定技能", args=("name",)
         ),
         "mcp": CommandSpec("mcp", "列出 MCP server 与工具(含诊断)"),
+        "quit": CommandSpec("quit", "退出 TUI(等同 Ctrl+C)"),
     }
 
 

@@ -290,6 +290,30 @@ def test_quit_running_aborts_then_exits():
     assert backend.exited is not None
 
 
+def test_quit_command_dispatches_and_exits():
+    """/quit 命令 → 等同 Ctrl+C 退出(空闲态打印完整文档)。"""
+    app, backend, manager = _make_app()
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="hi"))
+    app.model.apply(AgentEvent(EventType.TEXT_DELTA, payload="回复"))
+    app.model.apply(AgentEvent(EventType.TURN_END))
+    backend.on_submit(app._submit)
+    backend.submit("/quit")
+    assert backend.exited is not None
+    doc = "\n".join(backend.exited)
+    assert "hi" in doc
+    assert "回复" in doc
+
+
+def test_quit_command_running_is_ignored():
+    """/quit 命令运行中 → 输入框提交被忽略(与其他命令一致,不退出)。"""
+    app, backend, manager = _make_app()
+    app.model.running = True
+    backend.on_submit(app._submit)
+    backend.submit("/quit")
+    assert backend.exited is None
+    assert manager.current.aborted is False
+
+
 def test_run_cancelled_event_returns_idle():
     """RUN_CANCELLED 事件 → 运行态回空闲(对应 spec「运行中打断」)。"""
     app, backend, _ = _make_app()

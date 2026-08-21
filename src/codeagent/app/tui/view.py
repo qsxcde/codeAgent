@@ -437,6 +437,7 @@ class TuiApp:
             "login": self._cmd_login,
             "model": self._cmd_model,
             "effort": self._cmd_effort,
+            "quit": self._cmd_quit,
         }.get(cmd.name)
         if handler is None:  # 理论不可达:注册表与分派表同源
             self.model.append_info(f"未知命令: /{cmd.name}")
@@ -718,6 +719,10 @@ class TuiApp:
                 session.abort()
         else:
             self.model.append_info("按 Ctrl+C 退出")
+
+    def _cmd_quit(self, cmd: Command) -> None:
+        """/quit:退出 TUI(等同 Ctrl+C——运行中先中止当前轮,再打印完整文档)。"""
+        self._quit()
 
     def _quit(self) -> None:
         """Ctrl+C / Ctrl+Q:退出——运行中先中止当前轮(未完成轮次不落盘,
