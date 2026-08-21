@@ -41,11 +41,47 @@ MAX_TIMEOUT_S = 600
 #: 输出截断阈值(字节),保留末尾。
 MAX_OUTPUT_CHARS = 30_000
 
+#: bash 子进程可见环境变量白名单(仅系统必需 + 工具注入项;审计 S-3)。
+_BASH_ENV_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "SystemRoot",
+        "WINDIR",
+        "SystemDrive",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "USER",
+        "USERNAME",
+        "SHELL",
+        "TERM",
+        "LANG",
+        "LC_ALL",
+        "LC_MESSAGES",
+        "PWD",
+        "OLDPWD",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "PROCESSOR_ARCHITECTURE",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+    }
+)
+
 #: 危险命令黑名单:命中即拒绝执行(v0.1 无确认环时的安全底线)。
 #: 注:`rm -rf /` 中 "/" 后是字符串结尾,需用 (\s|$) 而非 /\b(否则漏拦)。
+#: 分隔符/引号同样算命中——原 (\s|$) 锚定漏拦 `rm -rf /;`、`rm -rf "/"`,
+#: 命令替换内嵌的 rm(如 `echo $(rm -rf /)` 的 `/`)也由该字符类兜住(审计 S-1)。
 DANGEROUS_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)+(/(\s|$))"),  # rm -rf /
-    re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)+\.\s*$"),  # rm -rf .(删除当前目录)
+    re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)+/(\s|[;&|()\"'`]|$)"),  # rm -rf / 及紧贴分隔符变体
+    re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)+\.\s*([;&|()\"'`]|$)"),  # rm -rf .(删除当前目录)
     re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:\s*"),  # fork bomb
     re.compile(r"\bmkfs\b"),  # 格式化
     re.compile(r"\bdd\s+if=\s*/dev/(?:zero|random|urandom)"),  # dd 覆写设备
@@ -187,37 +223,147 @@ def _dangerous_hit(command: str) -> str | None:
 #: 删除目标路径里被视为"不可解析的动态成分"的字符(变量/命令替换/通配符/引号等)。
 _DYNAMIC_TARGET_CHARS = set("$`\\\"*?[]{}")
 
+#: 嵌套 shell 包装器:`-c` 参数内的命令需递归检测(审计 S-1/M-6)。
+_INTERPRETER_WRAPPERS = ("bash", "sh", "zsh")
+#: rm 危险检测递归深度上限(嵌套 shell/命令替换);恶意深嵌套保守拒绝,防打爆栈。
+_MAX_NESTING_DEPTH = 5
 
-def _dangerous_intent(command: str, cwd: str | None = None) -> str | None:
-    """分词语义级危险检测:识别 `rm` 递归+强制删除的等价写法。
 
-    相比 `DANGEROUS_PATTERNS` 的字符串正则,本函数先经 `shlex.split` 还原
-    命令的真实参数结构,因此能识别 `rm -r -f /`、`rm -rf "/"`、`rm -rf -- /`
-    等正则漏掉的等价拼写。
+def _tokenize_shell(command: str) -> list[str] | None:
+    """punctuation 感知分词:引号内分隔符不切(``echo "a|b"`` 保持整体)、紧贴分隔符
+    独立成 token(``rm -rf ~/;`` 的 ``;``)。与 security.py 的 ``_split_segments``
+    同源,消除两套分词语义漂移(审计 M-6);分词失败返回 None(调用方保守拒绝)。"""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
 
-    ``cwd`` 为 bash 实际执行的工作目录(注入值,缺省进程启动目录):相对目标
-    按它解析,确保「删除当前工作目录」判定与实际执行位置一致(cwd 全注入后
-    与进程启动目录可能不同)。
+
+def _split_segments_tokens(tokens: list[str]) -> list[list[str]]:
+    """按逻辑段分隔符切分 token 列表(与 ``_SEGMENT_SEPARATORS`` 一致)。"""
+    segments: list[list[str]] = [[]]
+    for tok in tokens:
+        if tok in _SEGMENT_SEPARATORS:
+            segments.append([])
+        else:
+            segments[-1].append(tok)
+    return segments
+
+
+def _effective_command_index(seg: list[str]) -> int:
+    """跳过段首环境赋值/命令前缀(``X=1 rm``、``sudo rm``),返回实际命令位置。"""
+    index = 0
+    while index < len(seg):
+        tok = seg[index]
+        if "=" in tok and tok.split("=", 1)[0].isidentifier():
+            index += 1
+            continue
+        if tok in ("sudo", "env", "time", "nohup", "command"):
+            index += 1
+            continue
+        break
+    return index
+
+
+def _collect_paren(seg: list[str], open_idx: int) -> tuple[list[str] | None, int]:
+    """从 ``(`` 处收集到匹配 ``)`` 的内部 token(不含括号);未闭合 → (None, -1)。"""
+    depth = 0
+    inner: list[str] = []
+    i = open_idx
+    while i < len(seg):
+        tok = seg[i]
+        if tok == "(":
+            if depth:
+                inner.append(tok)
+            depth += 1
+        elif tok == ")":
+            depth -= 1
+            if depth == 0:
+                return inner, i
+            inner.append(tok)
+        else:
+            inner.append(tok)
+        i += 1
+    return None, -1
+
+
+def _strip_substitution(tok: str) -> str | None:
+    """剥离单 token 命令替换外壳(``$(...)`` / 反引号):内容完整时返回内部命令,
+    括号不配对 → None(调用方保守拒绝)。"""
+    if tok.startswith("$(") and tok.endswith(")"):
+        body = tok[2:-1]
+        return body if body.count("(") == body.count(")") else None
+    if tok.startswith("`") and tok.endswith("`") and len(tok) > 1:
+        return tok[1:-1]
+    return None
+
+
+def _substitution_danger(seg: list[str], cwd: str | None, depth: int) -> str | None:
+    """段内命令替换(``$()``)检测:提取内部命令递归判定;无法解析 → 保守拒绝。
+
+    punctuation 分词把裸 ``$(rm -rf /)`` 拆成 ``$`` + ``(`` + ... 多 token,
+    引号内整体(如 ``bash -c "$(curl x)"``)则是单 token——两种形态都覆盖;
+    反引号内容会被 shlex 当引号吞掉,故在原始文本层扫描(``_backtick_danger``)。
+    """
+    i = 0
+    while i < len(seg):
+        tok = seg[i]
+        if tok == "$" and i + 1 < len(seg) and seg[i + 1] == "(":
+            inner, end = _collect_paren(seg, i + 1)
+            if inner is None:
+                return "命令替换 $(...) 未闭合,保守拒绝"
+            hit = _dangerous_intent(" ".join(inner), cwd, depth + 1)
+            if hit is not None:
+                return f"命令替换内命中危险模式: {hit}"
+            i = end + 1
+            continue
+        stripped = _strip_substitution(tok)
+        if stripped is not None:
+            hit = _dangerous_intent(stripped, cwd, depth + 1)
+            if hit is not None:
+                return f"命令替换内命中危险模式: {hit}"
+        i += 1
+    return None
+
+
+def _backtick_danger(command: str, cwd: str | None, depth: int) -> str | None:
+    """原始文本层反引号扫描:shlex 会把反引号内容吞成单 token,无法从 token 判断
+    来源,故在原文上提取反引号对递归检测(``echo `rm -rf ~` ``)。"""
+    i = 0
+    while True:
+        start = command.find("`", i)
+        if start == -1:
+            return None
+        end = command.find("`", start + 1)
+        if end == -1:
+            return f"反引号未闭合,保守拒绝: {command}"
+        hit = _dangerous_intent(command[start + 1 : end], cwd, depth + 1)
+        if hit is not None:
+            return f"反引号命令替换内命中危险模式: {hit}"
+        i = end + 1
+
+
+def _rm_segment_danger(seg: list[str], cwd: str | None) -> str | None:
+    """rm 递归+强制删除的语义级判定(按段执行;环境赋值/命令前缀可前置)。
 
     危险判定(仅当同时出现递归与强制标志时生效):
     - 目标解析后为文件系统根目录 → 拒绝;
     - 目标解析后为当前工作目录本身(`rm -rf .` / `./`) → 拒绝;
     - 目标解析后为用户主目录本身(`rm -rf ~`) → 拒绝;
     - 目标含变量/通配符等动态成分、无法可靠解析 → 保守拒绝。
-    其它明确的具体路径(含 cwd 子目录、`/tmp/xxx` 等)正常放行。
+    其它明确的具体路径(含 cwd 子目录、`/tmp/xxx` 等)正常放行(交由确认环)。
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return f"命令无法分词,保守拒绝: {command}"
-    if not tokens or tokens[0] != "rm":
+    index = _effective_command_index(seg)
+    if index >= len(seg) or seg[index] != "rm":
         return None
 
     recursive = False
     force = False
     targets: list[str] = []
     opts_done = False
-    for tok in tokens[1:]:
+    for tok in seg[index + 1 :]:
         if opts_done or not tok.startswith("-"):
             targets.append(tok)
             continue
@@ -262,8 +408,59 @@ def _dangerous_intent(command: str, cwd: str | None = None) -> str | None:
     return None
 
 
-#: 逻辑段分隔符:管道 / 逻辑与 / 分号 / 逻辑或。退出码由最后一个逻辑段决定。
-_SEGMENT_SEPARATORS = {"|", "&&", ";", "||"}
+def _dangerous_intent(command: str, cwd: str | None = None, _depth: int = 0) -> str | None:
+    """分词语义级危险检测(递归):rm 递归+强制删除的等价写法、嵌套 shell、
+    eval 间接执行、命令替换——堵住正则漏网的拼写(审计 S-1/M-6)。
+
+    相比 ``DANGEROUS_PATTERNS`` 的字符串正则,本函数先经 punctuation 感知
+    分词还原命令的真实结构,再**按逻辑段**判定:``rm -rf "/"``、``rm -rf -- /``、
+    ``rm -rf ~/;``(紧贴分隔符)等正则漏掉的拼写都能识别;``bash -c`` / ``$()`` /
+    反引号等包装形式取内部命令递归检测,无法可靠解析时保守拒绝。
+
+    ``cwd`` 为 bash 实际执行的工作目录(注入值,缺省进程启动目录):相对目标
+    按它解析,确保「删除当前工作目录」判定与实际执行位置一致(cwd 全注入后
+    与进程启动目录可能不同)。
+
+    递归入口(``_depth``):嵌套 shell / 命令替换;超过 ``_MAX_NESTING_DEPTH``
+    保守拒绝,防恶意深嵌套打爆递归栈。
+    """
+    if _depth > _MAX_NESTING_DEPTH:
+        return "嵌套层数过深,保守拒绝"
+    hit = _backtick_danger(command, cwd, _depth)
+    if hit is not None:
+        return hit
+    tokens = _tokenize_shell(command)
+    if tokens is None:
+        return f"命令无法分词,保守拒绝: {command}"
+    for seg in _split_segments_tokens(tokens):
+        if not seg:
+            continue
+        hit = _substitution_danger(seg, cwd, _depth)
+        if hit is not None:
+            return hit
+        index = _effective_command_index(seg)
+        if index >= len(seg):
+            continue
+        first = seg[index]
+        if first in _INTERPRETER_WRAPPERS and "-c" in seg[index:]:
+            # 嵌套 shell:递归检测 -c 参数(引号内容已合并为单 token)
+            arg_index = seg.index("-c", index) + 1
+            if arg_index < len(seg):
+                inner = _dangerous_intent(seg[arg_index], cwd, _depth + 1)
+                if inner is not None:
+                    return f"嵌套 shell 内命中危险模式: {inner}"
+            continue
+        if first == "eval":
+            return "eval 间接执行,无法静态判定,保守拒绝"
+        if first == "rm":
+            hit = _rm_segment_danger(seg, cwd)
+            if hit is not None:
+                return hit
+    return None
+
+
+#: 逻辑段分隔符:管道 / 逻辑与 / 分号 / 逻辑或 / 后台符。退出码由最后一个逻辑段决定。
+_SEGMENT_SEPARATORS = {"|", "&&", ";", "||", "&"}
 
 
 def _last_segment_first_token(command: str) -> str:
@@ -360,13 +557,22 @@ class BashTool(AtomicTool):
         return f"{header}\nstdout:\n{stdout_t}"
 
     def _bash_env(self) -> dict[str, str]:
-        """构造子进程环境:写侧强制 LANG 让 bash 输出 UTF-8 字节;注入 NO_COLOR。
+        """构造子进程环境:白名单变量 + 写侧强制 LANG/NO_COLOR。
 
-        NO_COLOR=1 让尊重 no-color.org 约定的命令(如 conda libmamba-solver)跳过
-        tty 颜色探测:本工具以分离进程启动 `bash -lc`,无有效控制台句柄时
-        sys.stdout 为 None,conda 在 import 期调用 isatty() 会崩溃并污染 stderr。
+        - 收敛自 ``os.environ.copy()`` 全量拷贝:bash 子进程只见白名单变量,
+          用户会话 export 的密钥(*_API_KEY / *_TOKEN 等)不再进入子进程,
+          消除「零确认读取并外传密钥」的载体(审计 S-3);代价:ssh 等依赖
+          SSH_AUTH_SOCK 的凭据代理在子进程内不可用;
+        - LANG 强制 UTF-8;NO_COLOR=1 让尊重 no-color.org 约定的命令
+          (如 conda libmamba-solver)跳过 tty 颜色探测:本工具以分离进程启动
+          `bash -lc`,无有效控制台句柄时 sys.stdout 为 None,conda 在
+          import 期调用 isatty() 会崩溃并污染 stderr。
         """
-        env = os.environ.copy()
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key in _BASH_ENV_ALLOWLIST
+        }
         env["LANG"] = "en_US.UTF-8"
         env["NO_COLOR"] = "1"
         return env

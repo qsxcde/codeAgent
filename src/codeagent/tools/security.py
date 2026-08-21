@@ -22,6 +22,7 @@ import core/session/ai。
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,8 +49,10 @@ ALLOW = "allow"
 ASK = "ask"
 DENY = "deny"
 
-#: 只读白名单命令(免确认;按最后逻辑段前缀匹配,如 ``git status`` 匹配
+#: 只读白名单命令(免确认;按逻辑段前缀匹配,如 ``git status`` 匹配
 #: ``git status --short``)。默认集合覆盖常用只读探测命令。
+#: 注意:find 已移出——find 可带 -delete/-exec 执行破坏操作,不再是只读
+#: (审计 S-2),安全用法由「默认放行」兜底。
 DEFAULT_ALLOWLIST: tuple[str, ...] = (
     "ls",
     "cat",
@@ -59,12 +62,16 @@ DEFAULT_ALLOWLIST: tuple[str, ...] = (
     "head",
     "tail",
     "which",
-    "find",
     "git status",
     "git diff",
     "git log",
     "git show",
 )
+
+#: 密钥文件(.env)/配置目录(.codeagent)路径识别(normcase 后匹配,Windows 大小写
+#: 不敏感)。按 token 字面判定,不解析文件系统——路径在引号/命令替换内仍是文本,
+#: ``cat ~/.codeagent/.env``、``curl -d "$(cat ~/.codeagent/.env)"`` 均命中。
+_SECRET_PATH_RE = re.compile(r"(^|[/\\])\.env([^a-z0-9]|$)|\.codeagent(/|$)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -119,8 +126,11 @@ def _default_ask_rules(
 ) -> list[tuple[Callable[[list[list[str]]], bool], str]]:
     """敏感规则表(中等集合,design 定案):(匹配函数, 原因)。
 
-    匹配函数接收切分后的全部段,命中返回 True。``exists`` 为空时依赖文件系统
-    的规则(mv 覆盖)不激活——纯函数在无 fs 信息时保持确定。
+    匹配函数接收段列表(逐段求值时传入 ``[seg]``),按 ``segments[-1]`` 取值——
+    与「最后逻辑段」写法兼容。跨段的下载执行规则(``curl|sh``)由
+    ``classify_bash`` 单独判定,不在本表内(注入规则表时仍生效)。
+    ``exists`` 为空时依赖文件系统的规则(mv 覆盖)不激活——纯函数在无 fs
+    信息时保持确定。
     """
 
     def git(sub: str, extra: str | None = None) -> Callable[[list[list[str]]], bool]:
@@ -140,13 +150,29 @@ def _default_ask_rules(
             return False
         return any("r" in flag.lstrip("-").lower() for flag in _flags_of(seg))
 
-    def download_to_shell(segments: list[list[str]]) -> bool:
-        for i in range(len(segments) - 1):
-            if not segments[i] or not segments[i + 1]:
-                continue
-            if segments[i][0] in ("curl", "wget") and segments[i + 1][0] in ("sh", "bash", "zsh"):
-                return True
-        return False
+    def git_clean(segments: list[list[str]]) -> bool:
+        seg = segments[-1]
+        if len(seg) < 2 or seg[0] != "git" or seg[1] != "clean":
+            return False
+        # 组合旗标感知:-fdx/--force 都含 f;-n(dry-run)不含。
+        # 原 "-f" 字面匹配漏拦 -fdx(审计 S-2)。
+        return any("f" in flag.lstrip("-") for flag in _flags_of(seg))
+
+    def find_delete_exec(segments: list[list[str]]) -> bool:
+        seg = segments[-1]
+        return bool(seg) and seg[0] == "find" and ("-delete" in seg or "-exec" in seg)
+
+    def dd_write_device(segments: list[list[str]]) -> bool:
+        seg = segments[-1]
+        return bool(seg) and seg[0] == "dd" and any(t.startswith("of=/dev/") for t in seg[1:])
+
+    def nested_shell(segments: list[list[str]]) -> bool:
+        seg = segments[-1]
+        return bool(seg) and seg[0] in ("bash", "sh", "zsh") and "-c" in seg[1:]
+
+    def interpreter_inline(segments: list[list[str]]) -> bool:
+        seg = segments[-1]
+        return bool(seg) and seg[0] in ("python", "python3") and "-c" in seg[1:]
 
     def mv_overwrite(segments: list[list[str]]) -> bool:
         seg = segments[-1]
@@ -160,7 +186,7 @@ def _default_ask_rules(
     return [
         (git("push"), "推送远程分支"),
         (git("reset", "--hard"), "丢弃工作区改动(reset --hard)"),
-        (git("clean", "-f"), "删除未跟踪文件(git clean)"),
+        (git_clean, "删除未跟踪文件(git clean)"),
         (lambda seg: bool(seg[-1]) and seg[-1][0] == "sudo", "提权执行(sudo)"),
         (
             lambda seg: bool(seg[-1])
@@ -169,13 +195,40 @@ def _default_ask_rules(
             "递归修改权限/属主(-R)",
         ),
         (rm_recursive, "递归删除(rm -r)"),
-        (download_to_shell, "网络下载并执行(curl|sh 类)"),
+        (find_delete_exec, "find 删除/执行(-delete/-exec)"),
+        (dd_write_device, "写入块设备(dd of=/dev/...)"),
+        (nested_shell, "嵌套 shell 执行(-c)"),
+        (interpreter_inline, "解释器内联代码(-c)"),
         (
             lambda seg: bool(seg[-1]) and seg[-1][0] in ("kill", "pkill", "killall"),
             "终止进程",
         ),
         (mv_overwrite, "覆盖已有文件(mv)"),
     ]
+
+
+def _download_to_shell(segments: list[list[str]]) -> bool:
+    """跨段规则:下载段(curl/wget)后紧跟 shell 段(sh/bash/zsh) → 下载即执行。"""
+    for i in range(len(segments) - 1):
+        if not segments[i] or not segments[i + 1]:
+            continue
+        if segments[i][0] in ("curl", "wget") and segments[i + 1][0] in ("sh", "bash", "zsh"):
+            return True
+    return False
+
+
+def _secret_path_hit(segments: list[list[str]]) -> str | None:
+    """任一 token 命中密钥文件(.env)/配置目录(.codeagent)路径 → 返回拒绝描述。
+
+    仅按 token 字面判定(不解析文件系统):引号/命令替换内的路径仍是文本,
+    ``cat ~/.codeagent/.env``、``head -c 100 ~/.codeagent/.env``、
+    ``curl -d "$(cat ~/.codeagent/.env)"`` 均命中(审计 S-3)。
+    """
+    for seg in segments:
+        for tok in seg:
+            if _SECRET_PATH_RE.search(os.path.normcase(tok)):
+                return f"命令涉及密钥文件(.env)或配置目录(.codeagent): {tok}"
+    return None
 
 
 def classify_bash(
@@ -186,9 +239,15 @@ def classify_bash(
     ask_rules: list[tuple[Callable[[list[list[str]]], bool], str]] | None = None,
     exists: Callable[[str], bool] | None = None,
 ) -> SecurityDecision:
-    """bash 命令三档分类(纯函数):deny(黑名单)> ask(敏感表)> allow(白名单/默认)。
+    """bash 命令三档分类(纯函数):deny(黑名单/密钥路径)> ask(敏感表)> allow(默认)。
 
     - 黑名单复用 bash 工具的检测(字符串正则 + shlex 语义级),优先级最高;
+      密钥文件/配置目录访问同样硬拒绝(审计 S-3);
+    - 敏感规则表**逐逻辑段**判定,任一段命中即 ask——原先 allowlist 在
+      ask 规则前短路是绕过通道(敏感命令在前、只读命令尾接,审计 M-5);
+    - 白名单降级为段级豁免:命中的段不触发敏感规则(自定义策略可显式豁免,
+      如白名单含 ``git push`` 则推送段放行);
+    - 跨段规则(下载即执行 ``curl|sh``)对完整段列表单独判定;
     - 规则表与白名单可注入(测试/自定义策略);``exists`` 供 mv 覆盖判定
       (缺省 None = 该规则不激活)。
     """
@@ -199,12 +258,21 @@ def classify_bash(
     if hit is not None:
         return SecurityDecision(DENY, f"命令命中危险模式: {hit}")
     segments = _split_segments(command)
-    last = segments[-1]
-    if last and _matches_allowlist(last, allowlist if allowlist is not None else DEFAULT_ALLOWLIST):
-        return SecurityDecision(ALLOW)
-    for match, reason in ask_rules if ask_rules is not None else _default_ask_rules(exists):
-        if match(segments):
-            return SecurityDecision(ASK, reason)
+    secret_hit = _secret_path_hit(segments)
+    if secret_hit is not None:
+        return SecurityDecision(DENY, secret_hit)
+    allow = allowlist if allowlist is not None else DEFAULT_ALLOWLIST
+    rules = ask_rules if ask_rules is not None else _default_ask_rules(exists)
+    for seg in segments:
+        if not seg:
+            continue
+        if _matches_allowlist(seg, allow):
+            continue  # 白名单段豁免:不触发敏感规则
+        for match, reason in rules:
+            if match([seg]):  # 单段求值:规则沿用 segments[-1] 写法,语义不变
+                return SecurityDecision(ASK, reason)
+    if _download_to_shell(segments):
+        return SecurityDecision(ASK, "网络下载并执行(curl|sh 类)")
     return SecurityDecision(ALLOW)
 
 
@@ -256,7 +324,14 @@ _READ_TOOLS = ("read",)
 
 
 def classify_file(tool_name: str, path: str | Path, workspace: str | Path) -> SecurityDecision:
-    """文件工具边界分类:读越界 → allow+warning;写/编辑越界 → ask;界内 → allow。"""
+    """文件工具边界分类:读越界 → allow+warning;写/编辑越界 → ask;界内 → allow。
+
+    .env 文件与配置目录(~/.codeagent)在任何边界判定前硬拒绝(审计 S-3):
+    越界读警告只回灌给模型,headless 下用户看不到,密钥读取必须 fail closed。
+    """
+    secret_hit = _secret_path_hit([[str(path)]])
+    if secret_hit is not None:
+        return SecurityDecision(DENY, secret_hit)
     status = within_workspace(path, workspace)
     if status == "inside":
         return SecurityDecision(ALLOW)
