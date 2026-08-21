@@ -58,7 +58,7 @@
 | 安全确认环(FR-8.2 / NFR-S3) | 🔲 v0.2 | ✅ 已落地(`security-permissions`:ApprovalPolicy + tools/security.py 三档分类器,headless 缺省 fail closed) |
 | AGENTS.md 分层(F-16) | 🔲 v0.2 规划 | ✅ 已落地(`app/agents.py`,全局→项目→子目录分层注入) |
 | 平台部署 `langgraph.json`(F-24 / IR-10) | 📝 P2 | **永久调整**:随自研编排改写为 HTTP/事件订阅入口(并入 F-27,v0.3 阶段 7) |
-| 测试基线(附录 B) | 336(2026-08-14) | **590 收集**(2026-08-19 Skills 阶段 1 后基线 590/590;2026-08-21 Windows 实测 588/590,两条失败为测试自身平台/环境缺陷,见审计) |
+| 测试基线(附录 B) | 336(2026-08-14) | **598 项全绿**(2026-08-21 综合审计 12 条缺陷已全部修复闭环,见审计与 v0.3 §6.5) |
 | 解耦扫描测试(NFR-M1 / AR-4) | 已移除待恢复 | ✅ 已重写恢复(`tests/test_decoupling.py`,2026-08-14,AST 扫描 + anti-wargaming 守卫) |
 
 > 权威架构描述见 [architecture.md](./architecture.md)(v0.3);迭代与验收见 `docs/iteration/v0.2.md` / `v0.3.md`;审计见 `docs/review/audit-2026-08-21.md`。
@@ -569,7 +569,7 @@ class AgentSession:
 | 编号 | 指标 | 要求 | 验收口径 | 状态 |
 |---|---|---|---|---|
 | NFR-M1 | 分层解耦 | 跨层 import 仅发生在 `app/container.py` / `app/main.py` | `tests/test_decoupling.py` AST 强制校验(2026-08-14 重写,70 项断言) | ✅ |
-| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-19 实测 590 项收集(基线 590/590;2026-08-21 Windows 588/590,两条测试自身缺陷待修,见审计) | ✅(覆盖率测量工具待补,见审计) |
+| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-21 审计修复后 598 项全绿 | ✅(覆盖率测量工具待补,见审计) |
 | NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentPorts` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
@@ -591,7 +591,7 @@ class AgentSession:
 |---|---|---|---|
 | NFR-C1 | Python | ≥ 3.12 | pyproject 声明;类型注解使用 `from __future__` |
 | NFR-C2 | 终端 | 支持真彩/ANSI 的现代终端 | TUI 恢复时生效 |
-| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ 已闭环:bash 含 Git for Windows / WSL 探测链(2026-08-14 修复 WSL 转发器命中;v0.3 后 Windows 实测 588/590,两条为测试自身平台/环境缺陷,见审计) |
+| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ 已闭环:bash 含 Git for Windows / WSL 探测链(2026-08-14 修复 WSL 转发器命中;2026-08-21 审计修复后 Windows 全量 598/598) |
 | NFR-C4 | 安装 | 无系统级污染 | uv 虚拟环境隔离 |
 
 ### 6.8 可观测性(NFR-O)
@@ -731,7 +731,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### 12.1 全局验收基线(每个版本发布前必须满足)
 
-1. **测试全绿**:`uv run pytest` 全量通过(2026-08-19 后基线 590 项收集;2026-08-21 Windows 实测 588/590,两条测试自身缺陷待修);核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
+1. **测试全绿**:`uv run pytest` 全量通过(2026-08-21 审计修复后 598 项全绿);核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
 2. **解耦判据**:解耦扫描测试强制校验跨层 import 仅出现在 `app/container.py` / `app/main.py`(2026-08-14 已重写恢复);
 3. **离线可体验**:无任何 API Key 时以 `fake` provider 完整跑通"对话→工具调用→事件流"闭环;
 4. **配置隔离**:全部配置类 `extra="ignore"`,防回归测试通过;
@@ -836,7 +836,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 | # | 差异项 | B.1 记录(08-14) | 2026-08-21 复核 |
 |---|---|---|---|
-| 1 | 测试数量 | 336 项全绿 | **590 项收集**(2026-08-19 Skills 阶段 1 后基线 590/590;2026-08-21 Windows 实测 588/590,两条失败为测试自身平台/环境缺陷:`test_unreadable_file_skipped` 平台断言 + `test_create_tui_app_injects_save_key` mock 作用域,见 `docs/review/audit-2026-08-21.md`) |
+| 1 | 测试数量 | 336 项全绿 | **598 项全绿**(2026-08-21 审计 12 条缺陷全部修复闭环,含两条失败测试的修复,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5) |
 | 5 | 事件类型 | 10 类 | **11 类**(新增 `confirmation_requested`,security-permissions) |
 | 6 | 会话接口 | abort / replace_graph | `abort` / `steer` / `followup`;热切换改 `SessionManager.replace_ports` |
 | 7 | 模型客户端 | 自研,langchain-core/langgraph 保留于编排侧 | **langchain-core/langgraph 全部移除**(2026-08-14 自研编排;`ai/bridge/` 删除) |

@@ -47,7 +47,7 @@
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` 等命令体系)。
 - Skills 系统(v0.3 阶段 1):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
-- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **590 项收集**(2026-08-19 Skills 阶段后基线 590/590;2026-08-21 Windows 实测 588/590,两条失败为测试自身平台/环境缺陷,见 `docs/review/audit-2026-08-21.md`)。
+- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **598 项全绿**(2026-08-21 综合审计 12 条 CONFIRMED 缺陷已全部修复闭环,门禁恢复可复现,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5)。
 
 **待办(v0.3 起)**:
 
@@ -356,7 +356,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
 | **v0.3 生态成型** | Skills(✅ 阶段 1)+ 插件 + MCP + 轻量记忆 + 成本透明 + 会话树 UI + Web/HTTP 事件订阅(F-27) | 扩展生态、体验差异、平台导航 |
 
-v0.3 当前进度:阶段 1 Skills 已落地(590/590 基线);阶段 2~7(插件 / MCP / 记忆 / 成本 / 会话树 / Web)待排。
+v0.3 当前进度:阶段 1 Skills 已落地(2026-08-21 审计修复后 598/598 全绿);阶段 2~7(插件 / MCP / 记忆 / 成本 / 会话树 / Web)待排。
 
 ## 12. 参考
 

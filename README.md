@@ -25,7 +25,7 @@
 - **模型配置层**:每 provider 一个文件(配置 + 工厂自包含),内置模型目录 + `models.json` 按 id upsert 合并,支持思考强度(`model:effort`)与运行时热切换(/provider /model /effort /login)。
 - **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个工具;bash 带危险命令黑名单、树级进程击杀、默认 120s 超时(上限 600)、输出保尾截断。
 - **Skills 技能系统**:SKILL.md 格式 + 三源发现(内建 / 个人 / 项目)+ 渐进式披露(描述入 system prompt,**正文经 `skill` 工具按需获取**);`/skills` 手动加载。
-- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试(当前 590 项收集)。
+- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试(当前 598 项全绿)。
 
 ## 项目环境设置
 
@@ -125,7 +125,7 @@ uv run codeagent --yes --prompt "..."        # 显式承担风险
 ### 运行测试
 
 ```bash
-uv run pytest -q        # 全量离线测试(当前 590 项收集,以实际运行结果为准)
+uv run pytest -q        # 全量离线测试(当前 598 项全绿,以实际运行结果为准)
 ```
 
 ## 项目结构
@@ -179,7 +179,7 @@ codeagent/
     │
     └── resources/ extensions/   # [资源/扩展层]  skills 已启用(v0.3 阶段 1);插件 v0.3 阶段 2
 
-tests/                          # 按 src 模块镜像分包,590 项收集(离线)
+tests/                          # 按 src 模块镜像分包,598 项全绿(离线)
 ├── conftest.py                 #   _isolate_config_dir / memory_fsops 夹具
 ├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
 ├── test_decoupling.py          #   分层解耦 AST 扫描(AST 强制校验)
