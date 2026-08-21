@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -522,3 +523,32 @@ def test_create_tui_app_injects_configured_providers(tmp_path, monkeypatch):
     assert app._configured_providers == {"deepseek", "kimi"}
     # 登录选择器候选 = provider 全表
     assert app._candidates["login"] == app._candidates["provider"]
+
+
+def test_ports_append_mcp_tools(tmp_path, monkeypatch):
+    """组合根装配:用户级 mcp.json → MCP 工具追加到内建工具之后(命名前缀)。"""
+    monkeypatch.chdir(tmp_path)
+    import json
+    import sys
+
+    mock_server = str(Path(__file__).parent / "mcp" / "mock_server.py")
+    (tmp_path / ".codeagent").mkdir(exist_ok=True)
+    (tmp_path / ".codeagent" / "mcp.json").write_text(
+        json.dumps({"servers": [{"name": "mock", "command": sys.executable, "args": [mock_server]}]}),
+        encoding="utf-8",
+    )
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_agent_ports
+
+        ports = create_agent_ports()
+    names = [t.name for t in ports.tools]
+    assert names[:8] == ["read", "write", "edit", "bash", "grep", "find", "ls", "skill"]
+    assert "mcp__mock__echo" in names and "mcp__mock__fail" in names
+    tool = next(t for t in ports.tools if t.name == "mcp__mock__echo")
+    assert "echo:" in tool.invoke(tool.Args(text="hi"))
+    from codeagent.tools.mcp.loader import close_mcp_tools
+
+    close_mcp_tools(ports.tools)

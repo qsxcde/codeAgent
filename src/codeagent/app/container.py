@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
@@ -83,6 +84,14 @@ def skills_view(cfg: Any = None) -> tuple[list[Any], list[str]]:
     return skills, [f"{d.code}: {d.message}" for d in diagnostics]
 
 
+def _load_mcp_tools(cfg: Any = None) -> tuple[list[Any], list[str]]:
+    """加载 MCP 工具与诊断(组合根装配点共用;热切换重建端口时重载)。"""
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.tools.mcp import load_mcp_tools
+
+    return load_mcp_tools(CONFIG_DIR)
+
+
 class LlmSummarizer:
     """真实摘要实现(session-compaction):同一 LLM 通道生成结构化摘要。
 
@@ -140,8 +149,13 @@ def _create_policy(cfg: Any = None, approval_mode: str = "deny") -> Any:
     """
     from codeagent.tools.security import classify_tool
 
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.tools.mcp.config import parse_mcp_permissions
+
     workspace = getattr(cfg, "cwd", None) if cfg is not None else None
     workspace = str(Path(workspace or Path.cwd()).expanduser().resolve())
+    # MCP 权限规则(mcp.json permissions;无配置 = 空规则 = 默认放行)。
+    mcp_rules = parse_mcp_permissions(CONFIG_DIR)
 
     def _target_exists(target: str) -> bool:
         """mv 覆盖判定:目标相对 bash 执行目录(workspace)解析。"""
@@ -153,7 +167,12 @@ def _create_policy(cfg: Any = None, approval_mode: str = "deny") -> Any:
     class _Policy:
         def decide(self, tool_name: str, args: dict) -> PolicyDecision:
             decision = classify_tool(
-                tool_name, args, workspace=workspace, cwd=workspace, exists=_target_exists
+                tool_name,
+                args,
+                workspace=workspace,
+                cwd=workspace,
+                exists=_target_exists,
+                mcp_rules=mcp_rules,
             )
             if decision.action == "ask" and approval_mode == "deny":
                 return PolicyDecision("deny", f"未确认不得执行(headless): {decision.reason}")
@@ -286,15 +305,19 @@ def create_agent_ports(
     provider: str | None = None,
     model: str | None = None,
     approval_mode: str = "deny",
+    mcp_diagnostics: list[str] | None = None,
 ) -> AgentPorts:
     """组合根:装配自研编排端口(模型端口 + 工具 + 安全策略)。
 
     ``store`` 不进端口(core 循环不落盘);会话存储经 ``AgentSession`` /
     ``SessionManager`` 注入(session-manager change,design D6);
-    ``approval_mode`` 见 ``_create_policy``(缺省 deny = headless 安全优先)。
+    ``approval_mode`` 见 ``_create_policy``(缺省 deny = headless 安全优先);
+    ``mcp_diagnostics`` 为可选出参:MCP 装配诊断追加到此列表(单次加载,
+    供 TUI /status 展示;None = 丢弃)。
     """
     from codeagent.ai.factory import create_llm
     from codeagent.app.skills import format_skill_invocation
+    from codeagent.tools.mcp.loader import close_mcp_tools
 
     client = create_llm(
         cfg=cfg,
@@ -306,9 +329,14 @@ def create_agent_ports(
     # 技能一次加载两处消费:system prompt 描述段 + skill 工具渲染块注册表。
     skills, _diagnostics = _load_skills(cfg)
     rendered_skills = {s.name: format_skill_invocation(s) for s in skills}
+    mcp_tools, mcp_diags = _load_mcp_tools(cfg)
+    if mcp_diagnostics is not None:
+        mcp_diagnostics.extend(mcp_diags)
+    if mcp_tools:
+        atexit.register(close_mcp_tools, mcp_tools)  # 进程收尾防子进程泄漏
     return AgentPorts(
         model=ChatModelPort(client, system_prompt=_build_system_prompt(cfg, skills)),
-        tools=create_tools(cfg, skills=rendered_skills),
+        tools=create_tools(cfg, skills=rendered_skills) + mcp_tools,
         policy=_create_policy(cfg, approval_mode),
     )
 
@@ -417,6 +445,7 @@ def create_tui_app(
     from codeagent.ai.factory import create_llm
 
     registry = registry if registry is not None else ModelRegistry()
+    mcp_diagnostics: list[str] = []  # MCP 装配诊断(/status 展示;懒装配后填充)
 
     def _build_summarizer() -> Any:
         return LlmSummarizer(
@@ -437,8 +466,8 @@ def create_tui_app(
             provider=provider,
             model=model,
             approval_mode="interactive",  # TUI:敏感操作经确认条交互(security-permissions)
+            mcp_diagnostics=mcp_diagnostics,  # MCP 装配诊断(/status 展示)
         )
-
     manager = create_session_manager(
         cfg,
         registry=registry,
@@ -449,6 +478,7 @@ def create_tui_app(
         approval_mode="interactive",  # TUI:敏感操作经确认条交互(security-permissions)
         summarizer=_LazySummarizer(_build_summarizer),  # 首启缺 key:首次 /compact 才建(审计 M-7)
         ports=_LazyPorts(_build_ports),  # 首启缺 key:首次对话才装配(审计 M-7)
+        mcp_diagnostics=mcp_diagnostics,  # MCP 装配诊断(/status 展示)
     )
     manager.create()  # 启动即进入首个会话(命令 /sessions new 可再建)
     if backend is None:
@@ -517,6 +547,7 @@ def create_tui_app(
         candidates=candidates,
         agents_sources=agents_sources(cfg),  # 上下文文件来源(/status 展示)
         skills=skills_view(cfg),  # 技能列表 + 诊断(/skills /status 展示)
+        mcp_diagnostics=mcp_diagnostics,  # MCP 装配诊断(/status 展示)
         save_key=save_key,  # /login 密钥保存 + 热切换(tui-login-command)
         configured_providers=_configured_providers(),  # 登录选择器 ✓ 标记
     )
@@ -565,6 +596,7 @@ def create_session_manager(
     approval_mode: str = "deny",
     summarizer: Any = None,
     ports: Any = None,
+    mcp_diagnostics: list[str] | None = None,
 ) -> Any:
     """组合根:创建会话管理器(薄 Manager,design D1/D4)。
 
@@ -577,7 +609,8 @@ def create_session_manager(
       entry 演进,design D4);
     - approval_mode 见 ``_create_policy``(TUI 传 interactive,headless 会话
       入口传 deny/allow);
-    - summarizer 为上下文压缩摘要端口(session-compaction;缺省 None)。
+    - summarizer 为上下文压缩摘要端口(session-compaction;缺省 None);
+    - mcp_diagnostics 为可选出参(MCP 装配诊断,透传 create_agent_ports)。
     """
     from codeagent.session import SessionManager
 
@@ -589,6 +622,7 @@ def create_session_manager(
             provider=provider,
             model=model,
             approval_mode=approval_mode,
+            mcp_diagnostics=mcp_diagnostics,
         )
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
     return SessionManager(

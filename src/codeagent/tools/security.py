@@ -342,6 +342,24 @@ def classify_file(tool_name: str, path: str | Path, workspace: str | Path) -> Se
     return SecurityDecision(ASK, f"越出工作区: {path}")
 
 
+def classify_mcp(
+    tool_name: str, rules: Any
+) -> SecurityDecision:
+    """MCP 工具权限分类(CodeBuddy 式三级 deny/ask/allow + 通配)。
+
+    - 规则未注入(无 mcp.json permissions)或未命中 → 默认 allow
+      (用户级配置即信任);
+    - 命中 ask → 需确认(TUI 确认环 / headless 降级 deny);
+    - 命中 deny → 拒绝。
+    """
+    decision = rules.decide(tool_name) if rules is not None else None
+    if decision == "deny":
+        return SecurityDecision(DENY, f"MCP 权限规则拒绝: {tool_name}")
+    if decision == "ask":
+        return SecurityDecision(ASK, f"MCP 工具调用需确认: {tool_name}")
+    return SecurityDecision(ALLOW)
+
+
 def classify_tool(
     tool_name: str,
     args: dict,
@@ -349,11 +367,13 @@ def classify_tool(
     workspace: str | Path,
     cwd: str | None = None,
     exists: Callable[[str], bool] | None = None,
+    mcp_rules: Any = None,
 ) -> SecurityDecision:
     """循环层策略的统一分类入口(组合根适配为 core ApprovalPolicy 时调用)。
 
     - bash → ``classify_bash``(args.command);
     - read/write/edit → 路径经 ``resolve_to_cwd`` 解析后按边界分类;
+    - ``mcp__`` 前缀工具 → ``classify_mcp``(权限规则,缺省放行);
     - 其余工具 → allow。
     """
     if tool_name == "bash":
@@ -363,4 +383,6 @@ def classify_tool(
         if raw:
             resolved = resolve_to_cwd(raw, cwd)
             return classify_file(tool_name, resolved, workspace)
+    if tool_name.startswith("mcp__"):
+        return classify_mcp(tool_name, mcp_rules)
     return SecurityDecision(ALLOW)

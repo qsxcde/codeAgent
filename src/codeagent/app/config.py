@@ -22,6 +22,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 CONFIG_DIR = Path.home() / ".codeagent"
 CONFIG_ENV_FILE: Path = CONFIG_DIR / ".env"
 CONFIG_MODELS_FILE: Path = CONFIG_DIR / "models.json"
+#: MCP server 配置(用户级唯一来源;项目级配置不被加载,见 mcp spec)。
+CONFIG_MCP_FILE: Path = CONFIG_DIR / "mcp.json"
 
 #: 一次性告警标志:CWD .env 迁移提示只打一次。
 _cwd_env_warned = False

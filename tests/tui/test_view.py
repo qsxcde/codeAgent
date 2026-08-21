@@ -5,6 +5,7 @@
 """
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 from codeagent.app.tui.components import FooterInfo, ToolCallBlock, rich_to_plain
@@ -1006,7 +1007,7 @@ def test_suggestion_confirm_opens_inline_picker_for_picker_command():
     """命令建议确认:picker 命令(/mod → model)进入内联选择,条目含描述列。"""
     app, backend, _ = _make_picker_app()
     backend.input_changed("/mod")
-    assert app._suggestions == ["model"]
+    assert app._suggestions[0] == "model"  # 精确前缀优先(mcp 等模糊命中在后)
     row = "".join(s.text for s in backend.suggestion_lines[-1][0])
     assert "/model" in row and "—" in row
     backend.suggestion_confirm()
@@ -1297,3 +1298,46 @@ def test_status_shows_skills_and_diagnostics():
 def manager_run_texts(app: TuiApp) -> list[str]:
     """当前会话的 run 记录(断言命令不触发对话)。"""
     return list(app._manager.current.run_texts)
+
+
+def test_status_shows_mcp_diagnostics():
+    """/status → MCP 装配诊断可见(mcp-client:加载结果可见可断言)。"""
+    app, backend, _ = _make_skills_app([], [])
+    app._mcp_diagnostics = ["start_failed: MCP server 'bad' 启动失败: x"]
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "MCP:" in text
+    assert "start_failed" in text and "bad" in text
+
+
+def test_status_without_mcp_diagnostics():
+    """/status → 无 MCP 诊断时无 MCP 区。"""
+    app, backend, _ = _make_app()
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "MCP:" not in text
+
+
+def test_mcp_command_groups_tools_by_server():
+    """/mcp → 按 server 分组列出工具(对齐 Claude /mcp 的 server 维度视图)。"""
+    app, backend, manager = _make_app()
+    manager.tools = [
+        SimpleNamespace(name="read"),
+        SimpleNamespace(name="mcp__github__list_issues"),
+        SimpleNamespace(name="mcp__github__push"),
+        SimpleNamespace(name="mcp__db__query"),
+    ]
+    app._mcp_diagnostics = ["start_failed: MCP server 'bad' 启动失败: x"]
+    backend.submit("/mcp")
+    text = _rendered_text(app, backend)
+    assert "MCP server:" in text
+    assert "github: list_issues, push" in text
+    assert "db: query" in text
+    assert "start_failed" in text
+
+
+def test_mcp_command_without_servers():
+    """/mcp → 未配置 server 时明确说明。"""
+    app, backend, _ = _make_app()
+    backend.submit("/mcp")
+    assert "MCP: (未配置 server)" in _rendered_text(app, backend)

@@ -62,6 +62,7 @@ class TuiApp:
         candidates: dict[str, Any] | None = None,
         agents_sources: list[str] | None = None,
         skills: tuple[list[Skill], list[str]] | None = None,
+        mcp_diagnostics: list[str] | None = None,
         save_key: Any = None,
         configured_providers: set[str] | None = None,
     ) -> None:
@@ -72,6 +73,8 @@ class TuiApp:
         /status 展示加载结果;None = 未注入);
         ``skills`` 为 (技能列表, 诊断消息列表)(skills-system,/skills 列表与
         手动加载、/status 展示;None = 未注入);
+        ``mcp_diagnostics`` 为 MCP 装配诊断消息列表(mcp-client,/status
+        展示 server 失败与工具裁剪;None = 未注入);
         ``save_key(provider, key) -> (model, effort)`` 为组合根注入的密钥保存
         回调(/login 命令用:写 .env + 热切换;None = 不支持);
         ``configured_providers`` 为已配置 key 的 provider 集(登录选择器 ✓
@@ -83,6 +86,7 @@ class TuiApp:
         self._agents_sources = agents_sources or []
         self._skills = list(skills[0]) if skills else []
         self._skill_diagnostics = list(skills[1]) if skills else []
+        self._mcp_diagnostics = list(mcp_diagnostics or [])
         self._skills_by_name = {s.name: s for s in self._skills}
         self._save_key = save_key
         self._configured_providers = set(configured_providers or [])
@@ -428,6 +432,7 @@ class TuiApp:
             "fork": self._cmd_fork,
             "compact": self._cmd_compact,
             "skills": self._cmd_skills,
+            "mcp": self._cmd_mcp,
             "provider": self._cmd_provider,
             "login": self._cmd_login,
             "model": self._cmd_model,
@@ -471,6 +476,10 @@ class TuiApp:
         if self._skill_diagnostics:
             lines.append("技能诊断:")
             lines.extend(f"  {message}" for message in self._skill_diagnostics)
+        # MCP 装配诊断(mcp-client:server 失败/工具裁剪,加载结果可见可断言)。
+        if self._mcp_diagnostics:
+            lines.append("MCP:")
+            lines.extend(f"  {message}" for message in self._mcp_diagnostics)
         self.model.append_info("\n".join(lines))
 
     def _cmd_skills(self, cmd: Command) -> None:
@@ -503,6 +512,36 @@ class TuiApp:
         block = format_skill_invocation(skill)
         loop = asyncio.get_running_loop()
         loop.create_task(session.run(f"[用户手动加载技能: {name}]\n{block}"))
+
+    def _cmd_mcp(self, cmd: Command) -> None:
+        """/mcp:按 server 分组列出已加载 MCP 工具 + 装配诊断(对齐 Claude /mcp)。
+
+        工具名 ``mcp__<server>__<tool>`` 解析回 server 分组;诊断(启动失败/
+        裁剪)与工具列表并列展示——server 维度视图,加载结果可见可断言。
+        """
+        by_server: dict[str, list[str]] = {}
+        for tool in self._manager.tools:
+            name = getattr(tool, "name", "")
+            if not name.startswith("mcp__"):
+                continue
+            parts = name.split("__", 2)
+            server = parts[1] if len(parts) >= 2 else "?"
+            tool_part = parts[2] if len(parts) >= 3 else name
+            by_server.setdefault(server, []).append(tool_part)
+        if not by_server and not self._mcp_diagnostics:
+            self.model.append_info("MCP: (未配置 server)")
+            return
+        lines = ["MCP server:"]
+        if by_server:
+            for server in sorted(by_server):
+                tools = ", ".join(sorted(by_server[server]))
+                lines.append(f"  {server}: {tools}")
+        else:
+            lines.append("  (无已连接 server)")
+        if self._mcp_diagnostics:
+            lines.append("诊断:")
+            lines.extend(f"  {message}" for message in self._mcp_diagnostics)
+        self.model.append_info("\n".join(lines))
 
     def _cmd_tools(self, cmd: Command) -> None:
         names = [getattr(tool, "name", "") for tool in self._manager.tools]
