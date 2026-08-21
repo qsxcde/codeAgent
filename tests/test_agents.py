@@ -68,23 +68,31 @@ def test_deduplicates_same_file(tmp_path):
     assert len(paths) == len(set(paths)) == 2
 
 
-def test_unreadable_file_skipped(tmp_path):
-    """读失败跳过,不中断加载(其它文件照常)。"""
+def test_unreadable_file_skipped(tmp_path, monkeypatch):
+    """读失败跳过,不中断加载(其它文件照常)。
+
+    读失败经 mock 注入 PermissionError:chmod(0) 在 Windows 上无效果,
+    按平台跳过后断言又无条件执行会制造非确定失败(审计 M-1)。
+    """
     config_dir = tmp_path / ".config"
     root = tmp_path / "proj"
     _write(config_dir, "AGENTS.md", "全局")
     _write(root, "AGENTS.md", "项目")
-    # 制造一个不可读文件(权限位 000;Windows 忽略该场景)
-    import os
-
     locked = root / "sub"
     _write(locked, "AGENTS.md", "子目录")
-    if os.name != "nt":
-        (locked / "AGENTS.md").chmod(0)
+    locked_file = locked / "AGENTS.md"
+    real_read_text = Path.read_text
+
+    def flaky_read_text(self: Path, *args, **kwargs):
+        """只对目标文件抛 PermissionError,其余正常读(仅作用于本测试)。"""
+        if self == locked_file:
+            raise PermissionError(f"模拟不可读: {self}")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
     result = load_agents_files(locked, config_dir)
     assert len(result) == 2  # 全局 + 项目(子目录读失败被跳过)
-    if os.name != "nt":
-        (locked / "AGENTS.md").chmod(0o644)
+    assert str(locked_file.resolve()) not in [p for p, _ in result]  # 失败文件未混入
 
 
 def test_build_system_prompt_annotates_sources():

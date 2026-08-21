@@ -495,13 +495,15 @@ def test_compact_summarizes_and_truncates_history():
         asyncio.run(sess.run(text))
     assert len(sess.history) >= 6  # 3 user + 3 assistant
     before_full = len(store.load_messages(sess.session_id))
+    history_before_compact = len(sess.history)
 
     async def scenario() -> None:
         return await sess.compact()
 
     assert asyncio.run(scenario()) is True
     assert sess._summary is not None and sess._summary.startswith("SUM[")
-    assert sess.history  # 保留最近轮次(全保留时不压缩,这里 history 长度减少)
+    # 真截断:历史收缩而非仅非空(此前仅 assert truthy,压缩空转也通过,审计 M-9 同批)
+    assert 0 < len(sess.history) < history_before_compact
     assert len(store.load_messages(sess.session_id)) == before_full  # 物理保留
     state = store.load_context(sess.session_id)
     assert state.summary == sess._summary

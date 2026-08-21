@@ -281,4 +281,6 @@ def test_fork_compacted_session_restores_summary():
     forked = mgr.fork(session.session_id)
     assert forked._summary == "摘要1"  # 摘要随分叉恢复
     assert forked.history  # 保留窗口消息
-    assert forked.history[0].id >= session.history[cut].id or True  # 切片正确性由 store 测试覆盖
+    # 精确不变量:分叉保留窗口从压缩切点处原样接续
+    # (uuid7 同毫秒随机位使 >= 不成立,此前 or True 恒真糊绿,审计 M-9)
+    assert forked.history[0].id == session.history[cut].id

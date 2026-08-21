@@ -457,8 +457,10 @@ def test_create_tui_app_injects_save_key(tmp_path, monkeypatch):
         from codeagent.app.container import create_tui_app
 
         app = create_tui_app(provider="deepseek", backend=_StubBackend())
-    assert app._save_key is not None
-    model_id, effort = app._save_key("deepseek", "sk-ds-1")
+        # _save_key 会热切换重建端口(再走 create_llm),必须留在 mock 作用域内,
+        # 否则无 key 机器上触达真实工厂抛 ValueError(审计 M-2)
+        assert app._save_key is not None
+        model_id, effort = app._save_key("deepseek", "sk-ds-1")
     content = env_file.read_text(encoding="utf-8")
     assert "DEEPSEEK_API_KEY=sk-ds-1" in content
     # 热切换生效:manager 端口重建,model/effort 按装配解析返回
