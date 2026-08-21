@@ -23,11 +23,12 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 from codeagent.core.messages import Message, ToolCall, new_id
 
@@ -234,6 +235,35 @@ class JsonFileStore:
     def _path(self, session_id: str) -> Path:
         return self._directory / f"{session_id}.jsonl"
 
+    def _iter_entries(self, path: Path) -> Iterator[dict[str, Any]]:
+        """逐行解析 entry:JSON 损坏行跳过(append-only 崩溃可能留残缺行,
+        审计 M-4);结构性错误(缺 header / 版本不兼容)由调用方校验照常抛错。"""
+        with _lock_for(path):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # 残缺行容错:跳过,不阻断整文件解析
+
+    @staticmethod
+    def _chmod_private(path: Path) -> None:
+        """会话文件收敛为 0600:转录含工具输出/文件内容/可能密钥,默认
+        umask 022 下会产出 0644 世界可读(审计 M-10)。失败(只读文件系统等)
+        不阻塞写入。"""
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    def _private_dir(self) -> None:
+        """sessions 目录收敛为 0700(同级理由,审计 M-10)。"""
+        try:
+            os.chmod(self._directory, 0o700)
+        except OSError:
+            pass
+
     def create(
         self,
         session_id: str,
@@ -247,6 +277,7 @@ class JsonFileStore:
         if path.exists():
             raise ValueError(f"会话已存在: {session_id}")
         self._directory.mkdir(parents=True, exist_ok=True)
+        self._private_dir()  # sessions 目录 0700(转录含敏感内容,审计 M-10)
         ref = SessionRef(
             id=session_id,
             timestamp=_now(),
@@ -270,6 +301,7 @@ class JsonFileStore:
             header["effort"] = effort
         with _lock_for(path):
             path.write_text(json.dumps(header, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._chmod_private(path)  # 会话文件 0600(审计 M-10)
         return ref
 
     def get(self, session_id: str) -> SessionRef | None:
@@ -292,7 +324,10 @@ class JsonFileStore:
         if not self._directory.exists():
             return refs
         for path in self._directory.glob("*.jsonl"):
-            ref = self.get(path.stem)
+            try:
+                ref = self.get(path.stem)
+            except ValueError:
+                continue  # 损坏/版本不兼容会话隔离,不阻断其余枚举(审计 M-4)
             if ref is not None:
                 refs.append(ref)
         # 按时间升序(毫秒精度);同时间按 id 兜底,保证 continue_recent 确定性。
@@ -464,6 +499,7 @@ class JsonFileStore:
                 record["parentId"] = copied[-1].get("id") if copied else None
                 lines.append(json.dumps(record, ensure_ascii=False))
             new_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self._chmod_private(new_path)  # 分叉新文件同样 0600(审计 M-10)
         return ref
 
 
@@ -475,20 +511,10 @@ class JsonFileStore:
         with _lock_for(path):
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
+        self._chmod_private(path)  # 追加后保持 0600(审计 M-10)
 
     def _read_entries(self, path: Path) -> list[dict[str, Any]]:
-        entries: list[dict[str, Any]] = []
-        with _lock_for(path):
-            for line_no, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), start=1
-            ):
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"会话文件损坏 {path}:{line_no}: {exc}") from exc
-                entries.append(entry)
+        entries = list(self._iter_entries(path))
         if not entries:
             raise ValueError(f"会话文件缺少 header: {path}")
         _validate_header(entries[0], path)
@@ -499,38 +525,30 @@ class JsonFileStore:
 
         不能提前终止——meta name 与 model_change 可能写在首条 user 消息之后
         (后写覆盖),提前终止会漏掉显式命名与热切换配置。内存 O(1)。
+        损坏行跳过(与 _read_entries 同容错,审计 M-4)。
         """
         header: dict[str, Any] | None = None
         first_user = ""
         last_name = ""
         model = ""
         effort = ""
-        with _lock_for(path):
-            for line_no, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), start=1
-            ):
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"会话文件损坏 {path}:{line_no}: {exc}") from exc
-                if header is None:
-                    _validate_header(entry, path)
-                    header = entry
-                    model = entry.get("model", "") or ""
-                    effort = entry.get("effort", "") or ""
-                elif entry.get("type") == "message" and not first_user:
-                    if entry.get("role") == "user":
-                        first_user = entry.get("content", "") or ""
-                elif entry.get("type") == "meta" and entry.get("key") == "name":
-                    if entry.get("value") is not None:
-                        last_name = str(entry["value"])
-                elif entry.get("type") == "model_change":
-                    if entry.get("model") is not None:
-                        model = str(entry["model"])
-                    if entry.get("effort") is not None:
-                        effort = str(entry["effort"])
+        for entry in self._iter_entries(path):
+            if header is None:
+                _validate_header(entry, path)
+                header = entry
+                model = entry.get("model", "") or ""
+                effort = entry.get("effort", "") or ""
+            elif entry.get("type") == "message" and not first_user:
+                if entry.get("role") == "user":
+                    first_user = entry.get("content", "") or ""
+            elif entry.get("type") == "meta" and entry.get("key") == "name":
+                if entry.get("value") is not None:
+                    last_name = str(entry["value"])
+            elif entry.get("type") == "model_change":
+                if entry.get("model") is not None:
+                    model = str(entry["model"])
+                if entry.get("effort") is not None:
+                    effort = str(entry["effort"])
         if header is None:
             raise ValueError(f"会话文件缺少 header: {path}")
         return header, first_user, last_name, model, effort

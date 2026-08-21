@@ -1,6 +1,7 @@
 """会话存储测试:JSONL 追加不重写、父级链回放、版本解析、并发写串行化、内存后端。"""
 
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -100,13 +101,49 @@ def test_version_mismatch_rejected(tmp_path):
         store.load_messages("s1")
 
 
-def test_corrupt_file_rejected(tmp_path):
+def test_corrupt_line_skipped_not_fatal(tmp_path):
+    """残缺行容错:崩溃残留的坏行跳过,前后条目照常解析(回归:M-4)。
+
+    原实现任何 JSONDecodeError 直接 raise——append-only 崩溃易留无换行残缺
+    行,单个坏文件让整个会话列表(continue_recent / /sessions list)不可达。
+    """
     store = _store(tmp_path)
     store.create("s1")
     path = tmp_path / "sessions" / "s1.jsonl"
-    path.write_text('{"type": "session", "version": 1}\nnot-json\n', encoding="utf-8")
-    with pytest.raises(ValueError, match="损坏"):
-        store.load_messages("s1")
+    path.write_text(
+        '{"type": "session", "version": 1}\n'
+        '{"type": "message", "id": "m1", "parentId": null, "role": "user", "content": "好"}\n'
+        "not-json\n"  # 残缺行(模拟崩溃残留)
+        '{"type": "message", "id": "m2", "parentId": null, "role": "user", "content": "完整"}\n',
+        encoding="utf-8",
+    )
+    assert [m.id for m in store.load_messages("s1")] == ["m1", "m2"]  # 坏行跳过,前后都保留
+    assert store.get("s1") is not None  # 扫描路径同样容错
+
+
+def test_corrupt_session_does_not_block_listing(tmp_path):
+    """单个损坏会话被隔离,不阻断其余枚举(回归:M-4)。"""
+    store = _store(tmp_path)
+    store.create("good")
+    bad = tmp_path / "sessions" / "bad.jsonl"
+    bad.write_text("not-json\n", encoding="utf-8")  # header 残缺 → 结构性损坏
+    assert [r.id for r in store.list()] == ["good"]
+    with pytest.raises(ValueError, match="header"):
+        store.get("bad")  # 按直接 id 访问给出明确错误而非「不存在」
+
+
+def test_session_files_private_perms(tmp_path):
+    """会话文件 0600 / sessions 目录 0700(回归:M-10)。
+
+    转录含工具输出/文件内容/可能密钥,默认 umask 022 下 0644 世界可读;
+    Windows 无 POSIX 权限位语义,条件断言。
+    """
+    store = _store(tmp_path)
+    store.create("s1")
+    store.append_message("s1", Message(role="user", content="hi"))
+    if os.name != "nt":
+        assert (tmp_path / "sessions").stat().st_mode & 0o777 == 0o700
+        assert (tmp_path / "sessions" / "s1.jsonl").stat().st_mode & 0o777 == 0o600
 
 
 def test_concurrent_appends_do_not_lose_lines(tmp_path):

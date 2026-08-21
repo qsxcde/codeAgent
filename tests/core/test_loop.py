@@ -144,6 +144,32 @@ def test_recursion_limit_raises_friendly():
     assert "次数过多" in str(exc.value)
 
 
+def test_recursion_limit_blocks_tool_execution_on_final_round():
+    """最后一轮请求工具:在 emit 与执行前直接超限(回归:M-3)。
+
+    原实现在第 recursion_limit 轮先真执行工具(bash/write 落盘)再 raise,
+    订阅方看到「已发生」的一轮、真实副作用却未持久化(「回滚」对
+    side-effecting 工具结构上不可能);改为预判拒绝,TOOL_CALL 不外泄。
+    """
+    model = FakeClient(
+        steps=[
+            {"content": "", "tool_calls": [{"name": "bash", "args": {"command": "echo a"}, "id": "t1", "type": "tool_call"}]},
+            {"content": "", "tool_calls": [{"name": "bash", "args": {"command": "echo b"}, "id": "t2", "type": "tool_call"}]},
+            {"content": "文本收尾"},
+        ]
+    )
+    events: list = []
+
+    def emit(ev) -> None:
+        events.append(ev)
+
+    with pytest.raises(RecursionLimitError):
+        asyncio.run(run_turn(_ports(model), emit, "循环", history=[], recursion_limit=2))
+    calls = [e for e in events if e.type == EventType.TOOL_CALL]
+    assert len(calls) == 1  # 仅第一轮执行;第二轮在 emit 前被拦截
+    assert calls[0].payload[0]["id"] == "t1"
+
+
 def test_steer_injection_consumed_before_next_round():
     """steer 注入:运行中注入的消息在下一轮循环前消费为 user 消息。"""
     model = FakeClient(

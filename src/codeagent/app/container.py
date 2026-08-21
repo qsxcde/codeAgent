@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from codeagent.ai.protocol.messages import ChatMessage, ToolCall as AiToolCall
 from codeagent.core.messages import Message, ToolCall
@@ -358,6 +358,39 @@ def create_agent_session(
     )
 
 
+class _LazyPorts:
+    """端口延迟装配:首次属性访问才构造(模型客户端 + 工具 + 策略)。
+
+    TUI 首启可能尚无 API key,急切构造抛 ValueError 会让整个 TUI 无法
+    启动、/login 首启流不可达(审计 M-7);延迟到首次对话——经 /login 写回
+    .env 后 create_llm 每次重读配置,新 key 自然生效。
+    """
+
+    def __init__(self, factory: Callable[[], AgentPorts]) -> None:
+        self._factory = factory
+        self._real: AgentPorts | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        if self._real is None:
+            self._real = self._factory()
+        return getattr(self._real, name)
+
+
+class _LazySummarizer:
+    """摘要器延迟构造:首次 /compact 才创建 LLM 客户端(同 _LazyPorts 动机)。"""
+
+    def __init__(self, factory: Callable[[], Any]) -> None:
+        self._factory = factory
+        self._real: Any = None
+
+    async def summarize(
+        self, messages: list[Any], prev_summary: str | None
+    ) -> str:
+        if self._real is None:
+            self._real = self._factory()
+        return await self._real.summarize(messages, prev_summary)
+
+
 def create_tui_app(
     cfg: Any = None,
     *,
@@ -385,15 +418,27 @@ def create_tui_app(
 
     registry = registry if registry is not None else ModelRegistry()
 
-    summarizer = LlmSummarizer(
-        create_llm(
-            cfg=cfg,
+    def _build_summarizer() -> Any:
+        return LlmSummarizer(
+            create_llm(
+                cfg=cfg,
+                registry=registry,
+                reasoning_effort=reasoning_effort,
+                provider=provider,
+                model=model,
+            )
+        )
+
+    def _build_ports() -> AgentPorts:
+        return create_agent_ports(
+            cfg,
             registry=registry,
             reasoning_effort=reasoning_effort,
             provider=provider,
             model=model,
+            approval_mode="interactive",  # TUI:敏感操作经确认条交互(security-permissions)
         )
-    )
+
     manager = create_session_manager(
         cfg,
         registry=registry,
@@ -402,7 +447,8 @@ def create_tui_app(
         provider=provider,
         model=model,
         approval_mode="interactive",  # TUI:敏感操作经确认条交互(security-permissions)
-        summarizer=summarizer,  # TUI:/compact 可用(session-compaction)
+        summarizer=_LazySummarizer(_build_summarizer),  # 首启缺 key:首次 /compact 才建(审计 M-7)
+        ports=_LazyPorts(_build_ports),  # 首启缺 key:首次对话才装配(审计 M-7)
     )
     manager.create()  # 启动即进入首个会话(命令 /sessions new 可再建)
     if backend is None:
@@ -518,10 +564,13 @@ def create_session_manager(
     tool_timeout: float | None = None,
     approval_mode: str = "deny",
     summarizer: Any = None,
+    ports: Any = None,
 ) -> Any:
     """组合根:创建会话管理器(薄 Manager,design D1/D4)。
 
-    - ports 装配一次共享(模型端口 / 工具无状态,跨会话复用);
+    - ports 装配一次共享(模型端口 / 工具无状态,跨会话复用);``ports``
+      可注入预装配端口(TUI 延迟装配场景,审计 M-7),缺省按 cfg 装配,
+      注入时 approval_mode 语义由调用方保证;
     - store 注入后会话可持久化;header 的 model/effort 在创建时固化
       (_resolve_model_effort 与 footer 同源解析,唯一引用 split_model_pattern);
     - replace_ports 属 T-44(/provider /model 命令时按 Pi 式 model_change
@@ -532,14 +581,15 @@ def create_session_manager(
     """
     from codeagent.session import SessionManager
 
-    ports = create_agent_ports(
-        cfg,
-        registry=registry,
-        reasoning_effort=reasoning_effort,
-        provider=provider,
-        model=model,
-        approval_mode=approval_mode,
-    )
+    if ports is None:
+        ports = create_agent_ports(
+            cfg,
+            registry=registry,
+            reasoning_effort=reasoning_effort,
+            provider=provider,
+            model=model,
+            approval_mode=approval_mode,
+        )
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
     return SessionManager(
         ports,

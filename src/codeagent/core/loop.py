@@ -278,12 +278,17 @@ async def run_turn(
     parent = history[-1].id if history else None
     history.append(Message(role="user", content=text, parent_id=parent))
 
-    for _ in range(max(1, recursion_limit)):
+    for iteration in range(max(1, recursion_limit)):
         await _drain_injections(history, inject_queue)
         assistant = await _call_model(ports, emit, history)
         history.append(assistant)
         if not assistant.tool_calls:
             break
+        if iteration >= max(1, recursion_limit) - 1:
+            # 最后一轮:模型只能文本收尾,请求工具即超限——在 emit TOOL_CALL
+            # 与执行前 raise,避免「工具真实执行后又回滚」的假象(审计 M-3);
+            # recursion_limit=0 由此退化为「一次文本调用,不可用工具」。
+            raise RecursionLimitError()
         emit(
             AgentEvent(
                 EventType.TOOL_CALL,

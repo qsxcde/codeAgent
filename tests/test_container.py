@@ -468,6 +468,22 @@ def test_create_tui_app_injects_save_key(tmp_path, monkeypatch):
     assert (model_id, effort) == ("deepseek-v4-flash", "high")
 
 
+def test_create_tui_app_without_api_key_starts_lazy():
+    """TUI 首启无 API key:不崩溃,端口/摘要器延迟到首次使用(回归:M-7)。
+
+    原实现急切构造两个 LLM 客户端(摘要器 + 会话端口),缺 key 抛 ValueError
+    穿透 run_tui,/login 首启流(鸡生蛋)不可达;延迟后 /login 写回 .env
+    (create_llm 每次重读配置)自然生效。
+    """
+    from codeagent.app.container import _LazyPorts, _LazySummarizer, create_tui_app
+
+    app = create_tui_app(provider="deepseek", backend=_StubBackend())
+    assert isinstance(app._manager._ports, _LazyPorts)
+    assert isinstance(app._manager._summarizer, _LazySummarizer)
+    assert app._manager._ports._real is None  # 尚未装配:首次对话才构造
+    assert app._manager._summarizer._real is None  # 首次 /compact 才构造
+
+
 def test_save_key_unknown_provider_raises(tmp_path, monkeypatch):
     """save_key 对未知 provider 抛 ValueError(视图就地提示)。"""
     from codeagent.app import config as app_config
