@@ -11,6 +11,7 @@ from typing import Any
 from codeagent.app.tui.components import FooterInfo, ToolCallBlock, rich_to_plain
 from codeagent.app.tui.view import TuiApp
 from codeagent.core.events import AgentEvent, EventType
+from codeagent.session.store import UsageStats
 
 
 class StubBackend:
@@ -111,6 +112,8 @@ class FakeSession:
         self.aborted = False
         self.approvals: list[tuple[str, bool]] = []
         self.run_texts: list[str] = []
+        # cost-transparency:缺省全零用量(load_usage 空态)。
+        self.usage = UsageStats()
 
     _created: list["FakeSession"] = []
 
@@ -144,7 +147,9 @@ class FakeRef:
 
     def __init__(self, session: FakeSession) -> None:
         self.id = session.session_id
+        self.timestamp = f"2026-08-21T00:00:00.{len(FakeSession._created):03d}"
         self.title = f"标题-{session.session_id}"
+        self.parent_session = None  # session-tree:树视图读父会话 id
 
 
 class FakeManager:
@@ -173,7 +178,15 @@ class FakeManager:
         raise ValueError(f"会话不存在: {session_id}")
 
     def list(self):
-        return [FakeRef(s) for s in self.sessions]
+        refs = [FakeRef(s) for s in self.sessions]
+        refs.sort(key=lambda r: (r.timestamp, r.id))
+        return refs
+
+    def continue_recent(self):
+        refs = self.list()
+        if not refs:
+            return self.create()
+        return self.switch(refs[-1].id)
 
     def fork(self, session_id: str, message_id: str | None = None):
         self.fork_calls.append((session_id, message_id))
@@ -545,6 +558,35 @@ def test_status_command_shows_session_info():
     assert "deepseek-v4-flash" in text
 
 
+def test_status_shows_usage_line_with_cache_hit():
+    """/status → 用量行:输入/输出(含推理)/缓存命中率(约,含原始计数)。"""
+    app, backend, manager = _make_app()
+    manager.current.usage = UsageStats(
+        input_tokens=1000, output_tokens=30, reasoning_tokens=20, cached_tokens=400
+    )
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "用量: 输入 1000 · 输出 50 · 缓存命中约 40.0% (400/1000)" in text
+
+
+def test_status_shows_usage_empty_state():
+    """/status → 无用量记录时显示空态,不展示误导性数值。"""
+    app, backend, manager = _make_app()
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "用量: (无)" in text
+    assert "缓存命中" not in text
+
+
+def test_status_usage_cache_ratio_clamped():
+    """/status → 缓存命中率钳制:命中 > 输入时显示 100%(不超界误导)。"""
+    app, backend, manager = _make_app()
+    manager.current.usage = UsageStats(input_tokens=100, cached_tokens=300)
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "缓存命中约 100.0% (300/100)" in text
+
+
 def test_tools_command_lists_tool_names():
     """/tools → 列出可用工具。"""
     app, backend, manager = _make_app()
@@ -555,11 +597,11 @@ def test_tools_command_lists_tool_names():
 
 
 def test_sessions_list_switch_and_new():
-    """/sessions:列表 / <id> 切换 / new 新建。"""
+    """/sessions:列表 / <id> 切换 / new 新建 / recent 恢复最近。"""
     app, backend, manager = _make_app()
     first = manager.current
 
-    backend.submit("/sessions")
+    backend.submit("/sessions list")
     text = _rendered_text(app, backend)
     assert "会话列表:" in text and first.session_id in text
 
@@ -574,6 +616,140 @@ def test_sessions_list_switch_and_new():
     backend.submit("/sessions ghost")
     text = _rendered_text(app, backend)
     assert "会话不存在" in text
+
+
+def test_sessions_recent_restores_last_session():
+    """/sessions recent → 恢复最近会话(continue_recent);无会话时新建。"""
+    app, backend, manager = _make_app()
+    first = manager.current
+    backend.submit("/sessions new")
+    assert manager.current is not first
+    backend.submit("/sessions recent")
+    # continue_recent 取最近创建(时间升序末位)= first 之后的会话。
+    assert manager.current is not first
+    text = _rendered_text(app, backend)
+    assert "已恢复最近会话" in text
+
+
+def test_sessions_no_args_opens_inline_picker():
+    """/sessions 无参 → 交互式选择器(命令名确认后弹会话候选浮层)。"""
+    app, backend, manager = _make_app()
+    backend.submit("/sessions")
+    # 无参走 _open_inline_picker("sessions"):输入框填入 "/sessions " 触发候选。
+    assert backend.input_texts[-1] == "/sessions "
+    # 输入变更 → 候选 = 会话 id 列表
+    backend.input_changed("/sessions ")
+    assert app._suggestion_kind == "value"
+    assert manager.current.session_id in app._suggestions
+
+
+def test_sessions_picker_confirm_switches_session():
+    """/sessions 选择器值确认 → 切换到所选会话(订阅跟随既有)。"""
+    app, backend, manager = _make_app()
+    first = manager.current
+    backend.submit("/sessions new")
+    other = manager.current
+    backend.submit("/sessions")
+    backend.input_changed("/sessions ")
+    # 选中 first(历史会话)→ 确认切换
+    app._suggestions = [first.session_id, other.session_id]
+    app._suggestion_index = 0
+    app._on_suggestion_confirm()
+    assert manager.current is first
+    text = _rendered_text(app, backend)
+    assert "已切换到会话" in text
+
+
+def test_sessions_picker_empty_state():
+    """/sessions 无会话时选择器显示空态提示(不切换)。"""
+    app, backend, manager = _make_app()
+    manager.sessions = []  # 无任何历史会话
+    manager.current = None
+    backend.submit("/sessions")
+    text = _rendered_text(app, backend)
+    assert "暂无历史会话" in text
+
+
+# -- 会话树(session-tree /tree 与 /sessions list 缩进)------------------------
+
+
+def _make_forked_manager() -> tuple[TuiApp, StubBackend, FakeManager]:
+    """构造 A(根)→ B(fork 自 A)的会话对,供树展示断言。"""
+    app, backend, manager = _make_app()
+    root = manager.current  # A
+    branch = manager.fork(root.session_id)  # B:fork 自 A
+    # FakeManager.fork 的 FakeRef 无 parent 关联:显式挂钩 A。
+    orig = manager.list
+
+    def _list():
+        refs = orig()
+        for ref in refs:
+            if ref.id == branch.session_id:
+                ref.parent_session = root.session_id
+        return refs
+
+    manager.list = _list  # type: ignore[method-assign]
+    return app, backend, manager
+
+
+def test_tree_command_shows_fork_chain():
+    """/tree → 展示 fork 链树(缩进 + 分支字符,含标题与 id)。"""
+    app, backend, manager = _make_forked_manager()
+    backend.submit("/tree")
+    text = _rendered_text(app, backend)
+    assert "会话树:" in text
+    root = manager.current
+    assert root.session_id in text
+    # 分支 B 以缩进行展示于 A 下(含分支字符)。
+    branch = manager.list()[-1]
+    assert "├─" in text or "└─" in text
+    assert branch.title in text
+
+
+def test_tree_command_switches_session():
+    """/tree <id> → 切换到指定会话(订阅跟随既有)。"""
+    app, backend, manager = _make_forked_manager()
+    branch_id = manager.list()[-1].id
+    root_id = manager.current.session_id
+    backend.submit(f"/tree {branch_id}")
+    assert manager.current.session_id == branch_id
+    backend.submit(f"/tree {root_id}")
+    assert manager.current.session_id == root_id
+
+
+def test_tree_command_unknown_session():
+    """/tree <id> 会话不存在 → 就地报错,不切换。"""
+    app, backend, manager = _make_forked_manager()
+    before = manager.current
+    backend.submit("/tree ghost")
+    text = _rendered_text(app, backend)
+    assert "会话不存在" in text
+    assert manager.current is before
+
+
+def test_tree_command_empty_state():
+    """/tree 无会话 → 空态提示。"""
+    app, backend, manager = _make_app()
+    manager.sessions = []
+    manager.current = None
+    backend.submit("/tree")
+    text = _rendered_text(app, backend)
+    assert "(暂无会话)" in text
+
+
+def test_sessions_list_shows_tree_indentation():
+    """/sessions list → 父子缩进展示(子分支缩进于父下),孤儿平级。"""
+    app, backend, manager = _make_forked_manager()
+    backend.submit("/sessions list")
+    text = _rendered_text(app, backend)
+    assert "会话列表:" in text
+    assert "├─" in text or "└─" in text
+    # 根与分支标题均可见(树渲染用 FakeRef.title)。
+    refs = manager.list()
+    root_ref = refs[0]
+    branch_ref = refs[-1]
+    assert root_ref.title in text
+    assert branch_ref.title in text
 
 
 def test_config_commands_use_rebuild_ports():
@@ -719,12 +895,58 @@ def test_submit_after_confirm_executes_command():
 
 
 def test_bare_slash_shows_all_commands():
-    """(回归:D2)单独输入 / 展示全量命令建议(注册表原序)。"""
+    """(回归:D2)单独输入 / 展示全量命令建议(注册表原序)。
+
+    回归(cost-transparency):候选列表必须容纳注册表全量——按 fuzzy_rank
+    排名截断会把排后命令(如 /quit /fork /compact /skills /mcp)永久隐藏;
+    渲染层用固定窗口裁剪视口,但候选本身不截断(浮层可滚动到达全部)。
+    """
     from codeagent.app.tui.commands import default_registry
 
     app, backend, _ = _make_app()
     backend.input_changed("/")
-    assert app._suggestions == list(default_registry())[:9]  # 浮层上限 _MAX_SUGGESTIONS
+    # 候选列表 = 注册表全量(原序),不按排名截断。
+    assert app._suggestions == list(default_registry())
+
+
+def test_suggestion_window_fixed_height_and_scrolls():
+    """补全浮层固定窗口:候选多于窗口时渲染行数 = 窗口高,高亮居中跟随。
+
+    - 首屏:渲染 _SUGGESTION_WINDOW 行(非全量),高亮第 1 条;
+    - 下移:高亮进入窗口中部后,窗口起点跟随滚动;
+    - 末条:窗口底部对齐,高亮可见(不被顶出窗口)。
+    """
+    from codeagent.app.tui.view import _SUGGESTION_WINDOW
+
+    app, backend, _ = _make_app()
+    # 用注册表全量命令(14 条 > 窗口 9)验证固定窗口滚动。
+    from codeagent.app.tui.commands import default_registry
+
+    names = list(default_registry())
+    assert len(names) > _SUGGESTION_WINDOW  # 前提:候选多于窗口
+    app._suggestions = list(names)
+    app._suggestion_index = 0
+    app._suggestion_kind = "command"
+    app._render_suggestions()
+    rendered = backend.suggestion_lines[-1]
+    assert len(rendered) == _SUGGESTION_WINDOW  # 固定窗口高,非 14 行全量
+    # 首行 = 首候选且高亮
+    first_text = "".join(span.text for span in rendered[0])
+    assert names[0] in first_text and "›" in first_text
+
+    # 下移 10 次:高亮进入中部后窗口起点跟随滚动(可见窗口不再从 0 起)。
+    for _ in range(10):
+        app._on_suggestion_navigate(1)
+    rendered = backend.suggestion_lines[-1]
+    first_text = "".join(span.text for span in rendered[0])
+    assert names[0] not in first_text  # 窗口已滚动,首行不是首候选
+
+    # 末条:窗口底部对齐,末候选高亮可见(不被顶出窗口)。
+    app._suggestion_index = len(names) - 1
+    app._render_suggestions()
+    rendered = backend.suggestion_lines[-1]
+    last_text = "".join(span.text for span in rendered[-1])
+    assert names[-1] in last_text and "›" in last_text
 
 
 def test_selector_empty_arg_shows_all_candidates():

@@ -522,3 +522,75 @@ def test_memory_store_fork_carries_compaction():
     state = store.load_context("m2")
     assert state.summary == "摘要"
     assert [m.id for m in state.messages] == [msgs[2].id]
+
+
+# -- usage 落库(cost-transparency)---------------------------------------------
+
+
+def _usage_dict(input_tokens=0, output_tokens=0, reasoning_tokens=0, cached_tokens=0):
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "cached_tokens": cached_tokens,
+    }
+
+
+def test_json_store_usage_append_and_aggregate(tmp_path):
+    """文件后端:usage entry 追加 + 读侧累计聚合(逐次相加)。"""
+    store = _store(tmp_path)
+    store.create("s1")
+    store.append_usage("s1", _usage_dict(input_tokens=100, output_tokens=20, cached_tokens=60))
+    store.append_usage("s1", _usage_dict(input_tokens=50, output_tokens=10, reasoning_tokens=5, cached_tokens=0))
+    total = store.load_usage("s1")
+    assert total.input_tokens == 150
+    assert total.output_tokens == 30
+    assert total.reasoning_tokens == 5
+    assert total.cached_tokens == 60
+    # append-only:usage entry 逐条追加,历史不被重写
+    lines = (tmp_path / "sessions" / "s1.jsonl").read_text(encoding="utf-8").splitlines()
+    usage_entries = [l for l in lines if json.loads(l).get("type") == "usage"]
+    assert len(usage_entries) == 2
+
+
+def test_json_store_usage_empty_and_legacy_compat(tmp_path):
+    """空会话返回全零;旧文件(无 usage entry)向后兼容不报错。"""
+    store = _store(tmp_path)
+    store.create("s1")
+    # 仅消息、无 usage:兼容旧文件
+    store.append_message("s1", Message(role="user", content="hi"))
+    total = store.load_usage("s1")
+    assert total.input_tokens == 0
+    assert total.output_tokens == 0
+    assert total.cached_tokens == 0
+    with pytest.raises(ValueError, match="不存在"):
+        store.load_usage("nope")
+
+
+def test_json_store_usage_missing_fields_tolerated(tmp_path):
+    """usage entry 字段缺失容错:缺省 0,不阻断聚合。"""
+    store = _store(tmp_path)
+    store.create("s1")
+    # 直接写残缺 usage entry(无 reasoning/cached)
+    store.append_usage("s1", {"input_tokens": 10})
+    total = store.load_usage("s1")
+    assert total.input_tokens == 10
+    assert total.reasoning_tokens == 0
+    assert total.cached_tokens == 0
+
+
+def test_memory_store_usage_aggregate_consistent():
+    """内存后端与文件后端同语义:累计聚合 + 空会话空态。"""
+    store = MemoryStore()
+    store.create("m1")
+    store.append_usage("m1", _usage_dict(input_tokens=100, output_tokens=20, cached_tokens=60))
+    store.append_usage("m1", _usage_dict(input_tokens=50, output_tokens=10, cached_tokens=0))
+    total = store.load_usage("m1")
+    assert total.input_tokens == 150
+    assert total.output_tokens == 30
+    assert total.cached_tokens == 60
+    with pytest.raises(ValueError, match="不存在"):
+        store.load_usage("nope")
+    # 无 usage 记录的会话:全零
+    store.create("m2")
+    assert store.load_usage("m2").input_tokens == 0

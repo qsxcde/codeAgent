@@ -433,3 +433,74 @@ TUI 顶层屏幕与聊天区的背景 SHALL 与终端自身背景融合:未显�
 
 - **WHEN** 模型调用返回认证失败(如 HTTP 401)
 - **THEN** 错误提示说明 API Key 无效或未配置,并引导使用 `/login` 命令配置密钥
+
+### Requirement: /sessions 会话恢复命令
+
+TUI `/sessions` 命令 SHALL 支持会话恢复:无参提交 SHALL 弹出交互式选择器(候选含标题,↑↓ 浏览、Enter 切换);`/sessions recent` SHALL 快速恢复最近有活动的会话(无会话时新建);`list` / `new` / `<id>` 既有语义保持;无会话时选择器显示空态,不切换。
+
+#### Scenario: 无参交互式选择恢复
+
+- **WHEN** 用户提交 `/sessions`(无参数)且存在历史会话
+- **THEN** 弹出交互式选择器,列出历史会话候选(标题 / id),用户 ↑↓ 选择后 Enter 切换并反馈
+
+#### Scenario: recent 快速恢复
+
+- **WHEN** 用户提交 `/sessions recent`
+- **THEN** 恢复最近有活动的会话(无会话时新建),反馈会话 id
+
+#### Scenario: 无会话空态
+
+- **WHEN** 用户提交 `/sessions`(无参数)且无历史会话
+- **THEN** 显示空态提示,不切换会话
+
+### Requirement: /status 显示用量
+
+TUI `/status` 命令输出 SHALL 包含会话累计用量行:输入 token、输出 token(推理 token 并入输出)、缓存命中率;缓存命中率 SHALL 按「约 cached/input」估算并钳制在 0~100%,标注为估算值;无用量记录时 SHALL 显示空态提示。
+
+#### Scenario: 显示累计用量
+
+- **WHEN** 会话存在已落库的用量记录且用户执行 `/status`
+- **THEN** 输出包含用量行,展示输入 token、输出 token(含推理)与缓存命中率(约 X%,含原始命中/输入计数)
+
+#### Scenario: 无用量空态
+
+- **WHEN** 会话尚无任何用量记录且用户执行 `/status`
+- **THEN** 用量区块显示空态提示(如「用量: (无)」),不展示误导性数值
+
+#### Scenario: 缓存命中率边界
+
+- **WHEN** 缓存命中 token 大于输入 token 或输入为 0
+- **THEN** 命中率钳制在 0~100%(有命中显示 100%,无命中显示 0%),原始计数仍如实展示
+
+### Requirement: /tree 命令
+
+TUI SHALL 提供 `/tree` 斜杠命令:无参 SHALL 展示当前会话所在 fork 链的树形视图(缩进 + 分支字符,节点含标题与 id);`/tree <session-id>` SHALL 切换到指定会话(订阅跟随既有);会话不存在 SHALL 就地提示错误;无会话 SHALL 显示空态。
+
+#### Scenario: 无参展示树
+
+- **WHEN** 用户提交 `/tree` 且存在会话
+- **THEN** 展示当前会话所在 fork 链树(缩进与分支字符,节点含标题与 id)
+
+#### Scenario: 切换节点
+
+- **WHEN** 用户提交 `/tree <session-id>` 且会话存在
+- **THEN** 切换会话(订阅跟随),反馈结果
+
+#### Scenario: 会话不存在
+
+- **WHEN** 用户提交 `/tree <session-id>` 且会话不存在
+- **THEN** 就地提示错误,不切换
+
+### Requirement: /sessions 父子缩进展示
+
+TUI `/sessions list` SHALL 以树形缩进展示会话列表:父会话在其行,子分支会话缩进于其下(复用会话树视图);展示 SHALL 保留标题与 id。
+
+#### Scenario: 列表树形缩进
+
+- **WHEN** 用户提交 `/sessions list` 且会话存在父子关系
+- **THEN** 子会话以缩进行展示于其父会话之下,含标题与 id
+
+#### Scenario: 孤儿平级
+
+- **WHEN** 会话列表含父不存在的孤儿会话
+- **THEN** 孤儿作为独立根以未缩进展示

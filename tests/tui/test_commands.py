@@ -94,13 +94,15 @@ def test_help_text_markup_available():
     assert "可用命令:" in help_text(REGISTRY)
 
 
-def test_picker_flag_only_for_config_commands():
-    """picker 面板数据驱动:仅 provider/model/effort/login 置位,其余命令保持纯文本补全。"""
+def test_picker_flag_only_for_picker_commands():
+    """picker 面板数据驱动:provider/model/effort/login/sessions 置位(选择器命令),
+    其余命令保持纯文本补全。sessions 自 session-resume 加入(交互式会话选择器)。"""
     assert {name for name, spec in REGISTRY.items() if spec.picker} == {
         "provider",
         "model",
         "effort",
         "login",
+        "sessions",
     }
 
 

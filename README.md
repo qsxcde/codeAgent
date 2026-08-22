@@ -2,7 +2,7 @@
 
 基于**自研编排**(2026-08-14 起,已弃用 langgraph/langchain)的编程 Agent,采用 Pi-Agent 的设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态),配合端口-适配器(hexagonal)做横切解耦。
 
-当前处于 **v0.3 阶段 1**(生态成型):模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均已落地,CLI 可对话、可调用 read / write / edit / bash / grep / find / ls / skill 八个工具,事件流可订阅,会话可恢复 / 切换 / 压缩 / 分叉,Skills 技能系统已启用。
+当前 **v0.3 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
 ## 项目介绍
 
@@ -15,17 +15,18 @@
 
 设计参考:[earendil-works/pi](https://github.com/earendil-works/pi) 的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。架构设计见 [`docs/design/architecture.md`](docs/design/architecture.md),需求基线见 [`docs/design/requirements-analysis.md`](docs/design/requirements-analysis.md),迭代记录见 [`docs/iteration/v0.1.md`](docs/iteration/v0.1.md) / [`v0.2.md`](docs/iteration/v0.2.md) / [`v0.3.md`](docs/iteration/v0.3.md)。
 
-### 当前能力(v0.3 阶段 1)
+### 当前能力(v0.3 阶段 1~4)
 
-- **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频"思考中"提示、人类可读的工具摘要及可展开 edit/write 意图差异、model/effort/cwd 状态栏、斜杠命令体系(含 `/provider` `/model` `/effort` `/login` `/skills` `/sessions` `/tools` `/status` 等)与模糊补全 / 选择器、Markdown 渲染、Esc 运行中打断 / 空闲退出并打印完整文档。
+- **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频"思考中"提示、人类可读的工具摘要及可展开 edit/write 意图差异、model/effort/cwd 状态栏、斜杠命令体系(含 `/provider` `/model` `/effort` `/login` `/skills` `/mcp` `/sessions` `/tree` `/tools` `/status` `/quit`)与模糊补全 / 选择器、Markdown 渲染、Esc 运行中打断 / 空闲退出并打印完整文档。
 - **Headless CLI**(默认形态):`--prompt` 一次性输入或 stdin 逐行读取,事件聚合输出最终回复。
 - **自研编排引擎**:`core/loop.py` 的 `run_turn` 自研 ReAct 主循环(模型→工具→继续/结束,事件直接 emit),消息归约按 tool_call_id 归属(uuid7);零 langgraph/langchain 依赖。
-- **会话层**:`SessionStore`(JSONL 树形,重启可恢复)+ `SessionManager`(create / switch / fork / dispose)+ 上下文压缩;成功轮次才落盘,失败/取消内存回滚;`abort` / `steer` / `followup`。
+- **会话层**:`SessionStore`(JSONL 树形,重启可恢复,含用量累计)+ `SessionManager`(create / switch / fork / dispose)+ 上下文压缩;成功轮次才落盘,失败/取消内存回滚;`abort` / `steer` / `followup`;`/tree` 和 `/sessions list` 提供分叉树导航。
 - **安全确认环**:执行前 `ApprovalPolicy`(bash 危险命令黑名单 + 语义级检测 + 文件访问边界三档 deny/ask/allow);headless 缺省 fail closed。
 - **模型配置层**:每 provider 一个文件(配置 + 工厂自包含),内置模型目录 + `models.json` 按 id upsert 合并,支持思考强度(`model:effort`)与运行时热切换(/provider /model /effort /login)。
-- **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个工具;bash 带危险命令黑名单、树级进程击杀、默认 120s 超时(上限 600)、输出保尾截断。
+- **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可按用户配置接入 `tools/list` / `tools/call` 工具，并以 `mcp__<server>__<tool>` 命名空间化和分组预算控制提示词膨胀。
 - **Skills 技能系统**:SKILL.md 格式 + 三源发现(内建 / 个人 / 项目)+ 渐进式披露(描述入 system prompt,**正文经 `skill` 工具按需获取**);`/skills` 手动加载。
-- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试(当前 598 项全绿)。
+- **用量透明**:归一并累计输入 / 输出 / 推理 / 缓存命中 token；`/status` 与 headless CLI 展示会话或本轮用量（不估算费用）。
+- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试（当前实测 666 项全绿）。
 
 ## 项目环境设置
 
@@ -125,7 +126,7 @@ uv run codeagent --yes --prompt "..."        # 显式承担风险
 ### 运行测试
 
 ```bash
-uv run pytest -q        # 全量离线测试(当前 598 项全绿,以实际运行结果为准)
+uv run pytest -q        # 全量离线测试(当前实测 666 项全绿,以实际运行结果为准)
 ```
 
 ## 项目结构
@@ -172,18 +173,19 @@ codeagent/
     │   └── compaction.py        #   上下文压缩(窗口摘要)
     │
     ├── tools/                   # [工具层] hexagonal
-    │   ├── base.py / registry.py#   AtomicTool 基类 + make_tools 工厂(8 工具)
+    │   ├── base.py / registry.py#   AtomicTool 基类 + make_tools 工厂(8 个内建工具)
     │   ├── security.py          #   执行前安全分类器(deny/ask/allow)
     │   ├── atomic/              #   read / write / edit / bash / grep / find / ls / skill
+    │   ├── mcp/                 #   MCP client / loader / adapter / budget / config
     │   └── shared/              #   FsOps 抽象 / paths / textfile / truncate / mutation_queue / ignore
     │
-    └── resources/ extensions/   # [资源/扩展层]  skills 已启用(v0.3 阶段 1);插件 v0.3 阶段 2
+    └── resources/               # [资源层] 内建 skills / prompts（Skills 已启用）
 
-tests/                          # 按 src 模块镜像分包,598 项全绿(离线)
+tests/                          # 按 src 模块镜像分包,666 项全绿(离线实测)
 ├── conftest.py                 #   _isolate_config_dir / memory_fsops 夹具
 ├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
 ├── test_decoupling.py          #   分层解耦 AST 扫描(AST 强制校验)
-├── ai/                         #   factory / fake_client / model_store / providers / sse / transport
+├── ai/ / mcp/                  #   模型层；MCP mock server / client / adapter / budget
 ├── core/                       #   loop / messages / events
 ├── session/                    #   session / store / manager / compaction
 ├── tools/                      #   test_tools.py + test_security.py
@@ -192,16 +194,9 @@ tests/                          # 按 src 模块镜像分包,598 项全绿(离�
 
 **分层依赖规则**:依赖单向流动,跨层 import 只允许出现在 `app/container.py` / `app/main.py`。判据:`core/` 中 grep 不到 `config / tools / ai / session` 字面量,由 `tests/test_decoupling.py` AST 扫描强制校验。详见 [`docs/design/architecture.md`](docs/design/architecture.md) §8-9。
 
-## 待完成的功能
+## 当前状态与后续
 
-当前 **v0.3 阶段 1**(Skills)已落地,剩余按 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md) 推进:
-
-1. **插件系统**(v0.3 阶段 2):`extensions/` 两阶段(注册→绑定),插件可注册工具与命令。
-2. **MCP 客户端**(v0.3 阶段 3):外部工具接入(最小协议面 + 工具数分组预算)。
-3. **轻量记忆**(v0.3 阶段 4):`~/.codeagent/memory` 跨会话偏好/事实。
-4. **成本透明**(v0.3 阶段 5):usage 落库 + 费用估算 + 状态栏/事件流展示。
-5. **会话树 UI**(v0.3 阶段 6):fork 链导航(`/tree` 或 `/sessions` 父子展示增强)。
-6. **Web / HTTP 事件订阅**(v0.3 阶段 7):SSE 订阅 + 会话 create/run/subscribe 闭环(F-27,承接 v0.2 平台部署改写决策)。
+v0.3 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。以下能力已明确移出 v0.3，待真实需求出现时重估：插件系统、轻量记忆与 Web / HTTP 事件订阅。
 
 ## 参考
 

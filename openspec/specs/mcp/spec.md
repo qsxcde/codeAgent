@@ -1,10 +1,10 @@
-# mcp Delta Specification
+# mcp Specification
 
 ## Purpose
 
 定义 MCP(Model Context Protocol)客户端能力的对外行为契约:MCP server 配置与信任边界、后台线程桥接、外部工具接入(命名/适配/分组预算)、失败语义与加载结果可见性。MCP 是工具扩展的唯一通道(插件系统已移出),server 由用户显式配置 = 信任。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: MCP server 配置与信任边界
 
@@ -32,7 +32,7 @@ MCP server 的工具 SHALL 以 `mcp__<server>__<tool>` 命名接入工具列表,
 #### Scenario: 工具命名带前缀
 
 - **WHEN** server "github" 声明工具 "list_issues"
-- **THEN** 接入的工具名为 `github:list_issues`,与内建工具名不冲突
+- **THEN** 接入的工具名为 `mcp__github__list_issues`,与内建工具名不冲突
 
 #### Scenario: 调用成功回填文本
 
@@ -100,29 +100,3 @@ server 启动失败 / 初始化失败 / 工具列表获取失败时,该 server S
 
 - **WHEN** 装配产生 MCP 诊断(失败或裁剪)
 - **THEN** 诊断对用户可见,可展示可断言
-
-## MODIFIED Requirements
-
-### Requirement: 工具注册与装配
-
-系统 SHALL 通过 `make_tools` 工厂装配八个原子工具,名称固定为 `read`、`write`、`edit`、`bash`、`grep`、`find`、`ls`、`skill`。每个工具 SHALL 对外暴露稳定的名称、描述与输入参数 schema,供编排层绑定;`skill` 工具 SHALL 在装配时注入技能注册表(组合根提供),不读取配置、不跨层;MCP 工具 SHALL 经组合根加载后追加到工具列表(内建工具恒保留),命名含 `{server}:{tool}` 前缀。
-
-#### Scenario: 工厂产出全部工具
-
-- **WHEN** 调用 `make_tools` 装配工具集
-- **THEN** 返回的工具列表中包含全部八个名称:read、write、edit、bash、grep、find、ls、skill
-
-#### Scenario: 装配时注入工作目录
-
-- **WHEN** `make_tools` 收到的配置含 `cwd`
-- **THEN** 全部八个工具都以该 `cwd` 为相对路径解析基准
-
-#### Scenario: 技能工具注入注册表
-
-- **WHEN** 装配 `skill` 工具
-- **THEN** 技能注册表由组合根注入,工具按名称查找技能;未注入注册表时工具返回不可用提示
-
-#### Scenario: MCP 工具追加
-
-- **WHEN** 用户级 MCP 配置存在且 server 加载成功
-- **THEN** 工具列表在八个内建工具之后追加 MCP 工具(`{server}:{tool}` 命名),内建工具不受影响

@@ -27,6 +27,7 @@ from codeagent.app.tui.commands import (
     help_text,
     parse,
 )
+from codeagent.session.tree import SessionNode, build_tree
 from codeagent.app.tui.components import FooterInfo, Span, TuiModel, ToolCallBlock
 from codeagent.app.tui.fuzzy import fuzzy_rank
 from codeagent.app.tui.theme import ACCENT, DIM, ERROR, SUCCESS, WARNING
@@ -38,8 +39,13 @@ _DEFAULT_EXIT_WIDTH = 120
 #: 命令注册表(模块级单例;parse/dispatch 共用同一份)。
 _COMMANDS = default_registry()
 
-#: 建议浮层最多展示行数。
-_MAX_SUGGESTIONS = 9
+#: 建议浮层候选列表上限(全量候选参与模糊排序;浮层本身固定窗口展示,
+#候选经视口裁剪,不存在"排后命令被截断隐藏"问题)。
+_MAX_SUGGESTIONS = 64
+
+#: 补全浮层固定窗口高度(行):候选多于窗口时视口滚动,高亮项居中跟随;
+#少于窗口时按实际候选数展示(浮层不虚高)。
+_SUGGESTION_WINDOW = 9
 
 #: picker 命令候选缺失/未注入热切换时的用法提示。
 _PICKER_HINTS = {
@@ -47,6 +53,7 @@ _PICKER_HINTS = {
     "model": "/model <model[:effort]>: 切换模型(支持内联思考强度)",
     "effort": "/effort <level>: 切换思考强度",
     "login": "/login <provider>: 配置该 provider 的 API key 并切换",
+    "sessions": "暂无历史会话(输入 /sessions new 新建)",
 }
 
 
@@ -202,7 +209,7 @@ class TuiApp:
         if sep == "":
             # 无空格:命令名补全(name 可为空 = 裸 "/" 全量)。
             return name, list(_COMMANDS)
-        if name in ("provider", "model", "effort", "login", "skills"):
+        if name in ("provider", "model", "effort", "login", "skills", "sessions"):
             # 有空格:选择器候选(rest 可为空 = 全量候选)。
             return rest, self._picker_candidates(name)
         return None
@@ -217,6 +224,9 @@ class TuiApp:
             return list(self._candidates.get("login", []) or self._candidates.get("provider", []))
         if name == "skills":
             return [s.name for s in self._skills]
+        if name == "sessions":
+            # 会话选择器候选 = 会话 id(唯一、切换用;展示串经 _value_label)。
+            return [ref.id for ref in self._manager.list()]
         return list(self._candidates.get(name, []))
 
     def _on_input_changed(self, text: str) -> None:
@@ -268,6 +278,9 @@ class TuiApp:
             if cmd_name == "login":
                 # /login:选中 provider 即进入密钥输入态(不是配置切换)。
                 self._begin_login(name)
+            elif cmd_name == "sessions":
+                # /sessions 值确认:切换到所选会话(订阅跟随既有,切换无感)。
+                self._cmd_sessions(Command("sessions", (name,)))
             elif self._apply_config(**self._picker_apply_kwargs(cmd_name, name)):
                 if cmd_name == "provider":
                     self._provider = name
@@ -287,8 +300,17 @@ class TuiApp:
         if not self._suggestions:
             self._backend.set_suggestions([])
             return
+        # 固定窗口视口滚动(design:浮层高度 = _SUGGESTION_WINDOW 行,高亮项居中
+        # 跟随;候选少于窗口时按实际数展示,浮层不虚高)。窗口切片只影响渲染,
+        # _suggestion_index 仍指向全量候选列表(确认逻辑不受影响)。
+        total = len(self._suggestions)
+        window = min(_SUGGESTION_WINDOW, total)
+        start = min(
+            max(0, self._suggestion_index - window // 2), max(0, total - window)
+        )
         lines: list[list[Span]] = []
-        for index, name in enumerate(self._suggestions):
+        for index in range(start, start + window):
+            name = self._suggestions[index]
             active = index == self._suggestion_index
             fg = ACCENT if active else DIM
             spans = [Span("› " if active else "  ", fg=fg)]
@@ -300,17 +322,32 @@ class TuiApp:
                 # 值候选:当前生效项打 ✓;login 语境 = 已配置 key 的 provider 打 ✓。
                 marked = self._value_marked(name) if self._suggestion_kind == "value" else False
                 spans.append(Span("✓ " if marked else "  ", fg=SUCCESS if marked else DIM))
-                spans.append(Span(name, fg=fg))
+                spans.append(Span(self._value_label(name), fg=fg))
             lines.append(spans)
         self._backend.set_suggestions(lines)
 
     def _value_marked(self, name: str) -> bool:
         """值候选的 ✓ 标记:model/effort/provider 标记当前生效项;login 标记
-        已配置 key 的 provider(组合根注入的 ``configured_providers``)。"""
+        已配置 key 的 provider(组合根注入的 ``configured_providers``);
+        sessions 标记当前会话。"""
         cmd_name = self._last_text[1:].partition(" ")[0]
         if cmd_name == "login":
             return name in self._configured_providers
+        if cmd_name == "sessions":
+            current = self._manager.current
+            return current is not None and name == current.session_id
         return bool(self._current_picker_value()) and name == self._current_picker_value()
+
+    def _value_label(self, name: str) -> str:
+        """值候选的展示串:sessions 显示标题(+ id 前 8 位,可区分),其余原样。"""
+        cmd_name = self._last_text[1:].partition(" ")[0]
+        if cmd_name != "sessions":
+            return name
+        for ref in self._manager.list():
+            if ref.id == name:
+                title = ref.title or "(无标题)"
+                return f"{title} ({name[:8]}…)"
+        return name
 
     # -- 内联选择(/provider /model /effort)--------------------------------
 
@@ -326,7 +363,8 @@ class TuiApp:
             self.model.append_info("当前环境不支持保存密钥(未注入密钥保存器)")
             self._schedule_render()
             return
-        if kind != "login" and self._rebuild_ports is None:
+        if kind != "login" and kind != "sessions" and self._rebuild_ports is None:
+            # sessions 是会话切换选择器,不依赖端口重建器(仅需会话存储)。
             self.model.append_info(_PICKER_HINTS[kind])
             self._schedule_render()
             return
@@ -429,6 +467,7 @@ class TuiApp:
             "status": self._cmd_status,
             "tools": self._cmd_tools,
             "sessions": self._cmd_sessions,
+            "tree": self._cmd_tree,
             "fork": self._cmd_fork,
             "compact": self._cmd_compact,
             "skills": self._cmd_skills,
@@ -481,7 +520,31 @@ class TuiApp:
         if self._mcp_diagnostics:
             lines.append("MCP:")
             lines.extend(f"  {message}" for message in self._mcp_diagnostics)
+        # 用量(cost-transparency:会话累计 input/output(含推理)/缓存命中率)。
+        lines.append(f"用量: {self._usage_line(session)}")
         self.model.append_info("\n".join(lines))
+
+    def _usage_line(self, session: Any | None) -> str:
+        """格式化会话累计用量行(cost-transparency)。
+
+        - 无会话 / 无 store / 全零 → 空态「(无)」;
+        - 输出 = output + reasoning(展示层并入);
+        - 缓存命中率 ≈ cached / input,钳制 0~100%,标注「约」。
+        """
+        if session is None:
+            return "(无)"
+        usage = session.usage
+        if not (usage.input_tokens or usage.output_tokens):
+            return "(无)"
+        input_k = usage.input_tokens
+        output = usage.output_tokens + usage.reasoning_tokens
+        cached = usage.cached_tokens
+        if input_k > 0 and cached > 0:
+            ratio = min(100.0, cached / input_k * 100.0)
+            hit = f" · 缓存命中约 {ratio:.1f}% ({cached}/{input_k})"
+        else:
+            hit = ""
+        return f"输入 {input_k} · 输出 {output}{hit}"
 
     def _cmd_skills(self, cmd: Command) -> None:
         """/skills:无参列出已加载技能;带参手动加载(立即注入正文并触发一轮回复)。
@@ -551,19 +614,28 @@ class TuiApp:
         self.model.append_info(text)
 
     def _cmd_sessions(self, cmd: Command) -> None:
-        action = cmd.args[0] if cmd.args else "list"
+        # session-resume:无参 = 交互式选择器(↑↓ 选历史会话切换,与 /provider 同款);
+        # recent = 快速恢复最近会话;list/new/<id> 为既有语义。
+        if not cmd.args:
+            self._open_inline_picker("sessions")
+            return
+        action = cmd.args[0]
         if action == "list":
             refs = self._manager.list()
             if not refs:
                 self.model.append_info("(暂无会话)")
                 return
             lines = ["会话列表:"]
-            for ref in refs:
-                lines.append(f"  {ref.id}  {ref.title or ''}".rstrip())
+            # session-tree:父子缩进展示(复用 build_tree;孤儿平级)。
+            lines.extend(self._tree_lines(build_tree(refs)))
             self.model.append_info("\n".join(lines))
         elif action == "new":
             session = self._manager.create()
             self.model.append_info(f"已新建会话: {session.session_id}")
+        elif action == "recent":
+            # session-resume:快速恢复最近有活动的会话(continue_recent;无会话时新建)。
+            session = self._manager.continue_recent()
+            self.model.append_info(f"已恢复最近会话: {session.session_id}")
         else:
             try:
                 session = self._manager.switch(action)
@@ -571,6 +643,45 @@ class TuiApp:
                 self.model.append_info(str(exc))
                 return
             self.model.append_info(f"已切换到会话: {session.session_id}")
+
+    def _cmd_tree(self, cmd: Command) -> None:
+        """/tree [session-id]:展示会话 fork 链树;/tree <id> 切换到指定节点。
+
+        - 无参:展示当前会话所在 fork 链树(缩进 + 分支字符,含标题与 id);
+        - ``/tree <id>``:切换到该会话(复用 manager.switch,订阅跟随);
+        - 会话不存在就地报错;无会话显示空态。
+        """
+        if cmd.args:
+            target = cmd.args[0]
+            try:
+                session = self._manager.switch(target)
+            except ValueError as exc:
+                self.model.append_info(str(exc))
+                return
+            self.model.append_info(f"已切换到会话: {session.session_id}")
+            return
+        refs = self._manager.list()
+        if not refs:
+            self.model.append_info("(暂无会话)")
+            return
+        lines = ["会话树:"]
+        lines.extend(self._tree_lines(build_tree(refs)))
+        self.model.append_info("\n".join(lines))
+
+    def _tree_lines(self, roots: list[SessionNode], prefix: str = "") -> list[str]:
+        """树节点 → 缩进文本行(分支字符:├─ 中间分支 / └─ 末分支 / │ 延续)。
+
+        复用 build_tree 输出;孤儿(独立根)以未缩进平级展示。
+        """
+        lines: list[str] = []
+        for index, node in enumerate(roots):
+            last = index == len(roots) - 1
+            branch = "└─ " if last else "├─ "
+            title = node.ref.title or node.ref.id
+            lines.append(f"{prefix}{branch}{title}  ({node.ref.id})")
+            child_prefix = prefix + ("   " if last else "│  ")
+            lines.extend(self._tree_lines(node.children, child_prefix))
+        return lines
 
     def _cmd_compact(self, cmd: Command) -> None:
         """/compact:压缩当前会话上下文(异步执行,完成后反馈)。"""

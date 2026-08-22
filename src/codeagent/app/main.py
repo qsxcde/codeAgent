@@ -20,6 +20,7 @@ _EV_TOOL_CALL = "tool_call"
 _EV_TURN_END = "turn_end"
 _EV_ERROR = "error"
 _EV_RUN_CANCELLED = "run_cancelled"
+_EV_USAGE = "usage"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -98,18 +99,20 @@ def _list_sessions() -> None:
         print(f"{ref.id}\t{ref.timestamp}\t{ref.model or '-'}\t{ref.title or '(无标题)'}")
 
 
-async def _respond(session: Any, prompt: str) -> str:
-    """运行一轮对话,把会话事件流聚合为最终回复(替代已移除的 TUI 客户端)。
+async def _respond(session: Any, prompt: str) -> tuple[str, dict[str, int]]:
+    """运行一轮对话,把会话事件流聚合为最终回复与本轮用量。
 
     - ``text_delta`` 增量累积为回复文本;
     - ``tool_call`` 前的文本是思考/说明,不是最终回复,累积清零;
     - ``agent_message`` 兜底完整回复(session 仅在未走增量路径时才发,去重);
+    - ``usage`` 事件逐次累加(cost-transparency:多步 ReAct 求和);
     - ``turn_end`` / ``error`` / ``run_cancelled`` 终止本轮。
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
     unsubscribe = session.subscribe(lambda ev: queue.put_nowait(ev))
     task = asyncio.create_task(session.run(prompt))
     parts: list[str] = []
+    usage: dict[str, int] = {}
     try:
         while True:
             event = await queue.get()
@@ -120,13 +123,31 @@ async def _respond(session: Any, prompt: str) -> str:
                 parts.append(str(getattr(event, "payload", "") or ""))
             elif ev_type == _EV_TOOL_CALL:
                 parts = []
+            elif ev_type == _EV_USAGE:
+                payload = dict(event.payload or {})
+                for key in ("input_tokens", "output_tokens", "cached_tokens"):
+                    usage[key] = usage.get(key, 0) + int(payload.get(key, 0) or 0)
             elif ev_type in (_EV_TURN_END, _EV_ERROR, _EV_RUN_CANCELLED):
                 break
     finally:
         unsubscribe()
         if not task.done():
             task.cancel()
-    return "".join(parts)
+    return "".join(parts), usage
+
+
+def _format_usage_line(usage: dict[str, int]) -> str:
+    """headless 尾部用量行(cost-transparency):输入/输出/缓存命中率。"""
+    if not usage.get("input_tokens"):
+        return ""
+    input_k = int(usage["input_tokens"])
+    output = int(usage.get("output_tokens", 0))
+    cached = int(usage.get("cached_tokens", 0))
+    hit = ""
+    if cached > 0:
+        ratio = min(100.0, cached / input_k * 100.0)
+        hit = f" · 缓存命中约 {ratio:.1f}% ({cached}/{input_k})"
+    return f"用量: 输入 {input_k} · 输出 {output}{hit}"
 
 
 async def _headless_once(session: Any, prompt: str) -> None:
@@ -134,7 +155,11 @@ async def _headless_once(session: Any, prompt: str) -> None:
     if not prompt:
         return
     print(f"你: {prompt}")
-    print(await _respond(session, prompt))
+    text, usage = await _respond(session, prompt)
+    print(text)
+    line = _format_usage_line(usage)
+    if line:
+        print(line)
 
 
 async def _headless_loop(session: Any) -> None:
@@ -143,4 +168,8 @@ async def _headless_loop(session: Any) -> None:
         if not line:
             continue
         print(f"你: {line}")
-        print(await _respond(session, line))
+        text, usage = await _respond(session, line)
+        print(text)
+        line_out = _format_usage_line(usage)
+        if line_out:
+            print(line_out)

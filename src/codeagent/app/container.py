@@ -207,17 +207,31 @@ def _to_chat_message(m: Message) -> ChatMessage:
 
 
 def _usage_of(usage: dict[str, Any] | None) -> dict[str, int] | None:
-    """usage 归一为 core 形状;兼容 OpenAI 口径(prompt/completion_tokens)。"""
+    """usage 归一为 core 形状;兼容 OpenAI 口径(prompt/completion_tokens)。
+
+    cost-transparency:新增 ``cached_tokens`` 缓存命中——兼容 OpenAI 口径
+    ``prompt_tokens_details.cached_tokens`` 与供应商口径 ``prompt_cache_hit_tokens``
+    双拼写;``reasoning_tokens`` 保留原始字段(展示层并入 output,不在此换算)。
+    """
     if not usage:
         return None
     input_tokens = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
     output_tokens = usage.get("output_tokens") or usage.get("completion_tokens") or 0
     details = usage.get("output_token_details") or {}
     reasoning = details.get("reasoning") or usage.get("reasoning_tokens") or 0
+    # 缓存命中:OpenAI 口径在 prompt_tokens_details.cached_tokens;
+    # 供应商口径在 prompt_cache_hit_tokens(如 DeepSeek)。
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    cached = (
+        prompt_details.get("cached_tokens")
+        or usage.get("prompt_cache_hit_tokens")
+        or 0
+    )
     return {
         "input_tokens": int(input_tokens),
         "output_tokens": int(output_tokens),
         "reasoning_tokens": int(reasoning),
+        "cached_tokens": int(cached),
     }
 
 

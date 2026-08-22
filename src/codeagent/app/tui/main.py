@@ -11,7 +11,16 @@ __all__ = ["run_tui"]
 
 
 def run_tui() -> None:
-    """启动交互式终端(alt 屏,阻塞直到退出)。"""
-    from codeagent.app import container
+    """启动交互式终端(alt 屏,阻塞直到退出)。
 
-    container.create_tui_app().start()
+    会话存储装配在入口处完成(与 headless ``--continue/--session`` 同源):
+    TUI 会话持久化到 ``~/.codeagent/sessions/``——``/sessions`` 切换、
+    ``/fork`` 分叉、``/compact`` 压缩与用量落库(/status 展示)全部依赖 store;
+    不装配则 TUI 会话不落盘、用量无落库点(回归:cost-transparency 真实测试
+    /status 显示「用量: (无)」)。
+    """
+    from codeagent.app import container
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.session.store import JsonFileStore
+
+    container.create_tui_app(store=JsonFileStore(CONFIG_DIR / "sessions")).start()

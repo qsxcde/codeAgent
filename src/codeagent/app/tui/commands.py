@@ -88,7 +88,13 @@ def default_registry() -> dict[str, CommandSpec]:
         "help": CommandSpec("help", "显示命令帮助"),
         "clear": CommandSpec("clear", "清空聊天区"),
         "status": CommandSpec("status", "显示会话状态"),
-        "sessions": CommandSpec("sessions", "列出 / 新建 / 切换会话", args=("action",)),
+        "sessions": CommandSpec(
+            "sessions",
+            "列出 / 新建 / 切换 / 恢复会话(recent = 最近)",
+            args=("action",),
+            picker=True,
+        ),
+        "tree": CommandSpec("tree", "展示会话 fork 链树(/tree <id> 切换)", args=("session-id",)),
         "tools": CommandSpec("tools", "列出可用工具"),
         "provider": CommandSpec("provider", "切换 provider", args=("name",), picker=True),
         "login": CommandSpec(

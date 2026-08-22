@@ -50,7 +50,7 @@ def _forbidden_for(rel: str) -> list[str]:
         return forbidden
     if rel.startswith("app/"):
         return ["codeagent.core", "codeagent.session", "codeagent.ai", "codeagent.tools"]
-    return []  # 顶层 __init__ / resources / extensions(占位,无依赖)
+    return []  # 顶层 __init__ / resources(占位,无依赖)
 
 
 def _imported_modules(tree: ast.Module) -> list[str]:

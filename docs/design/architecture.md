@@ -1,8 +1,8 @@
 # codeagent 架构设计文档
 
-> 版本: v0.3(阶段 1 Skills 落地后校准)
+> 版本: v0.3(阶段 1~4 落地后校准)
 > 适用范围: 自研编排(2026-08-14 起,已弃用 langgraph/langchain)的 Code Agent 项目
-> 更新日期: 2026-08-21(校准至当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills 系统、TUI 命令体系)
+> 更新日期: 2026-08-22(校准至当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills / MCP / token 用量 / 会话树、TUI 命令体系)
 > 事实来源: 本文描述当前代码树;演进决策见 [self-built-orchestration-blueprint.md](./self-built-orchestration-blueprint.md)(决策与收益记录)、迭代记录 `docs/iteration/v0.1.md` / `v0.2.md` / `v0.3.md`
 
 ## 1. 背景与目标
@@ -35,25 +35,24 @@
 ## 3. 现状
 
 - 工具链:`uv` + `src` 布局,Python 3.12。
-- 依赖:`httpx`、`pydantic`、`pydantic-settings`、`textual`;dev 依赖 `pytest`。**无 langchain/langgraph**。
+- 依赖:`httpx`、`mcp`、`pydantic`、`pydantic-settings`、`pyyaml`、`textual`;dev 依赖 `pytest`。**无 langchain/langgraph**。
 - 入口:`pyproject.toml` 中 `codeagent = "codeagent.app.main:main"`。
-- **已完成(v0.1~v0.3 阶段 1)**:
+- **已完成(v0.1~v0.3 阶段 1~4)**:
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 仅存 `llm_provider`。
 - `ai/` 层:五层细分(providers / catalog / protocol / transport + factory 统一入口),**无桥接层**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);适配自研循环的 `ChatModelPort` 在组合根 `app/container.py`。
-- 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个工具;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
+- 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
 - `core/` 编排层:ports / loop / messages / events(全异步自研 ReAct),模块顶层零副作用。
-- `session/` 会话层:bus + session + manager + store(JSONL 树形)+ compaction;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
+- `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
 - 事件 11 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
-- 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` 等命令体系)。
+- 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)。
 - Skills 系统(v0.3 阶段 1):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
+- MCP(v0.3 阶段 2):用户级配置发现、工具 schema 适配、权限分类、`/mcp` 可见诊断与分组预算。
+- token 用量透明(v0.3 阶段 3):usage 归一、会话级 append-only 落库、`/status` 与 headless CLI 展示输入 / 输出 / 缓存命中（不做费用估算）。
+- 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
-- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **598 项全绿**(2026-08-21 综合审计 12 条 CONFIRMED 缺陷已全部修复闭环,门禁恢复可复现,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5)。
+- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **666 项全绿**(2026-08-22 实测；2026-08-21 综合审计的 12 条 CONFIRMED 缺陷已修复闭环,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5)。
 
-**待办(v0.3 起)**:
-
-1. 插件系统(`extensions/` 两阶段注册→绑定)、MCP 客户端(最小面 + 工具数分组预算)。
-2. 轻量记忆(`~/.codeagent/memory`)、成本透明(usage 落库 + 费用估算)。
-3. 会话树 UI(`/tree` 导航)、Web/HTTP 事件流订阅(F-27,承接 v0.2 对平台部署的改写决策)。
+**v0.3 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。
 
 ## 4. 总体结构
 
@@ -120,18 +119,16 @@ codeagent/
 │   │
 │   ├── tools/                        # [工具层] hexagonal ✅ 已落地
 │   │   ├── base.py                   #   AtomicTool 基类(Args pydantic schema → invoke)
-│   │   ├── registry.py               #   make_tools 工厂(8 个工具,cwd/ops 注入)
+│   │   ├── registry.py               #   make_tools 工厂(8 个内建工具,cwd/ops 注入)
 │   │   ├── security.py               #   执行前安全分类器(classify_bash/file/tool)
 │   │   ├── atomic/                   #   read / write / edit / bash / grep / find / ls / skill
+│   │   ├── mcp/                      #   MCP client / loader / adapter / budget / config
 │   │   └── shared/                   #   FsOps 抽象 / paths / textfile / truncate / mutation_queue / ignore
 │   │
-│   ├── resources/                    # [资源层]  ← Pi 资源系统(v0.3 阶段 1 已启用 skills)
-│   │   └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
-│   │
-│   └── extensions/                   # [扩展层]  ← v0.3 阶段 2(占位)
-│       └── __init__.py               #   插件扩展占位
+│   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
+│       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按 src 模块镜像分包,590 项(2026-08-19 后基线)
+└── tests/                            # 按 src 模块镜像分包,666 项(2026-08-22 实测)
     ├── conftest.py                   # _isolate_config_dir / memory_fsops 夹具
     ├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
     ├── test_decoupling.py            # 分层解耦 AST 扫描(AST 强制校验)
@@ -156,8 +153,7 @@ codeagent/
 | `session/` | 有状态会话 + 事件分发 + 持久化 + 压缩 | 不 import ai / tools / config |
 | `tools/` | 工具层:原子工具 + 注册表 + 安全分类器 + 共享设施 | 不 import 模型、编排;`shared/` 只被 tools 内部使用 |
 | `app/tui/` | 交互式终端(视图/组件/命令/后端端口) | view 只依赖 TuiBackend 端口;禁止 import textual(具体后端除外) |
-| `resources/` | 技能 / 提示词按需加载 | v0.3 阶段 1 skills 已启用 |
-| `extensions/` | 插件:两阶段(注册→绑定) | v0.3 阶段 2 |
+| `resources/` | 技能 / 提示词按需加载 | v0.3 skills 已启用 |
 
 ### 4.3 配置命名空间(重要)
 
@@ -346,7 +342,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | `app/skills.py` + `skill` 工具 | 2026-08-19 `skills-system`:三源发现 + 渐进式披露(描述入 prompt,正文经 skill 工具按需获取) |
 | `app/agents.py` | AGENTS.md 全局→项目→子目录分层加载(2026-08-15 `agents-md-hierarchy`) |
 | `app/tui/`(view/components/backend) | TUI 恢复 MVP(2026-08-13,E9~E11)+ 命令体系 / 补全 / 选择器(2026-08-14)+ /login(2026-08-19) |
-| `resources/` + `extensions/` | Pi 资源 / 扩展系统(资源 v0.3 阶段 1 已启用;扩展阶段 2) |
+| `resources/` | Pi 资源系统（v0.3 skills 已启用；插件系统移出本迭代） |
 
 ## 11. 落地路线
 
@@ -354,9 +350,9 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 |---|---|---|
 | **v0.1 最小可跑** | `config + container + ai + tools + core + session + app(main/tui)` | CLI/TUI 可对话、可调用七个工具(当时集;v0.3 加 skill 后为八工具),事件流可订阅 |
 | **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
-| **v0.3 生态成型** | Skills(✅ 阶段 1)+ 插件 + MCP + 轻量记忆 + 成本透明 + 会话树 UI + Web/HTTP 事件订阅(F-27) | 扩展生态、体验差异、平台导航 |
+| **v0.3 生态成型** | Skills(✅)+ MCP(✅)+ 成本透明(✅)+ 会话树 UI(✅);插件 / 轻量记忆 / Web 经评估移出(见 E5/E4/E12) | 扩展生态、体验差异、平台导航 |
 
-v0.3 当前进度:阶段 1 Skills 已落地(2026-08-21 审计修复后 598/598 全绿);阶段 2~7(插件 / MCP / 记忆 / 成本 / 会话树 / Web)待排。
+v0.3 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树,2026-08-22 基线 **666/666**);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64: pytest 666/666、OpenSpec 主规格 9/9、补丁格式检查通过)。
 
 ## 12. 参考
 

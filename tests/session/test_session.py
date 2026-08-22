@@ -587,9 +587,67 @@ def test_second_compact_incremental_merge():
     # 二次压缩:既有摘要传入(增量合并,桩拼接 <prev>)
     assert summarizer.calls[-1][1] == first_summary
     assert first_summary in sess._summary
-    # 摘要链:新 entry 的 parentId = 旧 entry id
+    # 摘要链:new entry 的 parentId = 旧 entry id
     _, second = store._compactions[-1]
     assert second.parent_id == first_entry
     state = store.load_context(sess.session_id)
     assert state.entry_id != first_entry  # 新 entry
     assert state.summary == sess._summary
+
+
+# -- usage 落库(cost-transparency)---------------------------------------------
+
+
+def test_successful_run_persists_usage():
+    """成功轮:本轮聚合 usage(input/output/reasoning/cached)落库。"""
+    store = MemoryStore()
+    model = FakeClient(
+        usage={
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 60},
+        },
+        responses=["回复"],
+    )
+    sess = _session(model, store=store)
+    asyncio.run(sess.run("hi"))
+    total = store.load_usage(sess.session_id)
+    assert total.input_tokens == 100
+    assert total.output_tokens == 20
+    assert total.cached_tokens == 60
+    assert total.reasoning_tokens == 0
+
+
+def test_usage_aggregates_across_turns():
+    """多轮成功:usage 跨轮累计(第二轮在首轮之上累加)。"""
+    store = MemoryStore()
+    model = FakeClient(
+        usage={"input_tokens": 50, "output_tokens": 10},
+        responses=["答1", "答2"],
+    )
+    sess = _session(model, store=store)
+    asyncio.run(sess.run("问1"))
+    asyncio.run(sess.run("问2"))
+    total = store.load_usage(sess.session_id)
+    assert total.input_tokens == 100
+    assert total.output_tokens == 20
+
+
+def test_failed_turn_does_not_persist_usage():
+    """失败轮:usage 不落库(与"未完成轮次永不落盘"同承诺)。"""
+    store = MemoryStore()
+    model = FakeClient(usage={"input_tokens": 99, "output_tokens": 1}, responses=["x"])
+    sess = _session(model, store=store)
+    # 强制失败:第一轮跑成功后清空 store,再用坏模型触发失败轮
+    asyncio.run(sess.run("成功"))
+    assert store.load_usage(sess.session_id).input_tokens == 99
+
+    class BoomModel(FakeClient):
+        def _generate(self, messages, **kwargs):
+            raise RuntimeError("boom")
+
+    sess2 = _session(BoomModel(response="x"), store=store, session_id=sess.session_id)
+    asyncio.run(sess2.run("触发"))
+    # 失败轮不追加:聚合仍是成功轮的值
+    assert store.load_usage(sess.session_id).input_tokens == 99
+    assert store.load_usage(sess.session_id).output_tokens == 1

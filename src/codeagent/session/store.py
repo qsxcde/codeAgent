@@ -46,6 +46,7 @@ __all__ = [
     "SessionRef",
     "SessionStore",
     "TITLE_MAX",
+    "UsageStats",
 ]
 
 
@@ -65,6 +66,20 @@ def _lock_for(path: str | Path) -> threading.Lock:
                 lock = threading.Lock()
                 _path_locks[key] = lock
     return lock
+
+
+@dataclass(frozen=True)
+class UsageStats:
+    """会话级用量聚合(读侧累计;cost-transparency)。
+
+    字段与 usage 归一形状对齐(input/output/reasoning/cached);
+    reasoning 保留原始计数,展示层并入 output。
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -154,6 +169,18 @@ class SessionStore(Protocol):
     def set_meta(self, session_id: str, key: str, value: Any) -> None: ...
 
     def get_meta(self, session_id: str, key: str) -> Any | None: ...
+
+    def append_usage(
+        self, session_id: str, usage: dict[str, int]
+    ) -> None:
+        """追加一轮用量记录(append-only usage entry;cost-transparency)。
+
+        ``usage`` 为归一形状 ``{input_tokens, output_tokens, reasoning_tokens,
+        cached_tokens}``;逐次追加,读侧 ``load_usage`` 累加聚合。
+        """
+
+    def load_usage(self, session_id: str) -> UsageStats:
+        """返回会话累计用量(所有 usage entry 之和;无记录返回全零)。"""
 
     def fork(
         self, session_id: str, target_message_id: str, new_session_id: str
@@ -425,6 +452,42 @@ class JsonFileStore:
                 found = entry.get("value")
         return found
 
+    def append_usage(
+        self, session_id: str, usage: dict[str, int]
+    ) -> None:
+        """追加一轮用量记录(cost-transparency):usage entry 追加,不重写历史。
+
+        ``usage`` 为归一形状 ``{input_tokens, output_tokens, reasoning_tokens,
+        cached_tokens}``;缺失字段容错(缺省 0)。
+        """
+        record: dict[str, Any] = {
+            "type": "usage",
+            "timestamp": _now(),
+            "input": int(usage.get("input_tokens", 0) or 0),
+            "output": int(usage.get("output_tokens", 0) or 0),
+            "reasoning": int(usage.get("reasoning_tokens", 0) or 0),
+            "cached": int(usage.get("cached_tokens", 0) or 0),
+        }
+        self._append(session_id, record)
+
+    def load_usage(self, session_id: str) -> UsageStats:
+        """读侧聚合:单遍累加所有 usage entry;无记录/旧文件返回全零。"""
+        path = self._path(session_id)
+        if not path.exists():
+            raise ValueError(f"会话不存在: {session_id}")
+        total = UsageStats()
+        for entry in self._read_entries(path):
+            if entry.get("type") != "usage":
+                continue
+            total = UsageStats(
+                input_tokens=total.input_tokens + int(entry.get("input", 0) or 0),
+                output_tokens=total.output_tokens + int(entry.get("output", 0) or 0),
+                reasoning_tokens=total.reasoning_tokens
+                + int(entry.get("reasoning", 0) or 0),
+                cached_tokens=total.cached_tokens + int(entry.get("cached", 0) or 0),
+            )
+        return total
+
     def fork(
         self, session_id: str, target_message_id: str, new_session_id: str
     ) -> SessionRef:
@@ -562,6 +625,7 @@ class MemoryStore:
         self._messages: dict[str, list[Message]] = {}
         self._compactions: list[tuple[str, CompactionEntry]] = []
         self._meta: dict[str, dict[str, Any]] = {}
+        self._usage: dict[str, UsageStats] = {}
 
     def create(
         self,
@@ -654,6 +718,28 @@ class MemoryStore:
 
     def get_meta(self, session_id: str, key: str) -> Any | None:
         return self._meta.get(session_id, {}).get(key)
+
+    def append_usage(
+        self, session_id: str, usage: dict[str, int]
+    ) -> None:
+        """追加一轮用量记录(cost-transparency):内存累加,与文件后端同语义。"""
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        current = self._usage.get(session_id, UsageStats())
+        self._usage[session_id] = UsageStats(
+            input_tokens=current.input_tokens + int(usage.get("input_tokens", 0) or 0),
+            output_tokens=current.output_tokens
+            + int(usage.get("output_tokens", 0) or 0),
+            reasoning_tokens=current.reasoning_tokens
+            + int(usage.get("reasoning_tokens", 0) or 0),
+            cached_tokens=current.cached_tokens
+            + int(usage.get("cached_tokens", 0) or 0),
+        )
+
+    def load_usage(self, session_id: str) -> UsageStats:
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        return self._usage.get(session_id, UsageStats())
 
     def fork(
         self, session_id: str, target_message_id: str, new_session_id: str

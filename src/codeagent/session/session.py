@@ -29,7 +29,7 @@ from codeagent.session.compaction import (
     extract_file_ops,
     find_cut_point,
 )
-from codeagent.session.store import CompactionEntry
+from codeagent.session.store import CompactionEntry, UsageStats
 
 #: 摘要注入消息的前缀(模型识别"历史摘要";Pi COMPACTION_SUMMARY_PREFIX 对应物)。
 SUMMARY_PREFIX = "以下为会话历史摘要(此前内容已被压缩,无需再次执行其中操作):\n"
@@ -74,6 +74,9 @@ class AgentSession:
         self._compact_budget = compact_budget
         #: 最近一次 usage.input_tokens(本轮请求总输入 = 当前上下文占用)。
         self._last_input_tokens: int | None = None
+        #: 本轮 usage 累计(cost-transparency):每轮 run() 开始重置,
+        #: USAGE 事件逐次累加,成功路径一次性落库。
+        self._turn_usage = UsageStats()
         #: 注入队列(steer):下一轮循环前消费为 user 消息。
         self._inject_queue: asyncio.Queue[str] = asyncio.Queue()
         #: 确认响应队列(security-permissions):(request_id, approved) 对;
@@ -113,6 +116,13 @@ class AgentSession:
     def history(self) -> list[Message]:
         """当前会话消息历史(只读视图)。"""
         return list(self._history)
+
+    @property
+    def usage(self) -> UsageStats:
+        """会话累计用量(cost-transparency;无 store 或无记录返回全零)。"""
+        if self._store is None:
+            return UsageStats()
+        return self._store.load_usage(self._session_id)
 
     # -- 运行干预 -----------------------------------------------------------
 
@@ -214,9 +224,21 @@ class AgentSession:
     def _on_internal_event(self, event: AgentEvent) -> None:
         """内部订阅:捕获 usage 事件更新上下文占用统计(阈值触发用)。"""
         if event.type == EventType.USAGE:
-            tokens = (event.payload or {}).get("input_tokens")
+            payload = event.payload or {}
+            tokens = payload.get("input_tokens")
             if tokens:
                 self._last_input_tokens = int(tokens)
+            # cost-transparency:本轮累计(归一形状含 cached;多步 ReAct 逐次相加)。
+            self._turn_usage = UsageStats(
+                input_tokens=self._turn_usage.input_tokens
+                + int(payload.get("input_tokens", 0) or 0),
+                output_tokens=self._turn_usage.output_tokens
+                + int(payload.get("output_tokens", 0) or 0),
+                reasoning_tokens=self._turn_usage.reasoning_tokens
+                + int(payload.get("reasoning_tokens", 0) or 0),
+                cached_tokens=self._turn_usage.cached_tokens
+                + int(payload.get("cached_tokens", 0) or 0),
+            )
 
     # -- 运行 --------------------------------------------------------------
 
@@ -234,6 +256,8 @@ class AgentSession:
         if self._previous_session_id:
             # 分叉会话来源标记(session-fork):首轮事件携带父会话 id。
             metadata["previous_session_id"] = self._previous_session_id
+        # cost-transparency:每轮开始重置本轮 usage 累计。
+        self._turn_usage = UsageStats()
         self._bus.emit(AgentEvent(EventType.SESSION_STARTED, payload=text, metadata=metadata))
         self._current_task = asyncio.current_task()
         history_for_turn = list(self._history)
@@ -286,6 +310,18 @@ class AgentSession:
             for message in kept_history:
                 if message.id not in before_ids:
                     self._store.append_message(self._session_id, message)
+            # cost-transparency:成功轮次把本轮聚合 usage 落库(失败/取消
+            # 在异常分支已返回,此处不达——与"未完成轮次永不落盘"一致)。
+            if self._turn_usage.input_tokens or self._turn_usage.output_tokens:
+                self._store.append_usage(
+                    self._session_id,
+                    {
+                        "input_tokens": self._turn_usage.input_tokens,
+                        "output_tokens": self._turn_usage.output_tokens,
+                        "reasoning_tokens": self._turn_usage.reasoning_tokens,
+                        "cached_tokens": self._turn_usage.cached_tokens,
+                    },
+                )
         # 阈值自动压缩(同步,turn_end 后;不阻塞本轮收尾)。
         if self._should_auto_compact():
             await self.compact()

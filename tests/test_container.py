@@ -469,6 +469,46 @@ def test_create_tui_app_injects_save_key(tmp_path, monkeypatch):
     assert (model_id, effort) == ("deepseek-v4-flash", "high")
 
 
+def test_tui_app_with_store_persists_session_and_usage():
+    """TUI 装配 store 后:会话落库且 usage 可读(/status 用量显示前提)。
+
+    回归(cost-transparency):run_tui 未传 store 时 session._store 为 None,
+    usage 无落库点、/status 显示「用量: (无)」。store 注入后本轮 usage
+    落库并经 session.usage 读取到聚合值。
+    """
+    from codeagent.session.store import MemoryStore
+
+    store = MemoryStore()
+    import asyncio
+
+    session = None
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(
+            usage={
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "prompt_tokens_details": {"cached_tokens": 60},
+            },
+            response="回复",
+        )
+        from codeagent.app.container import create_tui_app
+
+        app = create_tui_app(provider="fake", backend=_StubBackend(), store=store)
+        # _LazyPorts 首次 run 才装配模型客户端:run 必须在 mock 作用域内。
+        session = app._manager.current
+        assert session is not None
+        asyncio.run(session.run("hi"))
+    # 会话文件已落盘(create 时写入 header)
+    assert store.get(session.session_id) is not None
+    # usage 落库并经会话读取
+    total = session.usage
+    assert total.input_tokens == 100
+    assert total.output_tokens == 20
+    assert total.cached_tokens == 60
+
+
 def test_create_tui_app_without_api_key_starts_lazy():
     """TUI 首启无 API key:不崩溃,端口/摘要器延迟到首次使用(回归:M-7)。
 
@@ -523,6 +563,59 @@ def test_create_tui_app_injects_configured_providers(tmp_path, monkeypatch):
     assert app._configured_providers == {"deepseek", "kimi"}
     # 登录选择器候选 = provider 全表
     assert app._candidates["login"] == app._candidates["provider"]
+
+
+# -- usage 归一(cost-transparency)--------------------------------------------
+
+
+def test_usage_of_openai_cached_tokens():
+    """归一兼容 OpenAI 口径:缓存命中取 prompt_tokens_details.cached_tokens。"""
+    from codeagent.app.container import _usage_of
+
+    norm = _usage_of(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 60},
+            "output_token_details": {"reasoning": 5},
+        }
+    )
+    assert norm == {
+        "input_tokens": 100,
+        "output_tokens": 30,
+        "reasoning_tokens": 5,
+        "cached_tokens": 60,
+    }
+
+
+def test_usage_of_vendor_cached_tokens():
+    """归一兼容供应商口径:prompt_cache_hit_tokens 兜底缓存命中。"""
+    from codeagent.app.container import _usage_of
+
+    norm = _usage_of(
+        {
+            "input_tokens": 200,
+            "output_tokens": 40,
+            "prompt_cache_hit_tokens": 120,
+        }
+    )
+    assert norm["cached_tokens"] == 120
+    assert norm["reasoning_tokens"] == 0
+
+
+def test_usage_of_missing_cached_defaults_zero():
+    """双字段缺失:缓存命中兜底 0;reasoning 兜底 0;空 usage 返回 None。"""
+    from codeagent.app.container import _usage_of
+
+    norm = _usage_of({"prompt_tokens": 50, "completion_tokens": 10})
+    assert norm == {
+        "input_tokens": 50,
+        "output_tokens": 10,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
+    }
+    assert _usage_of(None) is None
+    assert _usage_of({}) is None
 
 
 def test_ports_append_mcp_tools(tmp_path, monkeypatch):
