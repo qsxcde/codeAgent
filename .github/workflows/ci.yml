@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Test and validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.1"
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --locked --group dev
+
+      - name: Run test suite
+        run: uv run pytest -q
+
+      - name: Check package version consistency
+        run: |
+          uv run python -c "
+          import codeagent, tomllib
+          from pathlib import Path
+          project_version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          assert project_version == codeagent.__version__, (
+              f'{project_version=} != {codeagent.__version__=}'
+          )
+          print(f'version={project_version}')
+          "
+
+      - name: Check patch formatting
+        run: git diff --check HEAD^
+
+      - name: Set up Node.js for OpenSpec
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install OpenSpec
+        run: npm install --global @fission-ai/openspec@1.8.0
+
+      - name: Validate OpenSpec specifications
+        run: openspec validate --specs
