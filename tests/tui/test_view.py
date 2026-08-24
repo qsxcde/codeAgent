@@ -9,8 +9,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from codeagent.app.tui.components import FooterInfo, ToolCallBlock, rich_to_plain
+from codeagent.app.tui.commands import Command
 from codeagent.app.tui.view import TuiApp
 from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.messages import Message
 from codeagent.session.store import UsageStats
 
 
@@ -114,6 +116,7 @@ class FakeSession:
         self.run_texts: list[str] = []
         # cost-transparency:缺省全零用量(load_usage 空态)。
         self.usage = UsageStats()
+        self.history: list[Message] = []
 
     _created: list["FakeSession"] = []
 
@@ -213,6 +216,57 @@ def _make_app() -> tuple[TuiApp, StubBackend, FakeManager]:
     return app, backend, manager
 
 
+def test_session_switch_refreshes_skill_registry_and_diagnostics():
+    """切换会话后 TUI 应重读 Adapter/Registry 视图，而非保留启动快照。"""
+    backend = StubBackend()
+    manager = FakeManager()
+    refreshed = []
+
+    def refresh_skills():
+        refreshed.append(True)
+        return ([
+            SimpleNamespace(
+                name="using-superpowers",
+                description="bootstrap",
+                path="/pkg/using-superpowers/SKILL.md",
+                package_id="superpowers",
+                package_version="6.3.0",
+                package_scope="user",
+                bootstrap=True,
+            )
+        ], ["package_reload: ok"])
+
+    app = TuiApp(
+        manager,
+        backend,
+        skills=([], []),
+        refresh_skills=refresh_skills,
+    )
+    manager.create()
+    app._cmd_sessions(Command("sessions", ("new",), "new"))
+
+    assert refreshed
+    assert app._skills_by_name["using-superpowers"].package_id == "superpowers"
+    assert app._skill_diagnostics == ["package_reload: ok"]
+
+
+def test_skills_package_subcommand_is_forwarded_to_composition_root():
+    """/skills Package 子命令由组合根执行，TUI 仅刷新并展示结果。"""
+    backend = StubBackend()
+    manager = FakeManager()
+    calls = []
+
+    def package_action(action, args):
+        calls.append((action, args))
+        return "已安装 Package demo"
+
+    app = TuiApp(manager, backend, package_action=package_action)
+    app._cmd_skills(Command("skills", ("install", "./demo"), "install ./demo"))
+
+    assert calls == [("install", ("./demo",))]
+    assert "已安装 Package demo" in "\n".join(app.model.transcript.all_lines(120))
+
+
 def test_submit_starts_run_and_renders():
     """提交触发会话运行,事件驱动渲染(对应 spec「对话输入与回复渲染」)。"""
     app, backend, _ = _make_app()
@@ -259,6 +313,22 @@ def test_footer_rich_line_seeded_and_passed():
     # 状态栏注入模型名与工作目录(回归:此前 status.model 无注入点)
     assert app.model.status.model == "qwen3.8-max"
     assert app.model.status.cwd == "/workspace"
+
+
+def test_context_usage_is_synced_to_footer_status():
+    """最近一次请求的上下文占用会同步到状态栏右侧。"""
+    backend = StubBackend()
+    session = FakeSession()
+    session.context_tokens = 12_400
+    session.context_window = 128_000
+    app = TuiApp(FakeManager(session), backend)
+
+    app._flush_render()
+
+    plain = "".join(span.text for span in backend.statuses[-1])
+    assert plain.endswith("上下文 12.4k / 128k · 9.7%")
+    assert app.model.status.context_tokens == 12_400
+    assert app.model.status.context_window == 128_000
 
 
 def test_interrupt_running_aborts():
@@ -616,6 +686,25 @@ def test_sessions_list_switch_and_new():
     backend.submit("/sessions ghost")
     text = _rendered_text(app, backend)
     assert "会话不存在" in text
+
+
+def test_switching_session_hydrates_transcript_and_context_status():
+    """切换会话会替换 transcript,并同步目标会话的上下文占用。"""
+    app, backend, manager = _make_app()
+    first = manager.current
+    first.history = [Message(role="user", content="之前的问题"), Message(role="assistant", content="之前的回答")]
+    first.context_tokens = 12_400
+    first.context_window = 128_000
+    other = manager.create()
+    other.history = [Message(role="user", content="另一个问题"), Message(role="assistant", content="另一个回答")]
+    other.context_tokens = 2_000
+    other.context_window = 32_000
+
+    backend.submit(f"/sessions {other.session_id}")
+    text = _rendered_text(app, backend)
+    assert "另一个问题" in text and "之前的问题" not in text
+    assert app.model.status.context_tokens == 2_000
+    assert app.model.status.context_window == 32_000
 
 
 def test_sessions_recent_restores_last_session():
@@ -1443,7 +1532,15 @@ def _sample_skills():
 
     return [
         Skill("fmt", "格式化代码。", "/skills/fmt/SKILL.md", "格式化正文"),
-        Skill("audit", "依赖审计。", "/skills/audit/SKILL.md", "审计正文"),
+        Skill(
+            "brainstorming",
+            "创意工作前澄清需求与目标，避免在需求不明确时直接开始实现。这个描述很长，列表中应该被截断。",
+            "/packages/superpowers/skills/brainstorming/SKILL.md",
+            "头脑风暴正文",
+            package_id="superpowers",
+            package_version="6.3.0",
+            package_scope="user",
+        ),
     ]
 
 
@@ -1460,14 +1557,30 @@ def _make_skills_app(skills=None, diagnostics=None):
 
 
 def test_skills_command_lists_skills():
-    """/skills 无参 → 聊天区列出技能(名称/描述/来源,按名称排序)。"""
+    """/skills 无参 → 紧凑分组列表，不重复展示路径和 Package 元数据。"""
     app, backend, _ = _make_skills_app(_sample_skills())
     backend.submit("/skills")
     text = _rendered_text(app, backend)
-    assert "可用技能:" in text
-    assert "fmt — 格式化代码。 (来源: /skills/fmt/SKILL.md)" in text
-    assert text.index("audit") < text.index("fmt")  # 按名称排序
+    assert "可用技能 (2)" in text
+    assert "superpowers · 1" in text
+    assert "本地技能 · 1" in text
+    assert "brainstorming" in text and "fmt" in text
+    assert "/packages/superpowers" not in text
+    assert "Package: superpowers" not in text
+    assert "应该被截断" not in text
     assert manager_run_texts(app) == []
+
+
+def test_skills_info_shows_full_metadata_for_one_skill():
+    """/skills info <name> → 详情页展示完整路径、Package 和版本。"""
+    app, backend, _ = _make_skills_app(_sample_skills())
+    backend.submit("/skills info brainstorming")
+    text = _rendered_text(app, backend)
+
+    assert "技能详情" in text
+    assert "名称: brainstorming" in text
+    assert "来源: /packages/superpowers/skills/brainstorming/SKILL.md" in text
+    assert "Package: superpowers@6.3.0 (user)" in text
 
 
 def test_skills_command_without_skills():
@@ -1500,7 +1613,7 @@ def test_skills_command_unknown_skill():
     backend.submit("/skills nope")
     text = _rendered_text(app, backend)
     assert "未知技能: nope" in text
-    assert "fmt" in text and "audit" in text
+    assert "fmt" in text and "brainstorming" in text
     assert manager.current.run_texts == []
 
 
@@ -1510,23 +1623,23 @@ def test_skills_suggestion_candidates():
     backend.input_changed("/skills f")
     assert app._suggestions == ["fmt"]
     backend.input_changed("/skills ")
-    assert set(app._suggestions) == {"fmt", "audit"}
+    assert set(app._suggestions) == {"fmt", "brainstorming"}
 
 
 def test_skills_suggestion_confirm_fills_command():
     """技能候选确认 → 填入 /skills <name>,再次 Enter 即加载。"""
     app, backend, _ = _make_skills_app(_sample_skills())
-    backend.input_changed("/skills au")
+    backend.input_changed("/skills br")
     backend.suggestion_confirm()
-    assert backend.input_texts[-1] == "/skills audit"
+    assert backend.input_texts[-1] == "/skills brainstorming"
     assert app._suggestions == []
     # 再次提交 → 执行手动加载
     async def _run() -> None:
-        backend.submit("/skills audit")
+        backend.submit("/skills brainstorming")
         await asyncio.sleep(0)
 
     asyncio.run(_run())
-    assert "[用户手动加载技能: audit]" in app._manager.current.run_texts[0]
+    assert "[用户手动加载技能: brainstorming]" in app._manager.current.run_texts[0]
 
 
 def test_status_shows_skills_and_diagnostics():
@@ -1539,6 +1652,27 @@ def test_status_shows_skills_and_diagnostics():
     assert "fmt — 格式化代码。" in text
     assert "技能诊断:" in text
     assert "shadowed" in text and "parse_failed" in text
+
+
+def test_status_shows_package_and_bootstrap_metadata():
+    """/status 显示 Package 来源、revision 和 Bootstrap 状态。"""
+    from codeagent.app.skills import Skill
+
+    skill = Skill(
+        "using-superpowers",
+        "启动引导。",
+        "/packages/superpowers/skills/using-superpowers/SKILL.md",
+        "引导正文",
+        package_id="superpowers",
+        package_version="6.3.0",
+        package_scope="user",
+        bootstrap=True,
+    )
+    app, backend, _ = _make_skills_app([skill])
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+    assert "Bootstrap: using-superpowers" in text
+    assert "Package: superpowers@6.3.0 (user)" in text
 
 
 def manager_run_texts(app: TuiApp) -> list[str]:

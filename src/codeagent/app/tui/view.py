@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from codeagent.app.skills import Skill, format_skill_invocation
@@ -72,6 +73,8 @@ class TuiApp:
         mcp_diagnostics: list[str] | None = None,
         save_key: Any = None,
         configured_providers: set[str] | None = None,
+        refresh_skills: Callable[[], tuple[list[Skill], list[str]]] | None = None,
+        package_action: Callable[[str, tuple[str, ...]], str] | None = None,
     ) -> None:
         """``rebuild_ports(provider, model, effort) -> (model, effort)`` 为组合根
         注入的配置热切换回调(/provider /model /effort 命令用;None = 不支持);
@@ -85,7 +88,9 @@ class TuiApp:
         ``save_key(provider, key) -> (model, effort)`` 为组合根注入的密钥保存
         回调(/login 命令用:写 .env + 热切换;None = 不支持);
         ``configured_providers`` 为已配置 key 的 provider 集(登录选择器 ✓
-        标记;组合根注入,None = 空)。"""
+        标记;组合根注入,None = 空);
+        ``refresh_skills()`` 为会话切换/热切换后重读 Registry 的回调;
+        ``package_action(action,args)`` 为 /skills Package 子命令的组合根回调。"""
         self._manager = manager
         self._backend = backend
         self._rebuild_ports = rebuild_ports
@@ -97,6 +102,8 @@ class TuiApp:
         self._skills_by_name = {s.name: s for s in self._skills}
         self._save_key = save_key
         self._configured_providers = set(configured_providers or [])
+        self._refresh_skills_callback = refresh_skills
+        self._package_action = package_action
         #: 待输入密钥的 provider(/login 登录态;None = 普通输入)。
         self._login_pending: str | None = None
         self._suggestions: list[str] = []
@@ -116,6 +123,8 @@ class TuiApp:
             self.model.status.model = footer.model
             self.model.status.effort = footer.effort
             self.model.status.cwd = footer.cwd
+        self._hydrate_current_session()
+        self._sync_context_status()
         self._render_pending = False
         self._activity_task: asyncio.Task[None] | None = None
         self._manager.subscribe(self._on_event)
@@ -510,7 +519,24 @@ class TuiApp:
         # 已加载技能与诊断(skills-system:加载结果可见可断言)。
         if self._skills:
             lines.append("技能:")
-            lines.extend(f"  {s.name} — {s.description}" for s in self._skills)
+            bootstrap = next((skill for skill in self._skills if skill.bootstrap), None)
+            if bootstrap is not None:
+                lines.append(f"  Bootstrap: {bootstrap.name}")
+                from codeagent.app.skill_runtime import CodeAgentAdapter
+
+                adapter = CodeAgentAdapter()
+                lines.append(f"  Adapter: {adapter.version}")
+                missing = [name for name, enabled in adapter.capabilities().items() if not enabled]
+                if missing:
+                    lines.append(f"  未提供能力: {', '.join(missing)}")
+            if any(skill.package_id for skill in self._skills):
+                lines.append("  Package 扩展: 未执行第三方插件代码")
+            for skill in self._skills:
+                lines.append(f"  {skill.name} — {skill.description}")
+                if skill.package_id:
+                    version = skill.package_version or "unversioned"
+                    scope = skill.package_scope or "unknown"
+                    lines.append(f"    Package: {skill.package_id}@{version} ({scope})")
         else:
             lines.append("技能: (无)")
         if self._skill_diagnostics:
@@ -546,8 +572,18 @@ class TuiApp:
             hit = ""
         return f"输入 {input_k} · 输出 {output}{hit}"
 
+    @staticmethod
+    def _skill_status_line(skill: Skill) -> str:
+        """技能状态行:直接目录保持旧格式,Package 增加来源元数据。"""
+        line = f"{skill.name} — {skill.description}"
+        if skill.package_id:
+            version = skill.package_version or "unversioned"
+            scope = skill.package_scope or "unknown"
+            line += f" (Package: {skill.package_id}@{version} ({scope}))"
+        return line
+
     def _cmd_skills(self, cmd: Command) -> None:
-        """/skills:无参列出已加载技能;带参手动加载(立即注入正文并触发一轮回复)。
+        """/skills:紧凑列出、查看详情或手动加载 Skill。
 
         手动加载是用户显式触发(提示词表达不出时的确定性出口):渲染块以
         标注技能名的 user 消息进入会话,模型收到后直接执行——不依赖模型
@@ -557,11 +593,13 @@ class TuiApp:
             if not self._skills:
                 self.model.append_info("技能: (无)")
                 return
-            lines = ["可用技能:"]
-            # 显示层按名称排序(注册表已排,防御性保证展示顺序确定)。
-            for skill in sorted(self._skills, key=lambda s: s.name):
-                lines.append(f"  {skill.name} — {skill.description} (来源: {skill.path})")
-            self.model.append_info("\n".join(lines))
+            self.model.append_info(self._compact_skills_text())
+            return
+        if cmd.args[0] == "info":
+            self._cmd_skill_info(cmd.args[1:])
+            return
+        if cmd.args[0] in {"install", "list", "update", "remove", "reload"}:
+            self._cmd_skill_package(cmd.args[0], cmd.args[1:])
             return
         name = cmd.args[0]
         skill = self._skills_by_name.get(name)
@@ -576,6 +614,105 @@ class TuiApp:
         block = format_skill_invocation(skill)
         loop = asyncio.get_running_loop()
         loop.create_task(session.run(f"[用户手动加载技能: {name}]\n{block}"))
+
+    def _compact_skills_text(self) -> str:
+        """Render the default Skill list as grouped, width-aware summaries."""
+        name_width = 24
+        description_width = max(28, min(72, self._transcript_width() - name_width - 4))
+        lines = [f"可用技能 ({len(self._skills)})", ""]
+
+        bootstrap = sorted(
+            (skill for skill in self._skills if skill.bootstrap),
+            key=lambda skill: skill.name,
+        )
+        if bootstrap:
+            lines.append(f"自动引导 · {len(bootstrap)}")
+            lines.extend(
+                self._compact_skill_line(skill, name_width, description_width)
+                for skill in bootstrap
+            )
+            lines.append("")
+
+        groups: dict[str, list[Skill]] = {}
+        for skill in self._skills:
+            if skill.bootstrap:
+                continue
+            groups.setdefault(self._skill_group(skill), []).append(skill)
+        for group_name, skills in self._ordered_skill_groups(groups):
+            lines.append(f"{group_name} · {len(skills)}")
+            lines.extend(
+                self._compact_skill_line(skill, name_width, description_width)
+                for skill in sorted(skills, key=lambda item: item.name)
+            )
+            lines.append("")
+
+        lines.append("提示: /skills <name> 加载 · /skills info <name> 查看详情")
+        return "\n".join(lines).rstrip()
+
+    @staticmethod
+    def _skill_group(skill: Skill) -> str:
+        if skill.package_id:
+            return skill.package_id
+        normalized = skill.path.replace("\\", "/")
+        if "/resources/skills/" in normalized:
+            return "内置技能"
+        return "本地技能"
+
+    @staticmethod
+    def _ordered_skill_groups(groups: dict[str, list[Skill]]) -> list[tuple[str, list[Skill]]]:
+        priority = {"内置技能": 1, "本地技能": 0}
+        return sorted(
+            groups.items(),
+            key=lambda item: (priority.get(item[0], -1), item[0].lower()),
+        )
+
+    @staticmethod
+    def _compact_skill_line(skill: Skill, name_width: int, description_width: int) -> str:
+        description = " ".join(skill.description.split())
+        if len(description) > description_width:
+            description = description[: max(1, description_width - 3)].rstrip() + "..."
+        return f"  {skill.name.ljust(name_width)} {description}"
+
+    def _cmd_skill_info(self, args: tuple[str, ...]) -> None:
+        """Show full metadata for one Skill without preloading its body."""
+        if len(args) != 1:
+            self.model.append_info("用法: /skills info <name>")
+            return
+        skill = self._skills_by_name.get(args[0])
+        if skill is None:
+            names = ", ".join(skill.name for skill in self._skills) or "(无)"
+            self.model.append_info(f"未知技能: {args[0]}(可用: {names})")
+            return
+        lines = [
+            "技能详情",
+            f"名称: {skill.name}",
+            f"描述: {skill.description}",
+            f"来源: {skill.path}",
+            f"类型: {'自动引导' if skill.bootstrap else '普通技能'}",
+        ]
+        if skill.package_id:
+            version = skill.package_version or "unversioned"
+            scope = skill.package_scope or "unknown"
+            lines.append(f"Package: {skill.package_id}@{version} ({scope})")
+            lines.append("扩展: 第三方扩展不会自动执行")
+        lines.append(f"加载: /skills {skill.name}")
+        self.model.append_info("\n".join(lines))
+
+    def _cmd_skill_package(self, action: str, args: tuple[str, ...]) -> None:
+        """执行 Package 生命周期命令；仅 reload 重建当前运行时。"""
+        if self._package_action is None:
+            self.model.append_info("当前环境不支持 Skill Package 操作")
+            return
+        try:
+            message = self._package_action(action, args)
+        except (KeyError, ValueError, OSError) as exc:
+            message = f"Package 操作失败: {exc}"
+        if action == "reload":
+            self._refresh_skills()
+        else:
+            self.model.append_info("Package 状态已更新；执行 /skills reload 使当前会话生效")
+        if message:
+            self.model.append_info(message)
 
     def _cmd_mcp(self, cmd: Command) -> None:
         """/mcp:按 server 分组列出已加载 MCP 工具 + 装配诊断(对齐 Claude /mcp)。
@@ -631,10 +768,12 @@ class TuiApp:
             self.model.append_info("\n".join(lines))
         elif action == "new":
             session = self._manager.create()
+            self._hydrate_current_session()
             self.model.append_info(f"已新建会话: {session.session_id}")
         elif action == "recent":
             # session-resume:快速恢复最近有活动的会话(continue_recent;无会话时新建)。
             session = self._manager.continue_recent()
+            self._hydrate_current_session()
             self.model.append_info(f"已恢复最近会话: {session.session_id}")
         else:
             try:
@@ -642,6 +781,7 @@ class TuiApp:
             except ValueError as exc:
                 self.model.append_info(str(exc))
                 return
+            self._hydrate_current_session()
             self.model.append_info(f"已切换到会话: {session.session_id}")
 
     def _cmd_tree(self, cmd: Command) -> None:
@@ -658,6 +798,7 @@ class TuiApp:
             except ValueError as exc:
                 self.model.append_info(str(exc))
                 return
+            self._hydrate_current_session()
             self.model.append_info(f"已切换到会话: {session.session_id}")
             return
         refs = self._manager.list()
@@ -724,6 +865,7 @@ class TuiApp:
         except ValueError as exc:
             self.model.append_info(str(exc))
             return
+        self._hydrate_current_session()
         self.model.append_info(
             f"已分叉会话 {forked.session_id}: "
             f"从消息 {message_id or '(最近用户消息)'} 之前重新开始"
@@ -802,6 +944,7 @@ class TuiApp:
             return False
         self.model.status.model = new_model
         self.model.status.effort = new_effort
+        self._refresh_skills()
         self.model.append_info("已切换配置")
         return True
 
@@ -850,6 +993,43 @@ class TuiApp:
         self._backend.exit_document(self.model.transcript.all_lines(width))
 
     # -- 事件 → 渲染 -------------------------------------------------------
+
+    def _hydrate_current_session(self) -> None:
+        """把 current 会话快照装载到 TUI,避免切换后沿用旧 transcript。"""
+        self._refresh_skills()
+        session = self._manager.current
+        if session is None:
+            self.model.hydrate_history([])
+            self._sync_context_status()
+            return
+        self.model.hydrate_history(
+            list(getattr(session, "history", []) or []),
+            summary=getattr(session, "summary", None),
+        )
+        self._sync_context_status()
+
+    def _refresh_skills(self) -> None:
+        """从组合根重新读取 Package Registry/Adapter 视图(可选注入)。"""
+        if self._refresh_skills_callback is None:
+            return
+        try:
+            skills, diagnostics = self._refresh_skills_callback()
+        except OSError as exc:
+            self._skill_diagnostics = [f"skill_reload_failed: {exc}"]
+            return
+        self._skills = list(skills)
+        self._skill_diagnostics = list(diagnostics)
+        self._skills_by_name = {skill.name: skill for skill in self._skills}
+
+    def _sync_context_status(self) -> None:
+        """把当前会话最近一次输入 token 与窗口上限同步到 footer。"""
+        session = self._manager.current
+        if session is None:
+            self.model.status.context_tokens = None
+            self.model.status.context_window = None
+            return
+        self.model.status.context_tokens = getattr(session, "context_tokens", None)
+        self.model.status.context_window = getattr(session, "context_window", None)
 
     def _on_event(self, event: Any) -> None:
         ev_type = getattr(event, "type", None)
@@ -916,6 +1096,7 @@ class TuiApp:
         lines = self.model.render(width, height)
         self._backend.render(lines)
         # 单行底部状态栏:模型、思考强度与工作目录(富样式行,design D5)。
+        self._sync_context_status()
         self._backend.set_status(self.model.status.render(width)[0])
 
     def _transcript_width(self) -> int:

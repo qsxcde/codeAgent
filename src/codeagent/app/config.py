@@ -22,6 +22,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 CONFIG_DIR = Path.home() / ".codeagent"
 CONFIG_ENV_FILE: Path = CONFIG_DIR / ".env"
 CONFIG_MODELS_FILE: Path = CONFIG_DIR / "models.json"
+# Skill Package store and persistent metadata (global; project paths are
+# derived from ``package_paths`` so tests and alternate workspaces can inject
+# their own config/cwd without mutating these constants).
+PACKAGE_STORE_DIR: Path = CONFIG_DIR / "packages"
+PACKAGE_REGISTRY_FILE: Path = CONFIG_DIR / "registry.json"
+PACKAGE_LOCK_FILE: Path = CONFIG_DIR / "skills.lock.json"
 #: MCP server 配置(用户级唯一来源;项目级配置不被加载,见 mcp spec)。
 CONFIG_MCP_FILE: Path = CONFIG_DIR / "mcp.json"
 
@@ -65,6 +71,21 @@ _MODELS_JSON_TEMPLATE = """\
   }
 }
 """
+
+
+def package_paths(
+    cwd: str | Path | None = None,
+    *,
+    scope: str = "user",
+    config_dir: str | Path | None = None,
+) -> tuple[Path, Path, Path]:
+    """Return ``(store, registry, lock)`` paths for a Skill Package scope."""
+
+    if scope not in {"user", "project"}:
+        raise ValueError("Package scope 必须是 user 或 project")
+    config = Path(config_dir).expanduser() if config_dir is not None else CONFIG_DIR
+    base = config if scope == "user" else Path(cwd or Path.cwd()).expanduser() / ".codeagent"
+    return base / "packages", base / "registry.json", base / "skills.lock.json"
 
 
 def ensure_config_files(cfg_dir: Path | None = None) -> list[Path]:

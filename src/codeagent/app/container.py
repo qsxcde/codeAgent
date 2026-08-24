@@ -62,8 +62,10 @@ def _build_system_prompt(cfg: Any = None, skills: list[Any] | None = None) -> st
     )
     if skills is None:
         skills, _ = _load_skills(cfg)
+    from codeagent.app.skill_runtime import build_bootstrap_prompt
     from codeagent.app.skills import build_skills_prompt
 
+    base = build_bootstrap_prompt(base, skills)
     return build_skills_prompt(base, skills)
 
 
@@ -457,9 +459,64 @@ def create_tui_app(
 
     from codeagent.ai.catalog.registry import ModelRegistry
     from codeagent.ai.factory import create_llm
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.app.skill_packages import PackageManager
 
     registry = registry if registry is not None else ModelRegistry()
     mcp_diagnostics: list[str] = []  # MCP 装配诊断(/status 展示;懒装配后填充)
+    package_manager = PackageManager(CONFIG_DIR, _workspace(cfg))
+
+    def refresh_skills() -> tuple[list[Any], list[str]]:
+        """重读 Package Registry 与 Skill Registry，供 TUI 生命周期刷新。"""
+        return skills_view(cfg)
+
+    def package_action(action: str, args: tuple[str, ...]) -> str:
+        """TUI /skills Package 子命令的组合根适配。"""
+        scope = "project" if "--project" in args else "user"
+        values = tuple(value for value in args if value != "--project")
+        if action == "install":
+            if len(values) != 1:
+                raise ValueError("用法: /skills install <git-url|目录> [--project]")
+            record = package_manager.install(values[0], scope=scope)
+            return f"已安装 Package {record.package_id}@{record.version or 'unversioned'} ({scope})"
+        if action == "update":
+            if len(values) != 1:
+                raise ValueError("用法: /skills update <package-id> [--project]")
+            record = package_manager.update(values[0], scope=scope)
+            return f"已更新 Package {record.package_id}@{record.version or 'unversioned'} ({scope})"
+        if action == "remove":
+            if len(values) != 1:
+                raise ValueError("用法: /skills remove <package-id> [--project]")
+            package_manager.remove(values[0], scope=scope)
+            return f"已删除 Package {values[0]} ({scope})"
+        if action == "reload":
+            package_manager.reload()
+            # reload 是唯一显式重建当前 Agent Runtime 的 Package 操作。
+            rebuild_ports()
+            return f"已重新加载 Package Registry 与 Adapter ({scope})"
+        if action == "list":
+            list_scope = scope if "--project" in args else None
+            records = package_manager.list(scope=list_scope)
+            diagnostics = package_manager.diagnostics(scope=list_scope)
+            if not records:
+                lines = ["Package: (无)"]
+                if diagnostics:
+                    lines.append("诊断:")
+                    lines.extend(f"  {item.code}: {item.message}" for item in diagnostics)
+                return "\n".join(lines)
+            lines = ["Package:"]
+            for record in records:
+                skill_count = sum(1 for path in record.skills_dir.rglob("SKILL.md") if path.is_file())
+                revision = record.revision or record.version or "unversioned"
+                lines.append(
+                    f"  {record.package_id}@{revision} · {record.scope} · "
+                    f"{skill_count} skills · {record.status}"
+                )
+            if diagnostics:
+                lines.append("诊断:")
+                lines.extend(f"  {item.code}: {item.message}" for item in diagnostics)
+            return "\n".join(lines)
+        raise ValueError(f"未知 Package 操作: {action}")
 
     def _build_summarizer() -> Any:
         return LlmSummarizer(
@@ -537,6 +594,7 @@ def create_tui_app(
             cfg, target_provider, new_model, new_effort or reasoning_effort
         )
         manager.replace_ports(new_ports, model=model_id, effort=effort)
+        refresh_skills()
         return model_id, effort
 
     def save_key(provider: str, key: str) -> tuple[str, str]:
@@ -561,6 +619,8 @@ def create_tui_app(
         candidates=candidates,
         agents_sources=agents_sources(cfg),  # 上下文文件来源(/status 展示)
         skills=skills_view(cfg),  # 技能列表 + 诊断(/skills /status 展示)
+        refresh_skills=refresh_skills,
+        package_action=package_action,
         mcp_diagnostics=mcp_diagnostics,  # MCP 装配诊断(/status 展示)
         save_key=save_key,  # /login 密钥保存 + 热切换(tui-login-command)
         configured_providers=_configured_providers(),  # 登录选择器 ✓ 标记
@@ -617,7 +677,7 @@ def create_session_manager(
     - ports 装配一次共享(模型端口 / 工具无状态,跨会话复用);``ports``
       可注入预装配端口(TUI 延迟装配场景,审计 M-7),缺省按 cfg 装配,
       注入时 approval_mode 语义由调用方保证;
-    - store 注入后会话可持久化;header 的 model/effort 在创建时固化
+    - store 注入后会话可持久化;首轮成功时固化 header 的 model/effort
       (_resolve_model_effort 与 footer 同源解析,唯一引用 split_model_pattern);
     - replace_ports 属 T-44(/provider /model 命令时按 Pi 式 model_change
       entry 演进,design D4);

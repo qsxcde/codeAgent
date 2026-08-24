@@ -57,6 +57,8 @@ class AgentSession:
         summarizer: Any | None = None,
         context_window: int = DEFAULT_CONTEXT_WINDOW,
         compact_budget: int = DEFAULT_BUDGET_TOKENS,
+        defer_persistence: bool = False,
+        persistence_options: dict[str, Any] | None = None,
     ) -> None:
         self._ports = ports
         self._bus = bus
@@ -70,6 +72,10 @@ class AgentSession:
         #: 上下文压缩(session-compaction):Summarizer 端口与上下文窗口。
         self._summarizer = summarizer
         self._context_window = context_window
+        #: 新建会话延迟落盘:首次成功产生消息前只保留内存态。
+        self._defer_persistence = defer_persistence
+        self._persistence_options = dict(persistence_options or {})
+        self._persisted = store is None
         #: 切点预算(软目标;测试可注入小值)。
         self._compact_budget = compact_budget
         #: 最近一次 usage.input_tokens(本轮请求总输入 = 当前上下文占用)。
@@ -86,14 +92,28 @@ class AgentSession:
         self._current_task: asyncio.Task[None] | None = None
         #: 会话消息历史(权威在 store;无 store 时仅内存)。
         if store is not None:
-            if store.get(self._session_id) is None:
+            store_ref = store.get(self._session_id)
+            if store_ref is None and not defer_persistence:
                 store.create(self._session_id)
-            # 压缩感知加载:上下文 = 最新摘要 + 保留消息(物理历史保留)。
-            state = store.load_context(self._session_id)
-            self._history = state.messages
-            self._summary: str | None = state.summary
-            self._summary_entry_id: str | None = state.entry_id
-            self._prev_details: dict[str, Any] = state.details
+                store_ref = store.get(self._session_id)
+            self._persisted = store_ref is not None
+            if self._persisted:
+                # 压缩感知加载:上下文 = 最新摘要 + 保留消息(物理历史保留)。
+                state = store.load_context(self._session_id)
+                self._history = state.messages
+                self._summary: str | None = state.summary
+                self._summary_entry_id: str | None = state.entry_id
+                self._prev_details: dict[str, Any] = state.details
+                # usage entry 是累计统计,不能直接推出“最近一轮”的上下文占用。
+                # 该值以 meta 形式单独保存,旧会话没有时保持 None。
+                saved_context = store.get_meta(self._session_id, "last_context_tokens")
+                if type(saved_context) is int and saved_context >= 0:
+                    self._last_input_tokens = saved_context
+            else:
+                self._history = []
+                self._summary = None
+                self._summary_entry_id = None
+                self._prev_details = {}
         else:
             self._history = []
             self._summary = None
@@ -120,9 +140,29 @@ class AgentSession:
     @property
     def usage(self) -> UsageStats:
         """会话累计用量(cost-transparency;无 store 或无记录返回全零)。"""
-        if self._store is None:
+        if self._store is None or not self._persisted:
             return UsageStats()
         return self._store.load_usage(self._session_id)
+
+    @property
+    def is_persisted(self) -> bool:
+        """当前会话是否已经创建持久化记录。"""
+        return self._persisted
+
+    @property
+    def context_tokens(self) -> int | None:
+        """最近一次模型请求的输入 token 数(当前上下文占用)。"""
+        return self._last_input_tokens
+
+    @property
+    def context_window(self) -> int:
+        """当前会话使用的上下文窗口上限(token)。"""
+        return self._context_window
+
+    @property
+    def summary(self) -> str | None:
+        """当前上下文摘要(若会话曾被压缩),供 TUI 恢复时展示。"""
+        return self._summary
 
     # -- 运行干预 -----------------------------------------------------------
 
@@ -206,6 +246,7 @@ class AgentSession:
             first_kept_entry_id=kept[0].id if kept else "",
         )
         if self._store is not None:
+            self._ensure_persisted()
             entry_id = self._store.append_compaction(self._session_id, entry)
         else:
             entry_id = entry.id
@@ -306,10 +347,11 @@ class AgentSession:
                     message.parent_id = self._summary_entry_id
                     break
         self._history = kept_history
-        if self._store is not None:
-            for message in kept_history:
-                if message.id not in before_ids:
-                    self._store.append_message(self._session_id, message)
+        new_messages = [message for message in kept_history if message.id not in before_ids]
+        if self._store is not None and new_messages:
+            self._ensure_persisted()
+            for message in new_messages:
+                self._store.append_message(self._session_id, message)
             # cost-transparency:成功轮次把本轮聚合 usage 落库(失败/取消
             # 在异常分支已返回,此处不达——与"未完成轮次永不落盘"一致)。
             if self._turn_usage.input_tokens or self._turn_usage.output_tokens:
@@ -322,9 +364,28 @@ class AgentSession:
                         "cached_tokens": self._turn_usage.cached_tokens,
                     },
                 )
+                if self._last_input_tokens is not None:
+                    self._store.set_meta(
+                        self._session_id,
+                        "last_context_tokens",
+                        self._last_input_tokens,
+                    )
         # 阈值自动压缩(同步,turn_end 后;不阻塞本轮收尾)。
         if self._should_auto_compact():
             await self.compact()
+
+    def _ensure_persisted(self) -> None:
+        """首次成功产生消息时创建 deferred session 的持久化 header。"""
+        if self._store is None or self._persisted:
+            return
+        if self._store.get(self._session_id) is None:
+            self._store.create(self._session_id, **self._persistence_options)
+        self._persisted = True
+
+    def update_persistence_options(self, **options: Any) -> None:
+        """更新尚未落盘会话的 header 选项(如模型热切换)。"""
+        if not self._persisted:
+            self._persistence_options.update(options)
 
     def run_sync(self, text: str) -> None:
         """同步运行一轮对话(阻塞等待完成)。

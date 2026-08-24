@@ -43,6 +43,13 @@ from codeagent.app.tui.theme import BOLD, PALETTE
 #: 滚轮每格对应的行数(终端惯例:一个齿 ≈ 3 行)。
 _WHEEL_LINES = 3
 
+#: 登录输入态的视觉令牌:与普通 composer 的终端融合背景保持区分,
+#: 但不使用 Textual Input 默认的高亮焦点边框。
+_LOGIN_ACCENT = "#39d9ff"
+_LOGIN_SURFACE = "#171a1d"
+_LOGIN_HINT = "Enter 保存  ·  Esc 取消"
+_COMPOSER_RULE = "#5a5a5a"
+
 
 def _strip_default_bg(style: Style) -> Style:
     """重建 Style,仅去掉 default 背景(Style 不可变,无 setter)。"""
@@ -269,6 +276,10 @@ class _Composer(VerticalGroup):
         self.prompt = Label("›", id="prompt")
         self.prompt.styles.width = 2
         self.prompt.styles.color = "#8a8a8a"
+        self.login_label = Label("KEY", id="login-label")
+        self.login_label.styles.width = 6
+        self.login_label.styles.color = _LOGIN_ACCENT
+        self.login_label.display = False
         self.input = _InputArea(backend, placeholder=placeholder)
         self.input.soft_wrap = True
         self.input.show_line_numbers = False
@@ -277,7 +288,16 @@ class _Composer(VerticalGroup):
         #: 初始隐藏;``_normal_placeholder`` 供退出登录态时恢复普通提示。
         self.key_input = _KeyInput()
         self.key_input.styles.height = 1
+        self.key_input.styles.background = _LOGIN_SURFACE
+        self.key_input.styles.border = ("none", _LOGIN_SURFACE)
+        self.key_input.styles.padding = (0, 1)
+        self.key_input.styles.color = "#f1f5f9"
         self.key_input.display = False
+        self.login_hint = Static(_LOGIN_HINT, id="login-hint")
+        self.login_hint.styles.height = 0
+        self.login_hint.display = False
+        self.login_hint.styles.padding = (0, 0, 0, 8)
+        self.login_hint.styles.color = "#8a9198"
         self._normal_placeholder = placeholder
         # 输入行数缓存:_refresh_height 可在无事件上下文(set_suggestions 路径)使用。
         self._input_lines = 1
@@ -288,8 +308,10 @@ class _Composer(VerticalGroup):
         yield self.suggestions
         with self.input_row:
             yield self.prompt
+            yield self.login_label
             yield self.input
             yield self.key_input
+        yield self.login_hint
         yield self.bottom_rule
 
     def set_mask(self, masked: bool, placeholder: str = "") -> None:
@@ -303,10 +325,20 @@ class _Composer(VerticalGroup):
             self.key_input.value = ""
             self.key_input.display = True
             self.input.display = False
+            self.login_label.display = True
+            self.login_hint.display = True
+            self.login_hint.styles.height = 1
+            self.top_rule.styles.color = _LOGIN_ACCENT
+            self.bottom_rule.styles.color = _LOGIN_ACCENT
             self.key_input.focus()
         else:
             self.input.display = True
             self.key_input.display = False
+            self.login_label.display = False
+            self.login_hint.display = False
+            self.login_hint.styles.height = 0
+            self.top_rule.styles.color = _COMPOSER_RULE
+            self.bottom_rule.styles.color = _COMPOSER_RULE
             self.input.placeholder = self._normal_placeholder
             self.input.focus()
         self._refresh_height()
@@ -324,7 +356,8 @@ class _Composer(VerticalGroup):
         self.input.styles.height = lines
         confirm = int(self.confirmation.styles.height.value)
         suggest = int(self.suggestions.styles.height.value)
-        self.styles.height = lines + 2 + confirm + suggest
+        login_hint = int(self.login_hint.styles.height.value)
+        self.styles.height = lines + 2 + confirm + suggest + login_hint
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """高度自适应与输入变更通知(见 ``_refresh_height``)。"""
@@ -378,7 +411,7 @@ class _TextualApp(App):
         self.screen.styles.background = "ansi_default"
         self.transcript.styles.background = "ansi_default"
         self.composer.input.styles.background = "ansi_default"
-        self.composer.key_input.styles.background = "ansi_default"
+        self.composer.key_input.styles.background = _LOGIN_SURFACE
         self.composer.input.focus()
         # 首次渲染(等布局尺寸稳定后触发 resize 处理器)。
         self.call_after_refresh(self._backend._notify_resize)

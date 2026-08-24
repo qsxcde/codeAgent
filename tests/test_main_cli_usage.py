@@ -9,6 +9,27 @@
 from codeagent.app.main import _format_usage_line
 
 
+def test_skill_cli_dispatches_package_lifecycle(monkeypatch, capsys):
+    """skill 子命令应调用 PackageManager 并返回可脚本化错误码。"""
+    from codeagent.app import main as main_module
+
+    calls = []
+
+    class FakePackageManager:
+        def __init__(self, config_dir, cwd):
+            calls.append(("init", config_dir, cwd))
+
+        def list(self, scope=None):
+            calls.append(("list", scope))
+            return []
+
+    monkeypatch.setattr(main_module, "PackageManager", FakePackageManager, raising=False)
+
+    assert main_module.main(["skill", "list"]) == 0
+    assert calls and calls[-1] == ("list", None)
+    assert "(暂无 Package)" in capsys.readouterr().out
+
+
 def test_usage_line_with_cache_hit():
     """有缓存命中:输入/输出/命中率(约,含原始计数)。"""
     line = _format_usage_line(

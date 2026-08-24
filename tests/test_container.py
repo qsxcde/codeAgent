@@ -127,9 +127,8 @@ def test_create_tui_app_injects_rebuild_ports():
     model_id, effort = app._rebuild_ports("fake", "fake-model:high", None)
     assert model_id == "fake-model"
     assert effort == "high"
-    # 配置写入 store(model_change 后写覆盖)且会话端口已更新
-    ref = store.list()[-1]
-    assert ref.model == "fake-model" and ref.effort == "high"
+    # 空会话尚未产生对话,配置只更新内存 pending session,不创建 store header。
+    assert store.list() == []
     assert app._manager._ports is not None
 
 
@@ -316,6 +315,99 @@ def test_system_prompt_only_once_and_hot_swap_stable(tmp_path, monkeypatch):
         assert roles[0] == "system"
 
 
+def test_bootstrap_is_present_once_per_model_context_for_new_and_recovered_turns(tmp_path, monkeypatch):
+    """Bootstrap 随每个新模型上下文出现一次，普通轮次不在历史中重复堆积。"""
+    import json
+
+    from codeagent.app.skill_packages import PackageManager
+    from codeagent.app.skill_runtime import BOOTSTRAP_TAG
+
+    source = tmp_path / "superpowers"
+    (source / "skills" / "using-superpowers").mkdir(parents=True)
+    (source / "skills" / "using-superpowers" / "SKILL.md").write_text(
+        "---\ndescription: bootstrap\n---\n检查任务相关 Skill。", encoding="utf-8"
+    )
+    (source / "skills" / "fmt").mkdir()
+    (source / "skills" / "fmt" / "SKILL.md").write_text(
+        "---\ndescription: format\n---\n普通正文", encoding="utf-8"
+    )
+    (source / "codeagent-package.json").write_text(
+        json.dumps({"id": "superpowers", "bootstrap": "using-superpowers"}),
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    PackageManager(home, tmp_path).install(source)
+    monkeypatch.setattr("codeagent.app.config.CONFIG_DIR", home)
+    monkeypatch.chdir(tmp_path)
+
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        model = FakeClient(responses=["第一轮", "第二轮"])
+        mock_llm.return_value = model
+        from codeagent.app.container import create_agent_ports
+
+        ports = create_agent_ports()
+
+    from codeagent.core import run_turn
+
+    events: list = []
+    history: list = []
+    history = asyncio.run(run_turn(ports, events.append, "第一问", history=history))
+    history = asyncio.run(run_turn(ports, events.append, "第二问", history=history))
+    assert history
+    for call in model.call_history:
+        roles = [message["role"] for message in call["messages"]]
+        assert roles.count("system") == 1
+        assert BOOTSTRAP_TAG in call["messages"][0]["content"]
+
+
+def test_bootstrap_is_reinjected_after_context_compaction(tmp_path, monkeypatch):
+    """压缩重建上下文后，下一轮仍带 Bootstrap 和工具映射。"""
+    import json
+
+    from codeagent.app.skill_packages import PackageManager
+    from codeagent.app.skill_runtime import BOOTSTRAP_TAG
+    from codeagent.core import AgentPorts
+    from codeagent.session import EventBus
+    from codeagent.session import AgentSession
+
+    source = tmp_path / "superpowers"
+    (source / "skills" / "using-superpowers").mkdir(parents=True)
+    (source / "skills" / "using-superpowers" / "SKILL.md").write_text(
+        "---\ndescription: bootstrap\n---\n检查任务相关 Skill。", encoding="utf-8"
+    )
+    (source / "codeagent-package.json").write_text(
+        json.dumps({"id": "superpowers", "bootstrap": "using-superpowers"}),
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    PackageManager(home, tmp_path).install(source)
+    monkeypatch.setattr("codeagent.app.config.CONFIG_DIR", home)
+    monkeypatch.chdir(tmp_path)
+
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        model = FakeClient(responses=["答1", "答2", "答3", "答4"])
+        mock_llm.return_value = model
+        from codeagent.app.container import create_agent_ports
+
+        ports = create_agent_ports()
+
+    session = AgentSession(
+        ports,
+        EventBus(),
+        summarizer=_StubSummarizer(),
+        compact_budget=50,
+    )
+    for text in ("问1" * 40, "问2" * 40, "问3" * 40):
+        asyncio.run(session.run(text))
+    assert asyncio.run(session.compact()) is True
+    asyncio.run(session.run("问4" * 40))
+    assert BOOTSTRAP_TAG in model.call_history[-1]["messages"][0]["content"]
+
+
 def test_ports_inject_skills_section_and_tool(tmp_path, monkeypatch):
     """组合根装配:system prompt 追加技能段 + skill 工具携带渲染注册表。"""
     monkeypatch.chdir(tmp_path)
@@ -500,7 +592,7 @@ def test_tui_app_with_store_persists_session_and_usage():
         session = app._manager.current
         assert session is not None
         asyncio.run(session.run("hi"))
-    # 会话文件已落盘(create 时写入 header)
+    # 首轮成功后会话文件才落盘。
     assert store.get(session.session_id) is not None
     # usage 落库并经会话读取
     total = session.usage

@@ -13,6 +13,7 @@ from codeagent.app.skills import (
     load_skills,
     parse_skill_frontmatter,
 )
+from codeagent.app.skill_packages import PackageManager
 from codeagent.tools.atomic import SkillTool
 
 _BLOCK_HEAD = "<skill name="
@@ -180,6 +181,99 @@ def test_same_path_not_loaded_twice(tmp_path):
     os.symlink(str(skill_dir), str(cwd / ".codeagent" / "skills" / "fmt"))
     skills, _ = load_skills(cwd, config_dir, builtin_dir=builtin)
     assert len(skills) == 1
+
+
+def test_package_skills_are_discovered_recursively_with_metadata(tmp_path):
+    """已安装 Package 的嵌套 skills 目录被递归发现并保留来源元数据。"""
+    config_dir, cwd, builtin = _tree(tmp_path)
+    package_root = tmp_path / "package-source"
+    nested = package_root / "skills" / "category" / "nested-skill"
+    _write_skill(nested, frontmatter="description: 包内技能。\n")
+    (package_root / "codeagent-package.json").write_text(
+        '{"id":"demo","name":"Demo","version":"1.2.3","skills":"skills"}',
+        encoding="utf-8",
+    )
+    PackageManager(config_dir, cwd).install(package_root, scope="user")
+
+    skills, diagnostics = load_skills(cwd, config_dir, builtin_dir=builtin)
+
+    assert not [d for d in diagnostics if d.code.startswith("package_")]
+    loaded = next(item for item in skills if item.name == "nested-skill")
+    assert loaded.package_id == "demo"
+    assert loaded.package_version == "1.2.3"
+    assert loaded.package_scope == "user"
+
+
+def test_skill_source_priority_is_direct_then_package_then_project(tmp_path):
+    """个人直接目录 > 个人 Package > 项目直接目录 > 项目 Package。"""
+    config_dir, cwd, builtin = _tree(tmp_path)
+    _write_skill(config_dir / "skills" / "shared", frontmatter="description: 用户直接。\n")
+    _write_skill(cwd / ".codeagent" / "skills" / "project-only", frontmatter="description: 项目直接。\n")
+
+    package_root = tmp_path / "package-source"
+    _write_skill(package_root / "skills" / "shared", frontmatter="description: 用户包。\n")
+    _write_skill(package_root / "skills" / "package-only", frontmatter="description: 用户包独有。\n")
+    (package_root / "codeagent-package.json").write_text(
+        '{"id":"demo","version":"1.0.0","skills":"skills"}', encoding="utf-8"
+    )
+    PackageManager(config_dir, cwd).install(package_root, scope="user")
+
+    skills, diagnostics = load_skills(cwd, config_dir, builtin_dir=builtin)
+
+    by_name = {item.name: item for item in skills}
+    assert by_name["shared"].description == "用户直接。"
+    assert by_name["package-only"].package_id == "demo"
+    assert any(d.code == "shadowed" for d in diagnostics)
+
+
+def test_package_using_superpowers_is_inferred_as_bootstrap(tmp_path):
+    """无 CodeAgent 清单时按约定识别 using-superpowers Bootstrap。"""
+    config_dir, cwd, builtin = _tree(tmp_path)
+    package_root = tmp_path / "package-source"
+    _write_skill(
+        package_root / "skills" / "using-superpowers",
+        frontmatter="description: 启动引导。\n",
+        body="检查相关技能。",
+    )
+    (package_root / "codeagent-package.json").write_text(
+        '{"id":"superpowers","version":"6.3.0","skills":"skills"}', encoding="utf-8"
+    )
+    PackageManager(config_dir, cwd).install(package_root, scope="user")
+
+    skills, diagnostics = load_skills(cwd, config_dir, builtin_dir=builtin)
+
+    bootstrap = next(item for item in skills if item.name == "using-superpowers")
+    assert bootstrap.bootstrap is True
+    assert any(d.code == "package_bootstrap_inferred" for d in diagnostics)
+
+
+def test_superpowers_package_loads_skills_without_executing_harness_extensions(tmp_path):
+    """Superpowers 兼容验收:读取 Markdown，忽略 .pi/.opencode 等扩展入口。"""
+    config_dir, cwd, builtin = _tree(tmp_path)
+    package_root = tmp_path / "superpowers"
+    _write_skill(
+        package_root / "skills" / "using-superpowers",
+        frontmatter="description: 启动引导。\n",
+        body="开始任务前检查相关 Skill。",
+    )
+    _write_skill(
+        package_root / "skills" / "brainstorming",
+        frontmatter="description: 需求澄清。\n",
+        body="先澄清目标。",
+    )
+    (package_root / ".pi" / "extensions").mkdir(parents=True)
+    (package_root / ".pi" / "extensions" / "danger.py").write_text(
+        "raise RuntimeError('must not execute')", encoding="utf-8"
+    )
+    (package_root / ".opencode" / "plugin.ts").parent.mkdir(parents=True)
+    (package_root / ".opencode" / "plugin.ts").write_text("throw new Error()", encoding="utf-8")
+    PackageManager(config_dir, cwd).install(package_root, scope="user")
+
+    skills, diagnostics = load_skills(cwd, config_dir, builtin_dir=builtin)
+
+    assert {item.name for item in skills} == {"brainstorming", "using-superpowers"}
+    assert next(item for item in skills if item.name == "using-superpowers").bootstrap is True
+    assert not any("danger.py" in diagnostic.message for diagnostic in diagnostics)
 
 
 # ── 渐进式披露注入 ─────────────────────────────────────

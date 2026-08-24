@@ -9,9 +9,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 from typing import Any
 
 from codeagent.app import container
+from codeagent.app.skill_packages import PackageManager, PackageValidationError
 
 #: 事件类型字符串(与 core/events.EventType 常量值对齐)。
 _EV_TEXT_DELTA = "text_delta"
@@ -23,7 +25,10 @@ _EV_RUN_CANCELLED = "run_cancelled"
 _EV_USAGE = "usage"
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "skill":
+        return _skill_cli(argv[1:])
     parser = argparse.ArgumentParser(prog="codeagent", description="基于自研编排的编程 Agent")
     parser.add_argument("--prompt", default=None, help="一次性输入(不指定则从 stdin 逐行读取)")
     parser.add_argument("--tui", action="store_true", help="启动交互式终端(TUI)")
@@ -55,11 +60,11 @@ def main(argv: list[str] | None = None) -> None:
         from codeagent.app.tui.main import run_tui
 
         run_tui()
-        return
+        return 0
 
     if args.list_sessions:
         _list_sessions()
-        return
+        return 0
 
     if args.continue_session or args.session:
         # 会话入口:持久化到 ~/.codeagent/sessions/;恢复或继续既有会话。
@@ -84,6 +89,73 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(_headless_once(session, args.prompt))
     else:
         asyncio.run(_headless_loop(session))
+    return 0
+
+
+def _skill_cli(argv: list[str]) -> int:
+    """``codeagent skill`` Package 生命周期命令。"""
+    parser = argparse.ArgumentParser(prog="codeagent skill", description="管理 Skill Package")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+
+    install = subparsers.add_parser("install", help="安装 Git URL 或本地 Package")
+    install.add_argument("source")
+    install.add_argument("--project", action="store_true", help="安装到当前项目")
+
+    update = subparsers.add_parser("update", help="更新已安装 Package")
+    update.add_argument("package_id")
+    update.add_argument("--project", action="store_true")
+
+    remove = subparsers.add_parser("remove", help="删除已安装 Package")
+    remove.add_argument("package_id")
+    remove.add_argument("--project", action="store_true")
+
+    list_parser = subparsers.add_parser("list", help="列出已安装 Package")
+    list_parser.add_argument("--project", action="store_true")
+
+    reload_parser = subparsers.add_parser("reload", help="重新读取 Package Registry")
+    reload_parser.add_argument("--project", action="store_true")
+    args = parser.parse_args(argv)
+
+    from codeagent.app.config import CONFIG_DIR
+
+    manager = PackageManager(CONFIG_DIR, Path.cwd())
+    scope = "project" if getattr(args, "project", False) else "user"
+    try:
+        if args.action == "install":
+            record = manager.install(args.source, scope=scope)
+            print(f"已安装 Package {record.package_id}@{record.version or 'unversioned'} ({scope})")
+        elif args.action == "update":
+            record = manager.update(args.package_id, scope=scope)
+            print(f"已更新 Package {record.package_id}@{record.version or 'unversioned'} ({scope})")
+        elif args.action == "remove":
+            manager.remove(args.package_id, scope=scope)
+            print(f"已删除 Package {args.package_id} ({scope})")
+        elif args.action == "reload":
+            manager.reload()
+            print(f"已重新加载 Package Registry ({scope})")
+        elif args.action == "list":
+            list_scope = scope if getattr(args, "project", False) else None
+            records = manager.list(scope=list_scope)
+            diagnostics_fn = getattr(manager, "diagnostics", None)
+            diagnostics = diagnostics_fn(scope=list_scope) if diagnostics_fn else []
+            if not records:
+                print("(暂无 Package)")
+            else:
+                for record in records:
+                    skill_count = sum(
+                        1 for path in record.skills_dir.rglob("SKILL.md") if path.is_file()
+                    )
+                    revision = record.revision or record.version or "unversioned"
+                    print(
+                        f"{record.package_id}\t{record.scope}\t{revision}\t"
+                        f"{skill_count} skills\t{record.status}\t{record.source}"
+                    )
+            for diagnostic in diagnostics:
+                print(f"诊断: {diagnostic.code}: {diagnostic.message}", file=sys.stderr)
+    except (KeyError, PackageValidationError, OSError, ValueError) as exc:
+        print(f"Package 操作失败: {exc}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def _list_sessions() -> None:

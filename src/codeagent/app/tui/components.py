@@ -157,6 +157,32 @@ def _truncate(text: str, limit: int) -> str:
     return result + "…"
 
 
+_MANUAL_SKILL_RE = re.compile(r"^\[用户手动加载技能:\s*([^\]]+)\]")
+
+
+def _visible_user_content(content: str) -> str:
+    """Hide the embedded Skill Markdown from the TUI user transcript.
+
+    Manual Skill loading still stores and sends the original message to the
+    model; this formatter only changes what the presentation layer renders.
+    """
+    match = _MANUAL_SKILL_RE.match(content)
+    if match is None:
+        return content
+    name = match.group(1).strip()
+    return f"已加载技能: {name}" if name else "已加载技能"
+
+
+def _format_token_count(value: int) -> str:
+    """把 token 数压缩成状态栏可读的 k/M 单位。"""
+    value = max(0, int(value))
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}".rstrip("0").rstrip(".") + "k"
+    return str(value)
+
+
 def _truncate_spans(segs: RichLine, width: int) -> RichLine:
     """按终端 cell 宽度逐段截断(保留各段样式),超宽段加省略号,溢出段丢弃。
 
@@ -557,24 +583,62 @@ class Transcript(Component):
 
 
 class StatusBar(Component):
-    """Codex 风格单行状态栏:模型、思考强度与工作目录左对齐显示。"""
+    """Codex 风格单行状态栏:左侧元数据 + 右侧上下文占用。"""
+
+    _CONTEXT_BAR_WIDTH = 8
 
     def __init__(self) -> None:
         self.model = ""
         self.effort = ""
         self.cwd = ""
+        #: 最近一次请求的输入 token;None = 尚未收到 provider usage。
+        self.context_tokens: int | None = None
+        #: 上下文窗口上限;None = 装配层尚未提供上下文元数据。
+        self.context_window: int | None = None
 
     def render(self, width: int) -> list[RichLine]:
-        line: RichLine = [_seg("  ", fg=DIM)]
+        left: RichLine = [_seg("  ", fg=DIM)]
         if self.model:
-            line.append(_seg(self.model, fg=STATUS_MODEL))
+            left.append(_seg(self.model, fg=STATUS_MODEL))
         if self.effort:
-            line.append(_seg(f" {self.effort}", fg=STATUS_MODEL))
+            left.append(_seg(f" {self.effort}", fg=STATUS_MODEL))
         if self.cwd:
             if self.model or self.effort:
-                line.append(_seg(" · ", fg=DIM))
-            line.append(_seg(self.cwd, fg=STATUS_PATH))
-        return [_truncate_spans(line, max(1, width))]
+                left.append(_seg(" · ", fg=DIM))
+            left.append(_seg(self.cwd, fg=STATUS_PATH))
+
+        right = self._context_line()
+        width = max(1, width)
+        if not right:
+            return [_truncate_spans(left, width)]
+
+        right_width = sum(_cell_width(span.text) for span in right)
+        if right_width >= width:
+            return [_truncate_spans(right, width)]
+
+        left = _truncate_spans(left, max(1, width - right_width - 1))
+        gap = max(1, width - _cell_width("".join(span.text for span in left)) - right_width)
+        return [left + [_seg(" " * gap, fg=DIM)] + right]
+
+    def _context_line(self) -> RichLine:
+        """渲染右对齐的上下文进度条与占用标签。"""
+        if self.context_window is None or self.context_window <= 0:
+            return []
+        window = self.context_window
+        used = self.context_tokens
+        if used is None:
+            filled = 0
+            label = f"上下文 — / {_format_token_count(window)}"
+        else:
+            ratio = max(0.0, min(1.0, used / window))
+            filled = round(ratio * self._CONTEXT_BAR_WIDTH)
+            percent = ratio * 100
+            label = (
+                f"上下文 {_format_token_count(max(0, used))} / "
+                f"{_format_token_count(window)} · {percent:.1f}%"
+            )
+        meter = "▰" * filled + "▱" * (self._CONTEXT_BAR_WIDTH - filled)
+        return [_seg(f"{meter} ", fg=ACCENT), _seg(label, fg=ACCENT)]
 
 
 @dataclass(frozen=True)
@@ -630,10 +694,78 @@ class TuiModel:
         block.append_text(text)
         self.transcript.append(block)
 
+    def hydrate_history(self, history: list[Any], summary: str | None = None) -> None:
+        """从会话快照重建 transcript,用于切换/恢复持久化会话。
+
+        ``AgentSession`` 的历史是消息模型,而 TUI 运行时状态来自事件流。
+        切换会话不会重新发出过去的事件,因此这里按消息顺序重建同一组可见块,
+        并将尚未有结果的工具调用保留为 pending。该方法只负责显示历史,
+        不会把任何消息重新写回会话或触发模型调用。
+        """
+        self.transcript.clear()
+        self.running = False
+        self._assistant = None
+        self._pending_tools.clear()
+        self._pending_tools_by_id.clear()
+        self.activity_visible = False
+        self.activity_frame = 0
+
+        if summary:
+            self.append_info(f"上下文摘要\n{summary}")
+
+        for message in history:
+            role = str(getattr(message, "role", ""))
+            content = str(getattr(message, "content", "") or "")
+            if role == "user":
+                self.transcript.append(UserBlock(_visible_user_content(content)))
+                self._assistant = None
+                continue
+
+            if role == "assistant":
+                if content:
+                    block = AssistantBlock(clock=self._clock)
+                    block.append_text(content)
+                    self.transcript.append(block)
+                self._assistant = None
+                for call in getattr(message, "tool_calls", None) or []:
+                    if isinstance(call, dict):
+                        name = str(call.get("name") or "?")
+                        args = call.get("args") or {}
+                        call_id = call.get("id")
+                    else:
+                        name = str(getattr(call, "name", "?") or "?")
+                        args = getattr(call, "args", {}) or {}
+                        call_id = getattr(call, "id", None)
+                    if not isinstance(args, dict):
+                        args = {}
+                    block = ToolCallBlock(
+                        name,
+                        args,
+                        call_id=str(call_id) if call_id else None,
+                    )
+                    self.transcript.append(block)
+                    self._pending_tools.append(block)
+                    if block.call_id:
+                        self._pending_tools_by_id[block.call_id] = block
+                continue
+
+            if role == "tool":
+                call_id = str(getattr(message, "tool_call_id", "") or "")
+                block = self._pending_tools_by_id.pop(call_id, None) if call_id else None
+                if block is None and self._pending_tools:
+                    block = self._pending_tools[0]
+                    if block.call_id:
+                        self._pending_tools_by_id.pop(block.call_id, None)
+                if block is not None:
+                    self._pending_tools.remove(block)
+                    block.set_result(content)
+
+        self.transcript.scroll_to_bottom()
+
     def apply(self, event: AgentEvent) -> None:
         ev_type = event.type
         if ev_type == EventType.SESSION_STARTED:
-            self.transcript.append(UserBlock(str(event.payload)))
+            self.transcript.append(UserBlock(_visible_user_content(str(event.payload))))
             self._assistant = None
             self._pending_tools.clear()
             self._pending_tools_by_id.clear()

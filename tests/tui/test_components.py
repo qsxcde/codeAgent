@@ -38,6 +38,7 @@ from codeagent.app.tui.theme import (
     WARNING,
 )
 from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.messages import Message, ToolCall
 
 
 class _FakeClock:
@@ -89,6 +90,54 @@ def test_assistant_without_body_renders_nothing():
     assert block.render(60) == []
     block.append_text("b")
     assert rich_to_plain(block.render(60)) == ["• b"]
+
+
+def test_tui_model_hydrates_persisted_history():
+    """会话切换后,持久化消息应按原顺序重建用户/助手/工具块。"""
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="旧会话输入"))
+    model.apply(AgentEvent(EventType.TEXT_DELTA, payload="旧会话回复"))
+
+    call = ToolCall(id="call-1", name="read", args={"file_path": "a.py"})
+    model.hydrate_history(
+        [
+            Message(role="user", content="恢复的问题"),
+            Message(role="assistant", content="恢复的回答"),
+            Message(role="assistant", tool_calls=[call]),
+            Message(role="tool", content="文件内容", tool_call_id="call-1"),
+        ]
+    )
+
+    plain = "\n".join(rich_to_plain(model.transcript.all_rich(80)))
+    assert "› 恢复的问题" in plain
+    assert "• 恢复的回答" in plain
+    assert "Read a.py" in plain
+    tool = next(block for block in model.transcript.blocks if isinstance(block, ToolCallBlock))
+    assert tool.status == "done"
+    assert model.running is False
+    assert model.activity_visible is False
+
+
+def test_tui_hides_manual_skill_markdown_but_keeps_loaded_label():
+    """手动加载 Skill 时只显示简短标签，完整 Markdown 不进入 TUI transcript。"""
+    invocation = (
+        "[用户手动加载技能: fmt]\n"
+        '<skill name="fmt" location="/skills/fmt/SKILL.md">\n'
+        "SECRET-SKILL-MARKDOWN\n"
+        "</skill>"
+    )
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload=invocation))
+    live = "\n".join(rich_to_plain(model.transcript.all_rich(120)))
+
+    assert "已加载技能: fmt" in live
+    assert "SECRET-SKILL-MARKDOWN" not in live
+    assert "/skills/fmt/SKILL.md" not in live
+
+    model.hydrate_history([Message(role="user", content=invocation)])
+    restored = "\n".join(rich_to_plain(model.transcript.all_rich(120)))
+    assert "已加载技能: fmt" in restored
+    assert "SECRET-SKILL-MARKDOWN" not in restored
 
 
 def test_assistant_wraps_cjk_by_cell_width():
@@ -247,6 +296,36 @@ def test_status_bar_truncates_cjk_metadata():
     plain = "".join(s.text for s in line)
     assert plain.endswith("…")
     assert _cells(plain) <= 10
+
+
+def test_status_bar_renders_context_usage_on_right():
+    """状态栏右侧显示上下文占用、窗口上限与低占用进度条。"""
+    from codeagent.app.tui.theme import ACCENT
+
+    bar = StatusBar()
+    bar.model = "deepseek-v4-flash"
+    bar.effort = "high"
+    bar.cwd = r"D:\project\codeAgent"
+    bar.context_tokens = 12_400
+    bar.context_window = 128_000
+
+    line = bar.render(100)[0]
+    plain = "".join(s.text for s in line)
+
+    assert plain.endswith("上下文 12.4k / 128k · 9.7%")
+    assert "▰" in plain and "▱" in plain
+    assert any(span.fg == ACCENT for span in line)
+    assert _cells(plain) <= 100
+
+
+def test_status_bar_shows_context_window_before_first_usage():
+    """尚未收到 provider usage 时显示窗口上限,不伪造当前占用。"""
+    bar = StatusBar()
+    bar.context_window = 128_000
+
+    plain = "".join(s.text for s in bar.render(60)[0])
+
+    assert plain.endswith("上下文 — / 128k")
 
 
 def test_truncate_cjk_by_cell_width():

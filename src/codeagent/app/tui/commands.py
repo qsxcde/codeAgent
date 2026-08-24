@@ -109,7 +109,9 @@ def default_registry() -> dict[str, CommandSpec]:
         ),
         "compact": CommandSpec("compact", "压缩当前会话上下文"),
         "skills": CommandSpec(
-            "skills", "列出可用技能 / 加载指定技能", args=("name",)
+            "skills",
+            "列出/加载技能或管理 Package(install/list/update/remove/reload)",
+            args=("action", "args..."),
         ),
         "mcp": CommandSpec("mcp", "列出 MCP server 与工具(含诊断)"),
         "quit": CommandSpec("quit", "退出 TUI(等同 Ctrl+C)"),

@@ -23,14 +23,43 @@ def _event_types(seen) -> list[str]:
     return [e.type for e in seen]
 
 
-def test_create_sets_current_and_persists_header():
+def test_create_keeps_empty_session_in_memory_only():
+    """打开新会话但未对话时,不应在 store 中创建空记录。"""
     store = MemoryStore()
     mgr = _manager(store=store, model="deepseek-v4-flash", effort="high")
     a = mgr.create()
     assert mgr.current is a
+    assert store.list() == []
+    assert store.get(a.session_id) is None
+
+
+def test_create_persists_header_after_successful_first_turn():
+    """首轮成功产生消息后,才创建带模型配置的持久化 header。"""
+    store = MemoryStore()
+    mgr = _manager(store=store, model="deepseek-v4-flash", effort="high")
+    a = mgr.create()
+    asyncio.run(a.run("你好"))
+
     assert len(store.list()) == 1
     ref = store.get(a.session_id)
     assert ref.model == "deepseek-v4-flash" and ref.effort == "high"
+
+
+def test_failed_first_turn_does_not_persist_empty_session():
+    """首轮失败回滚后,空会话仍不应出现在 store。"""
+
+    class BoomModel(FakeClient):
+        def _generate(self, messages, **kwargs):
+            raise RuntimeError("首轮失败")
+
+    store = MemoryStore()
+    mgr = _manager(BoomModel(response="不会返回"), store=store)
+    session = mgr.create()
+    asyncio.run(session.run("失败的首轮"))
+
+    assert session.history == []
+    assert store.list() == []
+    assert store.get(session.session_id) is None
 
 
 def test_switch_restores_history():
@@ -101,7 +130,8 @@ def test_replace_ports_switches_config_and_persists():
     """replace_ports:热切换后会话用新端口,配置写入 store(读侧后写覆盖)。"""
     store = MemoryStore()
     mgr = _manager(store=store, model="a", effort="low")
-    mgr.create()
+    session = mgr.create()
+    asyncio.run(session.run("首轮"))
     new_ports = AgentPorts(model=ChatModelPort(FakeClient(response="新配置回复")), tools=[])
     mgr.replace_ports(new_ports, model="b", effort="high")
     ref = store.list()[-1]
@@ -114,7 +144,7 @@ def test_replace_ports_switches_config_and_persists():
 
 def test_replace_ports_halt_running():
     """replace_ports 先中止运行中的会话(避免旧端口执行中被替换)。"""
-    mgr = _manager(store=MemoryStore())
+    mgr = _manager(store=None)
     session = mgr.create()
     new_ports = AgentPorts(model=ChatModelPort(FakeClient(response="x")), tools=[])
 
@@ -147,6 +177,7 @@ def test_create_with_parent_session():
     mgr = _manager(store=store)
     a = mgr.create()
     b = mgr.create(parent_session=a.session_id)
+    asyncio.run(b.run("分支首轮"))
     assert store.get(b.session_id).parent_session == a.session_id
 
 
@@ -233,8 +264,8 @@ def test_fork_validation_errors():
     mgr.create()
     with pytest.raises(ValueError, match="会话不存在"):
         mgr.fork("ghost")
-    empty = mgr.create()  # 无消息
-    with pytest.raises(ValueError, match="没有可分叉的用户消息"):
+    empty = mgr.create()  # 无消息,尚未持久化
+    with pytest.raises(ValueError, match="会话不存在"):
         mgr.fork(empty.session_id)
 
 

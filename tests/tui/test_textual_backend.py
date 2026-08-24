@@ -302,6 +302,7 @@ def test_on_mount_installs_background_blending():
 def test_input_mask_switches_composer_components():
     """(tui-login-command)set_input_mask:普通输入 ↔ 密码输入 display 互斥。"""
     from codeagent.app.tui.textual_backend import TextualBackend
+    from textual.color import Color
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -309,17 +310,33 @@ def test_input_mask_switches_composer_components():
         async with backend._app.run_test(size=(80, 24)) as pilot:
             assert composer.input.display  # 初始为普通输入
             assert not composer.key_input.display
+            assert not composer.login_label.display
+            assert not composer.login_hint.display
 
             backend.set_input_mask(True)
             await pilot.pause()  # focus() 经消息循环排队生效
             assert not composer.input.display
             assert composer.key_input.display
+            assert composer.login_label.display
+            assert str(composer.login_label.content) == "KEY"
+            assert composer.login_hint.display
+            assert str(composer.login_hint.content) == "Enter 保存  ·  Esc 取消"
+            assert composer.styles.height.value == 4
+            assert composer.key_input.styles.background == Color.parse("#171a1d")
+            assert composer.key_input.styles.border.top[1] == Color.parse("#171a1d")
+            assert composer.top_rule.styles.color == Color.parse("#39d9ff")
+            assert composer.bottom_rule.styles.color == Color.parse("#39d9ff")
             assert backend._app.focused is composer.key_input
 
             backend.set_input_mask(False)
             await pilot.pause()
             assert composer.input.display
             assert not composer.key_input.display
+            assert not composer.login_label.display
+            assert not composer.login_hint.display
+            assert composer.styles.height.value == 3
+            assert composer.top_rule.styles.color == Color.parse("#5a5a5a")
+            assert composer.bottom_rule.styles.color == Color.parse("#5a5a5a")
             assert backend._app.focused is composer.input
             # 退出掩码:普通输入提示还原,密码输入内容清空
             assert composer.input.placeholder == "输入消息..."

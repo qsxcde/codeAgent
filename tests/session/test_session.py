@@ -205,6 +205,24 @@ def test_session_restores_from_store():
     assert len(store.load_messages("s1")) == 4
 
 
+def test_session_restores_latest_context_tokens_from_store():
+    """恢复持久化会话时,状态栏所需的最近上下文占用也应恢复。"""
+    store = MemoryStore()
+    first = _session(
+        FakeClient(response="第一轮", usage={"input_tokens": 12_400, "output_tokens": 20}),
+        store=store,
+        session_id="s1",
+    )
+    asyncio.run(first.run("你好"))
+
+    second = _session(
+        FakeClient(response="第二轮"),
+        store=store,
+        session_id="s1",
+    )
+    assert second.context_tokens == 12_400
+
+
 def test_run_sync_without_loop_completes():
     sess = _session(FakeClient(response="OK"))
     seen: list = []
@@ -568,6 +586,19 @@ def test_threshold_auto_compact_triggers():
         asyncio.run(sess.run(text))
     assert sess._summary is not None  # 自动压缩已发生
     assert store.load_context(sess.session_id).summary == sess._summary
+
+
+def test_context_usage_properties_expose_latest_input_and_window():
+    """会话暴露最近一次输入 token 与上下文窗口,不返回累计 usage。"""
+    sess = _compact_session(
+        FakeClient(response="答"),
+        context_window=32_000,
+    )
+
+    assert sess.context_tokens is None
+    assert sess.context_window == 32_000
+    sess._last_input_tokens = 1_240
+    assert sess.context_tokens == 1_240
 
 
 def test_second_compact_incremental_merge():

@@ -3,9 +3,9 @@
 语义对齐 Claude Code Skills(2026-08-19 官方文档实查)与 Pi ``skills.ts``
 (2026-08-15 源码实查):
 - 一技能一目录,``SKILL.md`` = YAML frontmatter + Markdown 正文;
-- 来源(优先级从高到低):个人级 ``<config_dir>/skills/`` > 项目级
-  ``<cwd>/.codeagent/skills/`` > 内建 ``resources/skills/``(Claude 语义:
-  个人覆盖项目、任意级覆盖内建——与信任方向同向);
+- 来源(优先级从高到低):个人级直接目录 > 个人级 Package > 项目级直接目录
+  > 项目级 Package > 内建 ``resources/skills/``(Claude 语义:个人覆盖项目、
+  任意级覆盖内建——与信任方向同向);
 - ``name`` 缺省取目录名;``description`` 缺省取正文第一段(均不产生诊断);
 - 解析失败 / 缺少可用 name 与 description → 诊断 + 跳过该技能,不中断加载
   (镜像 ``agents.py`` 读失败跳过风格);同名遮蔽产生诊断并标注遮蔽关系;
@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -48,6 +48,10 @@ class Skill:
     description: str
     path: str
     content: str
+    package_id: str | None = None
+    package_version: str | None = None
+    package_scope: str | None = None
+    bootstrap: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,42 +121,74 @@ def build_skills_prompt(base: str, skills: list[Skill]) -> str:
     - 技能正文不进入提示词——模型按需经技能工具获取;
     - 无技能时不产生技能段。
     """
-    if not skills:
+    ordinary_skills = [skill for skill in skills if not skill.bootstrap]
+    if not ordinary_skills:
         return base
     lines = [
         "<available_skills>",
         "技能按需使用:调用 skill 工具获取正文(参数为技能名);未列出的技能未加载。",
     ]
-    for skill in sorted(skills, key=lambda s: s.name):  # 排序保证注入顺序确定
+    for skill in sorted(ordinary_skills, key=lambda s: s.name):  # 排序保证注入顺序确定
         lines.append(f"- {skill.name}: {_flatten(skill.description)} (来源: {skill.path})")
     lines.append("</available_skills>")
     return f"{base}\n\n" + "\n".join(lines)
 
 
 def _discover_skills_in(
-    directory: Path, diagnostics: list[SkillDiagnostic]
+    directory: Path,
+    diagnostics: list[SkillDiagnostic],
+    *,
+    recursive: bool = False,
+    package: Any = None,
 ) -> list[Skill]:
-    """单源发现:一层子目录,含 ``SKILL.md`` 即为一技能(解析失败诊断跳过)。
+    """单源发现:直接目录一层,Package 目录递归(解析失败诊断跳过)。
 
-    与 Pi 的递归发现不同,MVP 只认一层(monorepo 嵌套留后续,目录约定不变)。
+    直接目录保持旧版一层约定;Package 使用递归发现以兼容仓库中的分类目录。
     """
     found: list[Skill] = []
     if not directory.is_dir():
         return found
-    for entry in sorted(directory.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("."):
-            continue
-        skill_file = entry / SKILL_FILE
+    if recursive:
+        candidates = sorted(directory.rglob(SKILL_FILE))
+    else:
+        candidates = []
+        for entry in sorted(directory.iterdir()):
+            if entry.is_dir() and not entry.name.startswith("."):
+                candidates.append(entry / SKILL_FILE)
+    for skill_file in candidates:
         if not skill_file.is_file():
             continue
-        skill, diags = _parse_skill_file(skill_file, entry.name)
+        if recursive:
+            try:
+                relative = skill_file.resolve().relative_to(directory.resolve())
+            except ValueError:
+                diagnostics.append(
+                    SkillDiagnostic(
+                        "package_path_escape",
+                        f"Package Skill 路径越界: {skill_file}",
+                        str(skill_file),
+                    )
+                )
+                continue
+            if any(part.startswith(".") for part in relative.parts):
+                continue
+        skill, diags = _parse_skill_file(
+            skill_file,
+            skill_file.parent.name,
+            package=package,
+            bootstrap=bool(package and getattr(package, "bootstrap", None) == skill_file.parent.name),
+        )
         found.extend([skill] if skill is not None else [])
         diagnostics.extend(diags)
     return found
 
 
 def _parse_skill_file(
-    path: Path, directory_name: str
+    path: Path,
+    directory_name: str,
+    *,
+    package: Any = None,
+    bootstrap: bool = False,
 ) -> tuple[Skill | None, list[SkillDiagnostic]]:
     """解析单个 SKILL.md:frontmatter → name/description 缺省语义 + 校验。
 
@@ -185,7 +221,16 @@ def _parse_skill_file(
             )
         ]
     return (
-        Skill(name=name.strip(), description=description, path=str(path), content=body),
+        Skill(
+            name=name.strip(),
+            description=description,
+            path=str(path),
+            content=body,
+            package_id=getattr(package, "package_id", None),
+            package_version=getattr(package, "version", None),
+            package_scope=getattr(package, "scope", None),
+            bootstrap=bootstrap,
+        ),
         [],
     )
 
@@ -211,8 +256,8 @@ def load_skills(
 ) -> tuple[list[Skill], list[SkillDiagnostic]]:
     """多源发现 + 去重 + 同名遮蔽,返回 (按名称排序的技能表, 诊断列表)。
 
-    - 来源顺序(优先级从高到低):个人级 ``<config_dir>/skills/`` →
-      项目级 ``<cwd>/.codeagent/skills/`` → 内建(测试可注入 ``builtin_dir``);
+    - 来源顺序(优先级从高到低):个人级直接目录 → 个人级 Package → 项目级
+      直接目录 → 项目级 Package → 内建(测试可注入 ``builtin_dir``);
     - 绝对路径去重(同文件只加载一次);同名遮蔽——高优先级源先入表,
       后到的同名技能产生 ``shadowed`` 诊断(标注谁遮蔽谁)并跳过;
     - 来源目录不存在静默跳过,不产生诊断。
@@ -221,20 +266,29 @@ def load_skills(
     resolved_cwd = Path(cwd).expanduser().resolve()
     resolved_config = Path(config_dir).expanduser().resolve()
 
-    sources: list[tuple[str, Path]] = []
-    sources.append(("user", resolved_config / "skills"))
-    sources.append(("project", resolved_cwd / PROJECT_SKILLS_DIR / "skills"))
+    sources: list[tuple[str, Path, bool, Any]] = []
+    sources.append(("user", resolved_config / "skills", False, None))
+    # Package sources are inserted after the corresponding direct directory;
+    # this preserves the existing personal > project > builtin behavior while
+    # giving direct directories a deliberate override within each scope.
+    for package in _package_records(resolved_cwd, resolved_config, diagnostics, "user"):
+        sources.append((f"user-package:{package.package_id}", package.skills_dir, True, package))
+    sources.append(("project", resolved_cwd / PROJECT_SKILLS_DIR / "skills", False, None))
+    for package in _package_records(resolved_cwd, resolved_config, diagnostics, "project"):
+        sources.append((f"project-package:{package.package_id}", package.skills_dir, True, package))
     if builtin_dir is not None:
-        sources.append(("builtin", Path(builtin_dir).expanduser().resolve()))
+        sources.append(("builtin", Path(builtin_dir).expanduser().resolve(), False, None))
     else:
         builtin = _builtin_skills_dir()
         if builtin is not None:
-            sources.append(("builtin", builtin))
+            sources.append(("builtin", builtin, False, None))
 
     registry: dict[str, Skill] = {}
     seen_paths: set[str] = set()
-    for source_name, source_dir in sources:
-        for skill in _discover_skills_in(source_dir, diagnostics):
+    for source_name, source_dir, recursive, package in sources:
+        for skill in _discover_skills_in(
+            source_dir, diagnostics, recursive=recursive, package=package
+        ):
             resolved_path = str(Path(skill.path).resolve())
             if resolved_path in seen_paths:
                 continue
@@ -252,3 +306,71 @@ def load_skills(
                 continue
             registry[skill.name] = skill
     return sorted(registry.values(), key=lambda s: s.name), diagnostics
+
+
+def _package_records(
+    cwd: Path,
+    config_dir: Path,
+    diagnostics: list[SkillDiagnostic],
+    scope: str,
+) -> list[Any]:
+    """Load valid Package records for one scope without coupling callers."""
+    from codeagent.app.config import package_paths
+    from codeagent.app.skill_packages import PackageRecord, PackageRegistry
+
+    store_path, registry_path, _ = package_paths(cwd, scope=scope, config_dir=config_dir)
+    raw, package_diags = PackageRegistry(registry_path).load()
+    diagnostics.extend(
+        SkillDiagnostic(f"package_{item.code}", item.message, item.path)
+        for item in package_diags
+    )
+    records: list[PackageRecord] = []
+    for value in raw:
+        try:
+            record = PackageRecord.from_dict(value)
+            root = record.root.resolve()
+            skills_dir = record.skills_dir.resolve()
+            if not _path_inside(store_path.resolve(), root):
+                raise ValueError(f"Package 根目录越界: {root}")
+            if not root.is_dir() or not skills_dir.is_dir():
+                raise ValueError(f"Package Skill 根目录不存在: {skills_dir}")
+            if not _path_inside(root, skills_dir):
+                raise ValueError(f"Package Skill 根目录越界: {skills_dir}")
+            if record.bootstrap:
+                bootstrap_path = (skills_dir / record.bootstrap / SKILL_FILE).resolve()
+                if not _path_inside(skills_dir, bootstrap_path) or not bootstrap_path.is_file():
+                    diagnostics.append(
+                        SkillDiagnostic(
+                            "package_bootstrap_missing",
+                            f"Package '{record.package_id}' Bootstrap 不存在: {record.bootstrap}",
+                            str(bootstrap_path),
+                        )
+                    )
+                    record = replace(record, bootstrap=None)
+            if not record.bootstrap and (skills_dir / "using-superpowers" / SKILL_FILE).is_file():
+                record = replace(record, bootstrap="using-superpowers")
+                diagnostics.append(
+                    SkillDiagnostic(
+                        "package_bootstrap_inferred",
+                        f"Package '{record.package_id}' 约定推断 Bootstrap: using-superpowers",
+                        str(skills_dir / "using-superpowers" / SKILL_FILE),
+                    )
+                )
+            records.append(record)
+        except (ValueError, OSError) as exc:
+            diagnostics.append(
+                SkillDiagnostic(
+                    "package_invalid",
+                    f"Package 记录无效: {exc}",
+                    str(value.get("root") or registry_path),
+                )
+            )
+    return sorted(records, key=lambda item: item.package_id)
+
+
+def _path_inside(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        return False

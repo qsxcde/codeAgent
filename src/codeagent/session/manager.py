@@ -8,7 +8,7 @@
 - **ports 共享**:模型端口与工具无状态,所有会话共用同一份(组合根装配一次);
   ``replace_ports`` 属 T-44(/provider /model 时按 Pi 式 ``model_change``
   entry 演进,design D4);
-- **header 元数据**:create 时把模型配置(model/effort)固化进会话头
+- **header 元数据**:首轮成功落盘时把模型配置(model/effort)固化进会话头
   (design D4)。
 
 分层约束:session 不 import ai / tools / config,仅依赖 core 与同层模块。
@@ -58,18 +58,20 @@ class SessionManager:
     def create(self, *, parent_session: str | None = None) -> AgentSession:
         """创建新会话并成为 current(运行中的会话先中止)。
 
-        header 的 model/effort 在创建时固化(design D4)。
+        新会话先保留在内存中;首轮成功产生消息后才持久化 header。
+        model/effort/parent_session 会随 pending session 延迟写入。
         """
         self._halt_current()
         session_id = str(uuid.uuid4())
-        if self._store is not None:
-            self._store.create(
-                session_id,
-                parent_session=parent_session,
-                model=self._model,
-                effort=self._effort,
-            )
-        return self._adopt(session_id)
+        return self._adopt(
+            session_id,
+            defer_persistence=True,
+            persistence_options={
+                "parent_session": parent_session,
+                "model": self._model,
+                "effort": self._effort,
+            },
+        )
 
     def switch(self, session_id: str) -> AgentSession:
         """切换到既有会话并恢复其历史(不存在则报错;运行中先中止)。"""
@@ -131,7 +133,13 @@ class SessionManager:
         # 既有会话壳在构造时固化端口引用:逐壳更新,后续轮次用新配置。
         for session in self._sessions.values():
             session.replace_ports(ports)
-        if self._store is not None and self._current_id is not None:
+            session.update_persistence_options(model=model, effort=effort)
+        if (
+            self._store is not None
+            and self._current_id is not None
+            and self.current is not None
+            and self.current.is_persisted
+        ):
             self._store.append_model_change(self._current_id, model=model, effort=effort)
 
     def dispose(self, session_id: str) -> None:
@@ -186,7 +194,12 @@ class SessionManager:
             current.abort()
 
     def _adopt(
-        self, session_id: str, *, previous_session_id: str | None = None
+        self,
+        session_id: str,
+        *,
+        previous_session_id: str | None = None,
+        defer_persistence: bool = False,
+        persistence_options: dict[str, Any] | None = None,
     ) -> AgentSession:
         """构造/接管会话壳:转移订阅并设为 current。
 
@@ -202,6 +215,8 @@ class SessionManager:
             tool_timeout=self._tool_timeout,
             previous_session_id=previous_session_id,
             summarizer=self._summarizer,
+            defer_persistence=defer_persistence,
+            persistence_options=persistence_options,
         )
         for fn, unsubs in self._subscribers:
             for u in unsubs:
