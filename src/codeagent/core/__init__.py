@@ -5,8 +5,9 @@
 """
 
 from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.execution import ToolExecutionRuntime, ToolOperation
 from codeagent.core.loop import DEFAULT_RECURSION_LIMIT, RecursionLimitError, run_turn
-from codeagent.core.messages import Message, ToolCall, ToolResult
+from codeagent.core.messages import Message, ToolCall, ToolExecutionStatus, ToolResult
 from codeagent.core.ports import AgentPorts, ModelPort, ModelResponse, StreamEvent
 
 __all__ = [
@@ -20,6 +21,9 @@ __all__ = [
     "RecursionLimitError",
     "StreamEvent",
     "ToolCall",
+    "ToolExecutionRuntime",
+    "ToolExecutionStatus",
+    "ToolOperation",
     "ToolResult",
     "run_turn",
 ]

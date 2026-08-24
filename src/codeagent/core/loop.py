@@ -14,12 +14,20 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Callable
 from typing import Any
 
 from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.messages import Message, ToolCall, ToolResult, attach_tool_results, new_id
+from codeagent.core.execution import ToolExecutionRuntime
+from codeagent.core.messages import (
+    Message,
+    ToolCall,
+    ToolExecutionStatus,
+    ToolResult,
+    attach_tool_results,
+    new_id,
+    parse_tool_arguments,
+)
 from codeagent.core.ports import AgentPorts
 
 DEFAULT_RECURSION_LIMIT = 50
@@ -88,15 +96,15 @@ async def _call_model(
     tool_calls: list[ToolCall] = []
     for index in sorted(arg_buffers):
         raw = "".join(arg_buffers[index])
-        try:
-            args = json.loads(raw) if raw else {}
-            if not isinstance(args, dict):
-                args = {}
-        except json.JSONDecodeError:
-            args = {}  # 流式聚合不完整/截断 JSON:回退空 dict,不崩循环
+        args, argument_error = parse_tool_arguments(
+            raw, finish_reason=finish_reason
+        )
         tool_calls.append(
             ToolCall(
-                id=ids.get(index) or "", name=names.get(index) or "", args=args
+                id=ids.get(index) or "",
+                name=names.get(index) or "",
+                args=args,
+                argument_error=argument_error,
             )
         )
 
@@ -120,20 +128,7 @@ async def _execute_one(
     ``invoke`` 为同步阻塞(如 bash 120s),经 ``asyncio.to_thread`` 不阻塞事件循环;
     ``timeout`` 为附加保护(工具自带超时优先)。
     """
-    try:
-        args_obj = tool.Args(**call.args)
-    except Exception as exc:  # noqa: BLE001 - 参数校验失败按调用失败处理
-        return ToolResult(call.id, f"[工具执行出错] {exc}", error=True, name=tool.name)
-    try:
-        if timeout is not None:
-            content = await asyncio.wait_for(
-                asyncio.to_thread(tool.invoke, args_obj), timeout=timeout
-            )
-        else:
-            content = await asyncio.to_thread(tool.invoke, args_obj)
-    except Exception as exc:  # noqa: BLE001 - 单 call 兜底
-        return ToolResult(call.id, f"[工具执行出错] {exc}", error=True, name=tool.name)
-    return ToolResult(call.id, str(content), error=False, name=tool.name)
+    return await ToolExecutionRuntime(max_concurrency=1).execute(tool, call, timeout)
 
 
 def _call_summary(call: ToolCall) -> str:
@@ -182,16 +177,34 @@ async def _execute_tools(
     """
     by_name = {t.name: t for t in ports.tools}
     policy = ports.policy
+    runtime = ports.tool_runtime or ToolExecutionRuntime()
     results_by_index: dict[int, ToolResult] = {}
     to_run: list[tuple[int, ToolCall, Any]] = []
     #: allow 但带警告(越界读):结果文本前置警告,模型可见(spec「文件访问边界」)。
     warnings_by_index: dict[int, str] = {}
 
     for index, call in enumerate(calls):
+        if call.argument_error:
+            results_by_index[index] = ToolResult(
+                call.id,
+                f"[工具参数错误] {call.argument_error}",
+                error=True,
+                name=call.name,
+                status=ToolExecutionStatus.INVALID_ARGUMENTS,
+                operation_id=new_id(),
+                cleanup_confirmed=True,
+            )
+            continue
         tool = by_name.get(call.name)
         if tool is None:
             results_by_index[index] = ToolResult(
-                call.id, f"[工具执行出错] 未知工具: {call.name}", error=True, name=call.name
+                call.id,
+                f"[工具执行出错] 未知工具: {call.name}",
+                error=True,
+                name=call.name,
+                status=ToolExecutionStatus.FAILED,
+                operation_id=new_id(),
+                cleanup_confirmed=True,
             )
             continue
         decision = policy.decide(call.name, call.args) if policy is not None else None
@@ -206,6 +219,9 @@ async def _execute_tools(
                 error=True,
                 name=call.name,
                 rejected=True,
+                status=ToolExecutionStatus.REJECTED,
+                operation_id=new_id(),
+                cleanup_confirmed=True,
             )
         else:  # ask:emit 确认请求 + 等待(逐个排队)
             request_id = f"cf-{call.id or new_id()}"
@@ -231,11 +247,14 @@ async def _execute_tools(
                     error=True,
                     name=call.name,
                     rejected=True,
+                    status=ToolExecutionStatus.REJECTED,
+                    operation_id=new_id(),
+                    cleanup_confirmed=True,
                 )
 
     if to_run:
         gathered = await asyncio.gather(
-            *(_execute_one(tool, call, timeout) for _, call, tool in to_run)
+            *(runtime.execute(tool, call, timeout) for _, call, tool in to_run)
         )
         for (index, _, _), result in zip(to_run, gathered):
             warning = warnings_by_index.get(index)
@@ -246,6 +265,9 @@ async def _execute_tools(
                     error=result.error,
                     name=result.name,
                     rejected=result.rejected,
+                    status=result.status,
+                    operation_id=result.operation_id,
+                    cleanup_confirmed=result.cleanup_confirmed,
                 )
             results_by_index[index] = result
 
@@ -308,6 +330,9 @@ async def run_turn(
                         "tool_name": result.name,
                         "error": result.error,
                         "rejected": result.rejected,
+                        "status": result.status,
+                        "operation_id": result.operation_id,
+                        "cleanup_confirmed": result.cleanup_confirmed,
                     },
                 )
             )

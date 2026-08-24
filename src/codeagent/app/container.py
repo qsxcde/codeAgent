@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import atexit
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from codeagent.ai.protocol.messages import ChatMessage, ToolCall as AiToolCall
-from codeagent.core.messages import Message, ToolCall
+from codeagent.core.messages import Message, ToolCall, parse_tool_arguments
 from codeagent.core.ports import AgentPorts, ModelResponse, PolicyDecision, StreamEvent
 
 
@@ -294,13 +295,17 @@ class ChatModelPort:
         resp = await self._client.generate(chat, tools)
         calls: list[ToolCall] = []
         for tc in resp.tool_calls:
-            try:
-                args = json.loads(tc.arguments) if tc.arguments else {}
-                if not isinstance(args, dict):
-                    args = {}
-            except json.JSONDecodeError:
-                args = {}
-            calls.append(ToolCall(id=tc.id, name=tc.name, args=args))
+            args, argument_error = parse_tool_arguments(
+                tc.arguments, finish_reason=resp.finish_reason
+            )
+            calls.append(
+                ToolCall(
+                    id=tc.id,
+                    name=tc.name,
+                    args=args,
+                    argument_error=argument_error,
+                )
+            )
         return ModelResponse(
             content=resp.content,
             tool_calls=calls,
@@ -308,6 +313,70 @@ class ChatModelPort:
             finish_reason=resp.finish_reason,
             model=resp.model,
         )
+
+    async def aclose(self) -> None:
+        """Release the underlying model client when a runtime is replaced."""
+        close = getattr(self._client, "aclose", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+
+
+class AgentRuntime:
+    """Composition-root resource owner for one model/tool port set."""
+
+    def __init__(self, ports: AgentPorts, model_client: Any, mcp_tools: list[Any]) -> None:
+        self.ports = ports
+        self.model_client = model_client
+        self.mcp_tools = list(mcp_tools)
+        self._closed = False
+
+    async def close(self) -> None:
+        """Close model and MCP resources; safe to call repeatedly."""
+        if self._closed:
+            return
+        self._closed = True
+        close_mcp = None
+        try:
+            from codeagent.tools.mcp.loader import close_mcp_tools
+
+            close_mcp = close_mcp_tools
+        except ImportError:  # pragma: no cover - optional SDK boundary
+            pass
+        if close_mcp is not None:
+            close_mcp(self.mcp_tools)
+        close = getattr(self.model_client, "aclose", None)
+        if callable(close):
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+
+    def close_sync(self) -> None:
+        """Synchronous lifecycle adapter for TUI command callbacks."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.close())
+        else:
+            loop.create_task(self.close())
+
+
+_RUNTIMES_BY_PORTS: dict[int, AgentRuntime] = {}
+
+
+def runtime_for_ports(ports: Any) -> AgentRuntime | None:
+    """Resolve the resource owner, including lazy port wrappers."""
+    real = getattr(ports, "_real", None)
+    if real is not None:
+        ports = real
+    return _RUNTIMES_BY_PORTS.get(id(ports))
+
+
+def close_runtime_for_ports(ports: Any) -> None:
+    runtime = runtime_for_ports(ports)
+    if runtime is not None:
+        runtime.close_sync()
 
 
 # -- 装配 -----------------------------------------------------------------
@@ -350,11 +419,23 @@ def create_agent_ports(
         mcp_diagnostics.extend(mcp_diags)
     if mcp_tools:
         atexit.register(close_mcp_tools, mcp_tools)  # 进程收尾防子进程泄漏
-    return AgentPorts(
+    ports = AgentPorts(
         model=ChatModelPort(client, system_prompt=_build_system_prompt(cfg, skills)),
         tools=create_tools(cfg, skills=rendered_skills) + mcp_tools,
         policy=_create_policy(cfg, approval_mode),
     )
+    runtime = AgentRuntime(ports, client, mcp_tools)
+    _RUNTIMES_BY_PORTS[id(ports)] = runtime
+    return ports
+
+
+def create_agent_runtime(cfg: Any = None, **kwargs: Any) -> AgentRuntime:
+    """Create a resource-owning runtime for integrations that need lifecycle control."""
+    ports = create_agent_ports(cfg, **kwargs)
+    runtime = runtime_for_ports(ports)
+    if runtime is None:  # pragma: no cover - defensive registry invariant
+        raise RuntimeError("AgentRuntime 装配失败")
+    return runtime
 
 
 def create_agent_session(
@@ -391,6 +472,7 @@ def create_agent_session(
         model=model,
         approval_mode=approval_mode,
     )
+    runtime = runtime_for_ports(ports)
     return AgentSession(
         ports,
         EventBus(),
@@ -399,6 +481,7 @@ def create_agent_session(
         recursion_limit=recursion_limit or 50,
         tool_timeout=tool_timeout,
         summarizer=summarizer,
+        runtime_closer=runtime.close if runtime is not None else None,
     )
 
 
@@ -582,6 +665,8 @@ def create_tui_app(
             ]
             if len(owners) == 1:
                 target_provider = owners[0]
+        old_ports = manager._ports
+        manager._halt_current()
         new_ports = create_agent_ports(
             cfg,
             registry=registry,
@@ -590,6 +675,9 @@ def create_tui_app(
             model=new_model or None,
             approval_mode="interactive",  # 热切换保留确认环(security-permissions)
         )
+        # The old model client/MCP servers are no longer reachable after the
+        # switch.  Close them only after the new runtime has been constructed.
+        close_runtime_for_ports(old_ports)
         model_id, effort = _resolve_model_effort(
             cfg, target_provider, new_model, new_effort or reasoning_effort
         )
@@ -624,6 +712,7 @@ def create_tui_app(
         mcp_diagnostics=mcp_diagnostics,  # MCP 装配诊断(/status 展示)
         save_key=save_key,  # /login 密钥保存 + 热切换(tui-login-command)
         configured_providers=_configured_providers(),  # 登录选择器 ✓ 标记
+        close_runtime=lambda: close_runtime_for_ports(manager._ports),
     )
 
 
@@ -699,6 +788,12 @@ def create_session_manager(
             mcp_diagnostics=mcp_diagnostics,
         )
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
+
+    async def _close_runtime() -> None:
+        runtime = runtime_for_ports(ports)
+        if runtime is not None:
+            await runtime.close()
+
     return SessionManager(
         ports,
         store=store,
@@ -707,6 +802,7 @@ def create_session_manager(
         recursion_limit=recursion_limit or 50,
         tool_timeout=tool_timeout,
         summarizer=summarizer,
+        runtime_closer=_close_runtime,
     )
 
 

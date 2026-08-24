@@ -14,7 +14,7 @@ from codeagent.tools.mcp.budget import apply_budget
 from codeagent.tools.mcp.client import McpServerClient
 from codeagent.tools.mcp.config import parse_mcp_config
 
-__all__ = ["load_mcp_tools", "close_mcp_tools"]
+__all__ = ["load_mcp_tools", "close_mcp_tools", "close_mcp_clients"]
 
 #: 单 server 装配超时(启动 + initialize + tools/list)。
 SERVER_START_TIMEOUT = 10.0
@@ -34,6 +34,18 @@ def close_mcp_tools(tools: list[Any]) -> None:
         client.close()
 
 
+def close_mcp_clients(clients: list[Any]) -> None:
+    """Close a client collection directly, deduplicated and idempotently."""
+    seen: set[int] = set()
+    for client in clients:
+        if client is None or id(client) in seen:
+            continue
+        seen.add(id(client))
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
 def load_mcp_tools(
     config_dir: str | Path,
     *,
@@ -48,9 +60,11 @@ def load_mcp_tools(
     """
     servers, config_diags = parse_mcp_config(config_dir)
     tools_by_server: dict[str, list[Any]] = {}
+    clients: list[McpServerClient] = []
     diagnostics: list[str] = list(config_diags)
     for spec in servers:
         client = McpServerClient(spec.name, spec)  # McpServerSpec 兼容 StdioServerParameters
+        clients.append(client)
         try:
             client.start(timeout=SERVER_START_TIMEOUT)
         except Exception as exc:  # noqa: BLE001 - 单 server 失败不中断装配
@@ -63,4 +77,6 @@ def load_mcp_tools(
         tools_by_server[spec.name] = tools
     kept, budget_diags = apply_budget(tools_by_server)
     diagnostics.extend(budget_diags)
+    kept_clients = {id(getattr(tool, "client", None)) for tool in kept}
+    close_mcp_clients([client for client in clients if id(client) not in kept_clients])
     return kept, diagnostics

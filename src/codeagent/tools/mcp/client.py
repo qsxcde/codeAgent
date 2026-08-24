@@ -18,6 +18,7 @@ SDK 的异步 ``ClientSession`` 运行在**每 server 一个后台线程 + 独�
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from typing import Any
 
@@ -55,6 +56,8 @@ class McpServerClient:
         #: 不可 await);close 经 call_soon_threadsafe 置位。
         self._stop: asyncio.Event | None = None
         self._tools: list[McpToolInfo] = []
+        self._active_calls: set[concurrent.futures.Future[Any]] = set()
+        self._closed = False
 
     @property
     def name(self) -> str:
@@ -72,6 +75,7 @@ class McpServerClient:
         """
         if self._thread is not None:
             return
+        self._closed = False
         self._thread = threading.Thread(
             target=self._run_loop, name=f"mcp-{self._name}", daemon=True
         )
@@ -80,7 +84,9 @@ class McpServerClient:
             self.close()
             raise TimeoutError(f"MCP server '{self._name}' 初始化超时({timeout}s)")
         if self._failed is not None:
-            raise self._failed
+            failure = self._failed
+            self.close()
+            raise failure
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None, timeout: float | None = None) -> str:
         """同步调用 server 工具(桥接回后台事件循环),返回文本结果。
@@ -94,8 +100,54 @@ class McpServerClient:
         if loop is None or session is None:
             raise RuntimeError(f"MCP server '{self._name}' 未初始化")
         timeout = timeout if timeout is not None else DEFAULT_CALL_TIMEOUT
-        coro = session.call_tool(name, arguments, read_timeout_seconds=timeout)
-        result = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout)
+        future = self.submit_tool(name, arguments, timeout)
+        try:
+            result = future.result(timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError(f"MCP 工具 {self._name}:{name} 调用超时({timeout}s)")
+        text = _extract_text(result)
+        if getattr(result, "is_error", False):
+            raise RuntimeError(f"MCP 工具 {self._name}:{name} 返回错误: {text}")
+        return text
+
+    def submit_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None,
+        timeout: float | None = None,
+    ) -> concurrent.futures.Future[Any]:
+        """Submit a tracked coroutine to the server loop."""
+        loop = self._loop
+        session = self._session
+        if loop is None or session is None or loop.is_closed() or self._closed:
+            raise RuntimeError(f"MCP server '{self._name}' 未初始化")
+        call_timeout = timeout if timeout is not None else DEFAULT_CALL_TIMEOUT
+        future = asyncio.run_coroutine_threadsafe(
+            session.call_tool(name, arguments, read_timeout_seconds=call_timeout), loop
+        )
+        self._active_calls.add(future)
+        future.add_done_callback(self._active_calls.discard)
+        return future
+
+    async def acall_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None,
+        timeout: float | None = None,
+    ) -> str:
+        """Async bridge that cancels the background Future on task cancel."""
+        future = self.submit_tool(name, arguments, timeout)
+        wrapped = asyncio.wrap_future(future)
+        try:
+            result = await wrapped
+        except asyncio.CancelledError:
+            future.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(wrapped), timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, concurrent.futures.CancelledError):
+                pass
+            raise
         text = _extract_text(result)
         if getattr(result, "is_error", False):
             raise RuntimeError(f"MCP 工具 {self._name}:{name} 返回错误: {text}")
@@ -106,12 +158,17 @@ class McpServerClient:
 
         幂等:循环已关闭(启动失败/重复调用)时安全跳过。
         """
+        self._closed = True
+        for future in list(self._active_calls):
+            future.cancel()
         if self._stop is not None and self._loop is not None and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._stop.set)
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=5.0)
         self._thread = None
+        self._session = None
+        self._stop = None
 
     # -- 内部 ---------------------------------------------------------------
 

@@ -1,5 +1,6 @@
 """tools 层测试:七个原子工具(read/write/edit/bash/grep/find/ls)+ 注册表 + 共享横切(全部离线)。"""
 
+import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -18,6 +19,7 @@ from codeagent.tools.atomic import (
 )
 from codeagent.tools.atomic.bash import DANGEROUS_PATTERNS, _semantically_ok
 from codeagent.tools.base import AtomicTool
+from codeagent.core import ToolCall, ToolExecutionRuntime
 
 
 def _invoke(tool: AtomicTool, **kwargs: object) -> str:
@@ -187,6 +189,21 @@ def test_bash_nonempty_stderr_section_kept(tmp_path):
 def test_bash_timeout(tmp_path):
     out = _invoke(BashTool(cwd=str(tmp_path)), command="sleep 5", timeout=1)
     assert "超时" in out
+
+
+def test_bash_async_agent_timeout_cleans_process_tree(tmp_path):
+    """Agent timeout uses Bash's cancellable subprocess path, not a thread wait."""
+    async def scenario():
+        return await ToolExecutionRuntime().execute(
+            BashTool(cwd=str(tmp_path)),
+            ToolCall("b1", "bash", {"command": "sleep 5"}),
+            timeout=0.05,
+        )
+
+    result = asyncio.run(scenario())
+    assert result.error is True
+    assert result.status in {"timed_out", "cleanup_uncertain"}
+    assert result.cleanup_confirmed is not None
 
 
 def test_bash_grep_no_match_is_ok(tmp_path):

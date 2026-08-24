@@ -75,6 +75,7 @@ class TuiApp:
         configured_providers: set[str] | None = None,
         refresh_skills: Callable[[], tuple[list[Skill], list[str]]] | None = None,
         package_action: Callable[[str, tuple[str, ...]], str] | None = None,
+        close_runtime: Callable[[], None] | None = None,
     ) -> None:
         """``rebuild_ports(provider, model, effort) -> (model, effort)`` 为组合根
         注入的配置热切换回调(/provider /model /effort 命令用;None = 不支持);
@@ -104,6 +105,7 @@ class TuiApp:
         self._configured_providers = set(configured_providers or [])
         self._refresh_skills_callback = refresh_skills
         self._package_action = package_action
+        self._close_runtime = close_runtime
         #: 待输入密钥的 provider(/login 登录态;None = 普通输入)。
         self._login_pending: str | None = None
         self._suggestions: list[str] = []
@@ -989,6 +991,8 @@ class TuiApp:
 
     def _exit(self) -> None:
         self._stop_activity_timer()
+        if self._close_runtime is not None:
+            self._close_runtime()
         width = self._transcript_width()
         self._backend.exit_document(self.model.transcript.all_lines(width))
 

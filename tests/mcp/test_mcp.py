@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import sys
 from pathlib import Path
 
@@ -125,6 +126,38 @@ def test_mcp_tool_error_result():
     with pytest.raises(RuntimeError):
         fail.invoke(McpArgs())
     client.close()
+
+
+def test_mcp_tool_async_cancellation_releases_call():
+    """The async adapter propagates cancellation to the server bridge."""
+
+    class AsyncClient:
+        name = "async"
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.cancelled = False
+
+        async def acall_tool(self, name, arguments, timeout=None):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    async def scenario():
+        client = AsyncClient()
+        tool = McpTool(client, McpToolInfo("wait", "", {}))
+        task = asyncio.create_task(tool.ainvoke(McpArgs()))
+        await client.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return client
+
+    client = asyncio.run(scenario())
+    assert client.cancelled is True
 
 
 def test_close_mcp_tools_idempotent():

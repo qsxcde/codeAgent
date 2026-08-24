@@ -5,6 +5,6 @@ MCP 工具(``{server}:{tool}`` 命名)。全部离线可测:mock server 经 SDK
 内存传输或脚本化 stdio 子进程注入。
 """
 
-from codeagent.tools.mcp.loader import load_mcp_tools
+from codeagent.tools.mcp.loader import close_mcp_clients, close_mcp_tools, load_mcp_tools
 
-__all__ = ["load_mcp_tools"]
+__all__ = ["close_mcp_clients", "close_mcp_tools", "load_mcp_tools"]

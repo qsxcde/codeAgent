@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,11 +24,62 @@ __all__ = [
     "Message",
     "ToolCall",
     "ToolResult",
+    "ToolExecutionStatus",
+    "parse_tool_arguments",
     "new_id",
     "remove_by_id",
     "replace_or_append",
     "attach_tool_results",
 ]
+
+
+class ToolExecutionStatus:
+    """Stable runtime status values shared by core, tools and subscribers."""
+
+    OK = "ok"
+    INVALID_ARGUMENTS = "invalid_arguments"
+    FAILED = "failed"
+    REJECTED = "rejected"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+    CLEANUP_UNCERTAIN = "cleanup_uncertain"
+    ALL = (
+        OK,
+        INVALID_ARGUMENTS,
+        FAILED,
+        REJECTED,
+        TIMED_OUT,
+        CANCELLED,
+        CLEANUP_UNCERTAIN,
+    )
+
+
+def parse_tool_arguments(
+    raw: Any,
+    *,
+    finish_reason: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Normalize provider tool arguments and return ``(args, error)``.
+
+    Providers are inconsistent about whether arguments arrive as a JSON string
+    or an already decoded mapping.  Invalid/non-object values are represented
+    by an empty object solely for wire compatibility; the error marker prevents
+    the executor from invoking the real tool.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return {}, None
+    if isinstance(raw, dict):
+        return dict(raw), None
+    if not isinstance(raw, str):
+        return {}, "工具参数必须是 JSON 对象"
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        suffix = "(可能因响应截断)" if finish_reason == "length" else ""
+        return {}, f"工具参数 JSON 无效{suffix}: {exc.msg} (位置 {exc.pos})"
+    if not isinstance(value, dict):
+        return {}, f"工具参数必须是 JSON 对象,实际为 {type(value).__name__}"
+    return value, None
 
 
 def new_id() -> str:
@@ -51,9 +103,14 @@ class ToolCall:
     id: str
     name: str
     args: dict[str, Any] = field(default_factory=dict)
+    #: Runtime-only parse diagnostic.  It is deliberately omitted from JSONL.
+    argument_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "args": self.args, "type": "tool_call"}
+        result = {"id": self.id, "name": self.name, "args": self.args, "type": "tool_call"}
+        if self.argument_error:
+            result["argument_error"] = self.argument_error
+        return result
 
 
 @dataclass
@@ -69,6 +126,18 @@ class ToolResult:
     error: bool = False
     name: str = ""
     rejected: bool = False
+    status: str = ""
+    operation_id: str = ""
+    cleanup_confirmed: bool | None = None
+
+    def __post_init__(self) -> None:
+        if not self.status:
+            if self.rejected:
+                self.status = ToolExecutionStatus.REJECTED
+            elif self.error:
+                self.status = ToolExecutionStatus.FAILED
+            else:
+                self.status = ToolExecutionStatus.OK
 
 
 @dataclass

@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         _list_sessions()
         return 0
 
+    manager = None
     if args.continue_session or args.session:
         # 会话入口:持久化到 ~/.codeagent/sessions/;恢复或继续既有会话。
         # 默认(无这些参数)仍是一次性 headless,不落盘(既有行为不变)。
@@ -85,10 +86,20 @@ def main(argv: list[str] | None = None) -> int:
             approval_mode="allow" if args.yes else "deny"
         )
 
-    if args.prompt:
-        asyncio.run(_headless_once(session, args.prompt))
-    else:
-        asyncio.run(_headless_loop(session))
+    try:
+        if args.prompt:
+            asyncio.run(_headless_once(session, args.prompt))
+        else:
+            asyncio.run(_headless_loop(session))
+    finally:
+        # Normal CLI completion must release HTTP/MCP resources; atexit is only
+        # a last-resort safeguard for abnormal process termination.
+        if manager is not None:
+            manager.close_sync()
+        else:
+            close_sync = getattr(session, "close_sync", None)
+            if callable(close_sync):
+                close_sync()
     return 0
 
 

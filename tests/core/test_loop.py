@@ -5,11 +5,20 @@
 """
 
 import asyncio
+import time
 
 import pytest
+from pydantic import BaseModel
 
 from codeagent.app.container import ChatModelPort
-from codeagent.core import AgentPorts, EventType, RecursionLimitError, run_turn
+from codeagent.core import (
+    AgentPorts,
+    EventType,
+    RecursionLimitError,
+    ToolCall,
+    ToolExecutionRuntime,
+    run_turn,
+)
 from codeagent.core.messages import Message
 from codeagent.core.ports import PolicyDecision
 from codeagent.tools.atomic import (
@@ -445,3 +454,91 @@ class _StubPolicyWithWarning:
 
     def decide(self, tool_name: str, args: dict):
         return PolicyDecision("allow", reason=f"越界读取: {args.get('command', '')}", warning=True)
+
+
+def test_invalid_json_tool_arguments_are_not_invoked():
+    """Malformed stream arguments become a structured error, never a real call."""
+
+    class ArgsModel(BaseModel):
+        value: str
+
+    class CountingTool:
+        name = "count"
+        Args = ArgsModel
+
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, args):
+            self.calls += 1
+            return "should-not-run"
+
+    tool = CountingTool()
+    model = FakeClient(
+        steps=[
+            {"content": "", "tool_calls": [{"name": "count", "id": "bad", "args_json": "{broken"}]},
+            {"content": "参数已修正"},
+        ]
+    )
+    ports = AgentPorts(model=ChatModelPort(model), tools=[tool])
+    events: list = []
+    history = asyncio.run(run_turn(ports, events.append, "执行", history=[]))
+    result = next(event for event in events if event.type == EventType.TOOL_RESULT)
+    assert result.metadata["status"] == "invalid_arguments"
+    assert tool.calls == 0
+    assert history[-1].content == "参数已修正"
+
+
+def test_tool_runtime_bounds_concurrency_and_preserves_order():
+    class ArgsModel(BaseModel):
+        value: int
+
+    class SlowTool:
+        name = "slow"
+        Args = ArgsModel
+
+        def __init__(self):
+            self.active = 0
+            self.peak = 0
+
+        async def ainvoke(self, args):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return str(args.value)
+
+    async def scenario():
+        tool = SlowTool()
+        runtime = ToolExecutionRuntime(max_concurrency=2)
+        results = await asyncio.gather(
+            *(runtime.execute(tool, ToolCall(str(i), "slow", {"value": i})) for i in range(6))
+        )
+        return tool, results
+
+    tool, results = asyncio.run(scenario())
+    assert tool.peak <= 2
+    assert [result.content for result in results] == [str(i) for i in range(6)]
+    assert all(result.operation_id and result.status == "ok" for result in results)
+
+
+def test_sync_tool_timeout_reports_cleanup_uncertain():
+    class ArgsModel(BaseModel):
+        value: str
+
+    class BlockingTool:
+        name = "blocking"
+        Args = ArgsModel
+
+        def invoke(self, args):
+            time.sleep(0.08)
+            return args.value
+
+    async def scenario():
+        return await ToolExecutionRuntime().execute(
+            BlockingTool(), ToolCall("slow", "blocking", {"value": "x"}), timeout=0.001
+        )
+
+    result = asyncio.run(scenario())
+    assert result.status == "cleanup_uncertain"
+    assert result.cleanup_confirmed is False

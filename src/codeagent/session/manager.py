@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 from typing import Any, Callable
 
 from codeagent.session.bus import EventBus, Subscriber
@@ -37,6 +38,7 @@ class SessionManager:
         recursion_limit: int = 50,
         tool_timeout: float | None = None,
         summarizer: Any = None,
+        runtime_closer: Callable[[], Any] | None = None,
     ) -> None:
         self._ports = ports
         self._store = store
@@ -46,6 +48,8 @@ class SessionManager:
         self._tool_timeout = tool_timeout
         #: 上下文压缩摘要端口(session-compaction;None = 压缩不可用)。
         self._summarizer = summarizer
+        self._runtime_closer = runtime_closer
+        self._closed = False
         #: 活动会话:session_id → AgentSession(dispose 摘除,文件保留)。
         self._sessions: dict[str, AgentSession] = {}
         self._current_id: str | None = None
@@ -149,6 +153,26 @@ class SessionManager:
             session.abort()
         if self._current_id == session_id:
             self._current_id = None
+
+    async def close(self) -> None:
+        """Abort active sessions and release shared model/MCP resources."""
+        if self._closed:
+            return
+        self._closed = True
+        for session in self._sessions.values():
+            session.abort()
+        if self._runtime_closer is not None:
+            result = self._runtime_closer()
+            if hasattr(result, "__await__"):
+                await result
+
+    def close_sync(self) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.close())
+        else:
+            asyncio.create_task(self.close())
 
     def list(self) -> list[SessionRef]:
         """列出全部会话(含派生标题;无 store 时为空)。"""

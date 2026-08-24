@@ -69,3 +69,13 @@ class McpTool(AtomicTool):
         )
         truncated, _ = truncate_head(text, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES)
         return truncated
+
+    async def ainvoke(self, args: McpArgs) -> str:
+        """Cancellable async bridge used by the core execution runtime."""
+        text = await self._client.acall_tool(
+            self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout
+        )
+        truncated, _ = truncate_head(
+            text, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES
+        )
+        return truncated

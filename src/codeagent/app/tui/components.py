@@ -351,15 +351,25 @@ class ToolCallBlock(Component):
         self.args = args
         self.call_id = call_id
         self.status = "pending"  # pending | done | error
+        self.execution_status = "running"
         self.result = ""
         self.expanded = False
         #: 等待用户确认(确认请求已发出,尚未响应);拒绝态见 set_rejected。
         self.awaiting = False
         self.rejected = False
 
-    def set_result(self, result: str, error: bool = False) -> None:
+    def set_result(
+        self,
+        result: str,
+        error: bool = False,
+        execution_status: str | None = None,
+    ) -> None:
         self.result = result
         self.status = "error" if error else "done"
+        if execution_status:
+            self.execution_status = execution_status
+        elif not error:
+            self.execution_status = "ok"
         self.awaiting = False  # 结果已回填:退出等待确认态
 
     def set_awaiting(self) -> None:
@@ -371,6 +381,7 @@ class ToolCallBlock(Component):
         self.result = result
         self.rejected = True
         self.status = "error"
+        self.execution_status = "rejected"
         self.awaiting = False
 
     def toggle_expand(self) -> None:
@@ -392,7 +403,14 @@ class ToolCallBlock(Component):
         if self.status == "pending":
             return pending.get(self.name, f"Running {self.name}")
         if self.status == "error":
-            return f"Failed {self.name}"
+            labels = {
+                "invalid_arguments": "Invalid arguments",
+                "timed_out": "Timed out",
+                "cancelled": "Cancelled",
+                "cleanup_uncertain": "Cleanup uncertain",
+                "rejected": "Rejected",
+            }
+            return f"{labels.get(self.execution_status, 'Failed')} {self.name}"
         if self.name == "bash":
             result = _summarize_result(self.name, self.result)
             return f"Ran command ({result or 'completed'})"
@@ -758,7 +776,7 @@ class TuiModel:
                         self._pending_tools_by_id.pop(block.call_id, None)
                 if block is not None:
                     self._pending_tools.remove(block)
-                    block.set_result(content)
+                    block.set_result(content, execution_status="ok")
 
         self.transcript.scroll_to_bottom()
 
@@ -812,7 +830,11 @@ class TuiModel:
                 if metadata.get("rejected"):
                     block.set_rejected(str(event.payload or ""))
                 else:
-                    block.set_result(str(event.payload or ""), error=bool(metadata.get("error")))
+                    block.set_result(
+                        str(event.payload or ""),
+                        error=bool(metadata.get("error")),
+                        execution_status=str(metadata.get("status") or ""),
+                    )
             if not self._pending_tools:
                 self.activity_visible = True
         elif ev_type == EventType.CONFIRMATION_REQUESTED:

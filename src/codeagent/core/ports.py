@@ -24,6 +24,7 @@ __all__ = [
     "PolicyDecision",
     "StreamEvent",
     "Summarizer",
+    "ToolExecutionRuntimePort",
 ]
 
 
@@ -76,6 +77,12 @@ class ApprovalPolicy(Protocol):
     def decide(self, tool_name: str, args: dict) -> PolicyDecision: ...
 
 
+class ToolExecutionRuntimePort(Protocol):
+    """Optional runtime port used by the ReAct loop for controlled execution."""
+
+    async def execute(self, tool: Any, call: ToolCall, timeout: float | None = None) -> Any: ...
+
+
 class Summarizer(Protocol):
     """上下文压缩摘要端口(session-compaction):把被压缩窗口摘要化。
 
@@ -123,3 +130,6 @@ class AgentPorts:
     model: ModelPort
     tools: list[Any]
     policy: ApprovalPolicy | None = None
+    #: Optional shared executor.  ``None`` keeps lightweight/test callers
+    #: compatible; the loop creates a bounded runtime on demand.
+    tool_runtime: ToolExecutionRuntimePort | None = None

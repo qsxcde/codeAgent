@@ -59,6 +59,7 @@ class AgentSession:
         compact_budget: int = DEFAULT_BUDGET_TOKENS,
         defer_persistence: bool = False,
         persistence_options: dict[str, Any] | None = None,
+        runtime_closer: Callable[[], Any] | None = None,
     ) -> None:
         self._ports = ports
         self._bus = bus
@@ -76,6 +77,8 @@ class AgentSession:
         self._defer_persistence = defer_persistence
         self._persistence_options = dict(persistence_options or {})
         self._persisted = store is None
+        self._runtime_closer = runtime_closer
+        self._closed = False
         #: 切点预算(软目标;测试可注入小值)。
         self._compact_budget = compact_budget
         #: 最近一次 usage.input_tokens(本轮请求总输入 = 当前上下文占用)。
@@ -175,6 +178,26 @@ class AgentSession:
         task = self._current_task
         if task is not None and not task.done():
             task.cancel()
+
+    async def close(self) -> None:
+        """Stop the current run and release composition-root resources."""
+        if self._closed:
+            return
+        self._closed = True
+        self.abort()
+        if self._runtime_closer is not None:
+            result = self._runtime_closer()
+            if hasattr(result, "__await__"):
+                await result
+
+    def close_sync(self) -> None:
+        """Synchronous adapter for headless/CLI lifecycle owners."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.close())
+        else:
+            asyncio.create_task(self.close())
 
     def steer(self, text: str) -> None:
         """运行中注入消息:下一轮循环前消费为 user 消息(不做旁路请求)。"""

@@ -30,6 +30,28 @@ def test_create_agent_ports_returns_ports():
     assert ports.model.model_id == "fake-model"
 
 
+def test_agent_runtime_close_is_idempotent():
+    """Composition-root runtime closes model resources exactly once."""
+    from codeagent.app.container import AgentRuntime
+    from codeagent.core.ports import AgentPorts
+
+    class Closable:
+        model_id = "stub"
+
+        def __init__(self):
+            self.closed = 0
+
+        async def aclose(self):
+            self.closed += 1
+
+    client = Closable()
+    ports = AgentPorts(model=client, tools=[])
+    runtime = AgentRuntime(ports, client, [])
+    asyncio.run(runtime.close())
+    asyncio.run(runtime.close())
+    assert client.closed == 1
+
+
 def test_create_agent_session_returns_session():
     """create_agent_session 返回可订阅的 AgentSession。"""
     with patch("codeagent.ai.factory.create_llm") as mock_llm:

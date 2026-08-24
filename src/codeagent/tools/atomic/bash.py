@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shlex
@@ -20,6 +21,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +35,15 @@ __all__ = [
     "MAX_OUTPUT_CHARS",
     "DANGEROUS_PATTERNS",
 ]
+
+
+@dataclass(frozen=True)
+class BashInvocationResult:
+    """Async bash result understood by the core runtime via duck typing."""
+
+    content: str
+    status: str = "completed"
+    cleanup_confirmed: bool | None = True
 
 #: 默认超时(秒);命令可在 timeout 参数内延长,上限见 MAX_TIMEOUT_S。
 DEFAULT_TIMEOUT_S = 120
@@ -180,7 +191,7 @@ def _resolve_bash() -> str:
     )
 
 
-def _kill_tree(pid: int) -> None:
+def _kill_tree(pid: int) -> bool:
     """杀死进程树:Unix 用 killpg(全树可靠),Windows 用 taskkill /F /T(尽力而为)。
 
     已知局限(design.md Risks):Windows 下 MSYS/Git Bash 派生的后台进程
@@ -190,21 +201,28 @@ def _kill_tree(pid: int) -> None:
     """
     if os.name == "nt":
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True,
                 timeout=10,
             )
+            # taskkill cannot account for MSYS processes re-parented outside
+            # the Windows process tree, so even a successful command is not a
+            # proof that every descendant has stopped.
+            return False
         except (OSError, subprocess.SubprocessError):
-            pass  # 进程已退出等情形,不阻塞调用方
+            return False  # 进程已退出等情形,不阻塞调用方
     else:
         try:
             os.killpg(os.getpgid(pid), signal.SIGKILL)
+            return True
         except (ProcessLookupError, PermissionError):
             try:
                 os.kill(pid, signal.SIGKILL)
+                return True
             except ProcessLookupError:
-                pass
+                return True
+    return False
 
 
 class BashArgs(BaseModel):
@@ -532,7 +550,63 @@ class BashTool(AtomicTool):
         except OSError as exc:
             raise ValueError(f"命令执行失败: {exc}")
 
-        elapsed = time.monotonic() - started
+        return self._format_result(
+            command,
+            timeout,
+            returncode,
+            stdout,
+            stderr,
+            timed_out,
+            time.monotonic() - started,
+        )
+
+    async def ainvoke(self, args: BashArgs) -> BashInvocationResult:
+        """Cancellable subprocess path used by ``ToolExecutionRuntime``.
+
+        Cancellation kills the same process tree as the synchronous path before
+        propagating ``CancelledError``.  The synchronous ``_invoke`` remains
+        available for direct callers and existing tests.
+        """
+        command = args.command.strip()
+        if not command:
+            raise ValueError("命令为空")
+        hit = _dangerous_hit(command) or _dangerous_intent(command, self._cwd)
+        if hit is not None:
+            raise ValueError(f"命令命中危险模式,已拒绝执行: {hit}\n命令: {command}")
+        timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_S
+        timeout = max(1, min(timeout, MAX_TIMEOUT_S))
+        started = time.monotonic()
+        try:
+            returncode, stdout, stderr, timed_out, cleanup_confirmed = await self._exec_async(
+                command, timeout, env=self._bash_env()
+            )
+        except OSError as exc:
+            raise ValueError(f"命令执行失败: {exc}")
+        content = self._format_result(
+            command,
+            timeout,
+            returncode,
+            stdout,
+            stderr,
+            timed_out,
+            time.monotonic() - started,
+        )
+        if timed_out:
+            status = "timed_out" if cleanup_confirmed else "cleanup_uncertain"
+        else:
+            status = "completed"
+        return BashInvocationResult(content, status, cleanup_confirmed)
+
+    def _format_result(
+        self,
+        command: str,
+        timeout: int,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        timed_out: bool,
+        elapsed: float,
+    ) -> str:
         if timed_out:
             return f"[命令超时(>{timeout}s),已终止]\n命令: {command}\n{stdout}{stderr}"
 
@@ -614,6 +688,54 @@ class BashTool(AtomicTool):
             return proc.returncode, stdout, stderr, timed_out
         finally:
             # 后台子进程仍持有句柄(Windows)时删除会失败,吞掉不阻塞调用。
+            for name in (out_name, err_name):
+                try:
+                    os.unlink(name)
+                except OSError:
+                    pass
+
+    async def _exec_async(
+        self, command: str, timeout: int, env: dict[str, str]
+    ) -> tuple[int, str, str, bool, bool]:
+        """Async counterpart of ``_exec`` with cancellation-aware cleanup."""
+        shell = _resolve_bash()
+        cwd = self._cwd or str(Path.cwd())
+        kwargs: dict[str, Any] = {"cwd": cwd, "env": env}
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
+        else:
+            kwargs["start_new_session"] = True
+        fd_out, out_name = tempfile.mkstemp(prefix="pi-bash-")
+        fd_err, err_name = tempfile.mkstemp(prefix="pi-bash-")
+        os.close(fd_out)
+        os.close(fd_err)
+        proc: asyncio.subprocess.Process | None = None
+        cleanup_confirmed = True
+        try:
+            with open(out_name, "wb") as out_f, open(err_name, "wb") as err_f:
+                proc = await asyncio.create_subprocess_exec(
+                    shell, "-lc", command, stdout=out_f, stderr=err_f, **kwargs
+                )
+            timed_out = False
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                timed_out = True
+                cleanup_confirmed = _kill_tree(proc.pid)
+                await proc.wait()
+            except asyncio.CancelledError:
+                cleanup_confirmed = _kill_tree(proc.pid)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=10)
+                except Exception:
+                    cleanup_confirmed = False
+                raise
+            stdout = Path(out_name).read_bytes().decode("utf-8", errors="replace")
+            stderr = Path(err_name).read_bytes().decode("utf-8", errors="replace")
+            return proc.returncode or 0, stdout, stderr, timed_out, cleanup_confirmed
+        finally:
             for name in (out_name, err_name):
                 try:
                     os.unlink(name)
