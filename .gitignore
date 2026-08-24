@@ -14,3 +14,6 @@ wheels/
 
 # IDE
 .idea/
+
+.uv-cache
+.pytest_cache
