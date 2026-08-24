@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -456,7 +457,7 @@ class TextualBackend:
         self._suggestion_confirm_handler: SuggestionConfirmHandler | None = None
         self._scroll_handler: ScrollHandler | None = None
         self._confirmation_handler: ConfirmationResponseHandler | None = None
-        self._exit_lines: list[str] | None = None
+        self._exit_lines: Iterable[str] | None = None
         #: 补全浮层激活态:引擎层据此分派 ↑/↓/Tab/Enter(见 _InputArea)。
         self.suggestions_active = False
         #: 确认条激活态:引擎层据此分派 y/n(见 _InputArea;security-permissions)。
@@ -470,7 +471,8 @@ class TextualBackend:
         finally:
             # 主屏已恢复后打印完整文档(design D5:退出文档 = 逻辑完整,非最后一屏)。
             if self._exit_lines is not None:
-                print("\n".join(self._exit_lines))
+                for line in self._exit_lines:
+                    print(line)
                 print()
 
     def transcript_size(self) -> tuple[int, int]:
@@ -556,7 +558,7 @@ class TextualBackend:
     def on_confirmation_response(self, handler: ConfirmationResponseHandler) -> None:
         self._confirmation_handler = handler
 
-    def exit_document(self, lines: list[str]) -> None:
+    def exit_document(self, lines: Iterable[str]) -> None:
         self._exit_lines = lines
         self._app.exit()
 

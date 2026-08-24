@@ -108,6 +108,11 @@ def default_registry() -> dict[str, CommandSpec]:
             "fork", "从指定消息分叉会话(缺省最近用户消息)", args=("message-id",)
         ),
         "compact": CommandSpec("compact", "压缩当前会话上下文"),
+        "output": CommandSpec(
+            "output", "浏览或导出最近工具输出", args=("action", "args..."),
+        ),
+        "retry": CommandSpec("retry", "安全重试最近一次模型失败"),
+        "continue": CommandSpec("continue", "在失败回合后继续新的消息", args=("text...",)),
         "skills": CommandSpec(
             "skills",
             "列出/加载技能或管理 Package(install/list/update/remove/reload)",

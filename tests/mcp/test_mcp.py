@@ -118,6 +118,18 @@ def test_mcp_tool_name_prefix_and_invoke():
     client.close()
 
 
+def test_mcp_tool_marks_truncated_output():
+    class LargeClient(_FakeClient):
+        def call_tool(self, name, arguments, timeout=None):
+            return "\n".join(f"line-{i}" for i in range(2500))
+
+    tool = McpTool(LargeClient("srv"), McpToolInfo("large", "", {}))
+
+    result = tool.invoke(McpArgs())
+
+    assert "[输出已截断]" in result
+
+
 def test_mcp_tool_error_result():
     """server 错误 → 调用抛错(循环层转为错误结果,不炸会话)。"""
     client = McpServerClient("mock", _spec())

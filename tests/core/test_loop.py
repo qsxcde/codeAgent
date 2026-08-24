@@ -66,6 +66,35 @@ def test_direct_reply_ends_loop():
     assert history[-1].content == "你好"
 
 
+def test_direct_reply_emits_model_lifecycle_events():
+    model = FakeClient(response="你好")
+    types, events, _ = asyncio.run(_run(model, "hi"))
+    assert types.index(EventType.MODEL_REQUEST_STARTED) < types.index(EventType.TEXT_DELTA)
+    assert EventType.MODEL_REQUEST_FINISHED in types
+    assert types.index(EventType.MODEL_REQUEST_FINISHED) < types.index(EventType.TURN_END) if EventType.TURN_END in types else True
+
+
+def test_tools_emit_queued_started_and_finished_lifecycle_events():
+    model = FakeClient(
+        steps=[
+            {
+                "content": "",
+                "tool_calls": [
+                    {"name": "read", "args": {"file_path": "missing.py"}, "id": "c1"}
+                ],
+            },
+            {"content": "done"},
+        ]
+    )
+    types, events, _ = asyncio.run(_run(model, "读"))
+    assert EventType.TOOL_QUEUED in types
+    assert EventType.TOOL_STARTED in types
+    assert EventType.TOOL_FINISHED in types
+    started = next(event for event in events if event.type == EventType.TOOL_STARTED)
+    assert started.metadata["tool_call_id"] == "c1"
+    assert started.metadata["operation_id"]
+
+
 def test_single_tool_error_attached_and_flagged():
     """单工具失败:结果带错误标记,归属到对应 assistant 之后。"""
     model = FakeClient(

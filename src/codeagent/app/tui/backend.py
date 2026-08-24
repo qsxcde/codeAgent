@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Callable, Protocol
 
 from codeagent.app.tui.components import RichLine
@@ -99,7 +100,7 @@ class TuiBackend(Protocol):
     def on_confirmation_response(self, handler: ConfirmationResponseHandler) -> None:
         """注册确认响应处理器(y/n 键;security-permissions)。"""
 
-    def exit_document(self, lines: list[str]) -> None:
+    def exit_document(self, lines: Iterable[str]) -> None:
         """记录退出文档并退出 alt 屏;run() 返回后(主屏已恢复)打印该文档(design D5)。"""
 
     def stop(self) -> None:

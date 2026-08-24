@@ -63,6 +63,9 @@ def test_registry_covers_expected_commands():
         "effort",
         "fork",
         "compact",
+        "output",
+        "retry",
+        "continue",
     } <= names
     assert "undo" not in names  # /undo 槽位已由 /fork 取代
 

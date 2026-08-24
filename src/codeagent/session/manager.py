@@ -21,7 +21,7 @@ import asyncio
 from typing import Any, Callable
 
 from codeagent.session.bus import EventBus, Subscriber
-from codeagent.session.session import AgentSession
+from codeagent.session.session import AgentSession, DEFAULT_CONTEXT_WINDOW
 from codeagent.session.store import SessionRef, SessionStore
 
 
@@ -38,6 +38,7 @@ class SessionManager:
         recursion_limit: int = 50,
         tool_timeout: float | None = None,
         summarizer: Any = None,
+        context_window: int = DEFAULT_CONTEXT_WINDOW,
         runtime_closer: Callable[[], Any] | None = None,
     ) -> None:
         self._ports = ports
@@ -48,6 +49,7 @@ class SessionManager:
         self._tool_timeout = tool_timeout
         #: 上下文压缩摘要端口(session-compaction;None = 压缩不可用)。
         self._summarizer = summarizer
+        self._context_window = context_window
         self._runtime_closer = runtime_closer
         self._closed = False
         #: 活动会话:session_id → AgentSession(dispose 摘除,文件保留)。
@@ -121,7 +123,12 @@ class SessionManager:
         raise ValueError("会话没有可分叉的用户消息")
 
     def replace_ports(
-        self, ports: Any, *, model: str = "", effort: str = ""
+        self,
+        ports: Any,
+        *,
+        model: str = "",
+        effort: str = "",
+        context_window: int | None = None,
     ) -> None:
         """热切换共享端口与会话配置(design D4,T-44;组合根注入新端口)。
 
@@ -134,9 +141,15 @@ class SessionManager:
         self._ports = ports
         self._model = model
         self._effort = effort
+        if context_window is not None:
+            if context_window < 1:
+                raise ValueError("context_window must be positive")
+            self._context_window = context_window
         # 既有会话壳在构造时固化端口引用:逐壳更新,后续轮次用新配置。
         for session in self._sessions.values():
             session.replace_ports(ports)
+            if context_window is not None:
+                session.set_context_window(context_window)
             session.update_persistence_options(model=model, effort=effort)
         if (
             self._store is not None
@@ -239,6 +252,7 @@ class SessionManager:
             tool_timeout=self._tool_timeout,
             previous_session_id=previous_session_id,
             summarizer=self._summarizer,
+            context_window=self._context_window,
             defer_persistence=defer_persistence,
             persistence_options=persistence_options,
         )

@@ -391,6 +391,15 @@ def test_block_at_maps_after_scroll():
     assert transcript.block_at(10) is None
 
 
+def test_transcript_iter_lines_preserves_complete_exit_document():
+    transcript = Transcript()
+    transcript.append(UserBlock("hello"))
+    transcript.append(AssistantBlock())
+    transcript.blocks[-1].append_text("world")
+    lines = transcript.iter_lines(80)
+    assert list(lines) == transcript.all_lines(80)
+
+
 def test_model_full_turn_fold_hides_result_until_expand():
     """完整 turn:工具折叠时结果只显示摘要,展开后完整结果可见(spec「工具调用点击展开」;design D4)。"""
     model = TuiModel()

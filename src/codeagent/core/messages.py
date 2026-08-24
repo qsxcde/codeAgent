@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -129,6 +130,12 @@ class ToolResult:
     status: str = ""
     operation_id: str = ""
     cleanup_confirmed: bool | None = None
+    #: 运行时输出统计，不参与 Message JSONL 持久化。
+    total_bytes: int = 0
+    total_lines: int = 0
+    shown_lines: int = 0
+    truncated_by: str | None = None
+    artifact_path: str | None = None
 
     def __post_init__(self) -> None:
         if not self.status:
@@ -138,6 +145,28 @@ class ToolResult:
                 self.status = ToolExecutionStatus.FAILED
             else:
                 self.status = ToolExecutionStatus.OK
+        if not self.total_bytes:
+            self.total_bytes = len(self.content.encode("utf-8"))
+        if not self.total_lines:
+            self.total_lines = len(self.content.splitlines())
+        if not self.shown_lines:
+            self.shown_lines = self.total_lines
+        if self.truncated_by is None and re.search(
+            r"(?:输出)?已截断|达到(?:字节|行数)?上限|条目超限", self.content
+        ):
+            self.truncated_by = "tool"
+        marker = re.search(r"\[(\d+)-(\d+)/(\d+)\s*行\]", self.content)
+        if marker is not None and int(marker.group(2)) < int(marker.group(3)):
+            self.shown_lines = int(marker.group(2))
+            self.total_lines = int(marker.group(3))
+            self.truncated_by = self.truncated_by or "tool"
+        item_marker = re.search(
+            r"仅显示前\s*(\d+)\s*条.*?共\s*(\d+)\s*条", self.content
+        )
+        if item_marker is not None:
+            self.shown_lines = int(item_marker.group(1))
+            self.total_lines = int(item_marker.group(2))
+            self.truncated_by = self.truncated_by or "tool"
 
 
 @dataclass

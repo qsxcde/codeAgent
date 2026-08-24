@@ -47,6 +47,20 @@ def test_run_returns_none_and_emits_events():
     assert EventType.TURN_END in types
 
 
+def test_session_scopes_all_events_to_one_run():
+    sess = _session(FakeClient(response="OK"), session_id="session-1")
+    seen: list = []
+    sess.subscribe(seen.append)
+
+    asyncio.run(sess.run("你好"))
+
+    run_ids = {event.metadata.get("run_id") for event in seen}
+    session_ids = {event.metadata.get("session_id") for event in seen}
+    assert len(run_ids) == 1 and None not in run_ids
+    assert session_ids == {"session-1"}
+    assert all(event.metadata["run_id"] for event in seen)
+
+
 def test_session_accumulates_context():
     """会话维度累积:第二轮历史含第一轮消息(会话即状态)。"""
     model = FakeClient(responses=["第一轮回复", "第二轮回复"])
@@ -77,6 +91,43 @@ def test_failure_rolls_back_and_emits_error():
     sess2 = _session(FakeClient(response="ok"))
     asyncio.run(sess2.run("继续"))
     assert [m.role for m in sess2.history] == ["user", "assistant"]
+
+
+def test_model_failure_can_be_retried_without_copying_tool_history():
+    class FlakyModel(FakeClient):
+        def __init__(self):
+            super().__init__(response="ok")
+            self.failed = True
+
+        def _generate(self, messages, **kwargs):
+            if self.failed:
+                self.failed = False
+                raise RuntimeError("temporary")
+            return super()._generate(messages, **kwargs)
+
+    sess = _session(FlakyModel())
+    seen: list = []
+    sess.subscribe(seen.append)
+    asyncio.run(sess.run("retry me"))
+    assert sess.last_failure is not None and sess.last_failure["retryable"] is True
+    asyncio.run(sess.retry())
+    assert [message.content for message in sess.history if message.role == "user"] == [
+        "retry me"
+    ]
+    assert EventType.RETRY_STARTED in _event_types(seen)
+
+
+def test_side_effect_failure_is_not_automatically_retryable():
+    sess = _session(FakeClient(response="ok"))
+    sess._last_failure = {
+        "error": "tool uncertain",
+        "retryable": False,
+        "side_effect_state": "uncertain",
+        "cleanup_uncertain": True,
+        "prompt": "old",
+    }
+    with pytest.raises(ValueError, match="不可安全重试"):
+        asyncio.run(sess.retry())
 
 
 def test_recursion_error_friendly_message():
@@ -482,6 +533,11 @@ class _StubSummarizer:
         return f"SUM[{window}]" + (f"<{prev_summary}>" if prev_summary else "")
 
 
+class _FailingSummarizer:
+    async def summarize(self, messages, prev_summary):
+        raise RuntimeError("摘要服务失败")
+
+
 def _compact_session(
     model: FakeClient,
     store=None,
@@ -543,6 +599,23 @@ def test_compact_without_summarizer_raises():
     sess = _compact_session(FakeClient(response="答"))
     with pytest.raises(ValueError, match="压缩不可用"):
         asyncio.run(sess.compact())
+
+
+def test_compact_failure_emits_terminal_finished_event():
+    sess = _compact_session(
+        FakeClient(response="答"), summarizer=_FailingSummarizer(), compact_budget=50
+    )
+    for text in (_long("问1"), _long("问2"), _long("问3")):
+        asyncio.run(sess.run(text))
+    seen: list = []
+    sess.subscribe(seen.append)
+
+    with pytest.raises(RuntimeError, match="摘要服务失败"):
+        asyncio.run(sess.compact())
+
+    finished = [event for event in seen if event.type == EventType.COMPACTION_FINISHED]
+    assert finished and finished[-1].metadata["success"] is False
+    assert finished[-1].metadata["error_code"] == "compaction_failed"
 
 
 def test_after_compact_run_injects_summary_and_links_parent():

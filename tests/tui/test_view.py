@@ -331,6 +331,53 @@ def test_context_usage_is_synced_to_footer_status():
     assert app.model.status.context_window == 128_000
 
 
+def test_status_command_includes_runtime_and_render_diagnostics():
+    app, backend, _ = _make_app()
+    app.model.apply(
+        AgentEvent(
+            EventType.ERROR,
+            payload="模型不可用",
+            metadata={
+                "error_code": "provider_unavailable",
+                "retryable": True,
+                "side_effect_state": "none",
+            },
+        )
+    )
+    backend.submit("/status")
+    text = "\n".join(app.model.transcript.all_lines(120))
+    assert "阶段: 失败" in text
+    assert "错误码: provider_unavailable" in text
+    assert "可重试: 是" in text
+    assert "渲染:" in text
+    assert "输出:" in text
+
+
+def test_submit_is_gated_during_restore_and_compaction():
+    app, backend, manager = _make_app()
+    app.model.apply(AgentEvent(EventType.RESTORE_STARTED))
+    backend.submit("普通消息")
+    assert manager.current.run_texts == []
+    app.model.apply(AgentEvent(EventType.RESTORE_FINISHED))
+    app.model.apply(AgentEvent(EventType.COMPACTION_STARTED))
+    backend.submit("另一条消息")
+    assert manager.current.run_texts == []
+
+
+def test_retry_command_requires_safe_failure_and_continue_starts_new_prompt():
+    app, backend, manager = _make_app()
+    manager.current.last_failure = {
+        "retryable": False,
+        "cleanup_uncertain": True,
+        "side_effect_state": "uncertain",
+        "prompt": "old tool call",
+    }
+    backend.submit("/retry")
+    assert "不可安全重试" in "\n".join(app.model.transcript.all_lines(120))
+    backend.submit("/continue new plan")
+    assert manager.current.run_texts == ["new plan"]
+
+
 def test_interrupt_running_aborts():
     """运行中 Esc → abort 当前会话(对应 spec「运行中打断」)。"""
     app, backend, manager = _make_app()
@@ -424,6 +471,68 @@ def test_render_coalescing():
 
     asyncio.run(_run())
 
+
+def test_render_scheduler_delays_frames_inside_target_interval():
+    app, backend, manager = _make_app()
+
+    async def scenario() -> None:
+        backend.resize()
+        await asyncio.sleep(0)
+        manager.current._emit(AgentEvent(EventType.TEXT_DELTA, payload="a"))
+        await asyncio.sleep(0)
+        before = len(backend.renders)
+        manager.current._emit(AgentEvent(EventType.TEXT_DELTA, payload="b"))
+        await asyncio.sleep(0)
+        assert len(backend.renders) == before
+        await asyncio.sleep(0.04)
+        assert len(backend.renders) == before + 1
+
+    asyncio.run(scenario())
+
+
+def test_large_restore_never_hydrates_live_model_in_worker(monkeypatch):
+    app, _, manager = _make_app()
+    session = manager.current
+    session.history = [Message(role="user", content=f"m-{i}") for i in range(1001)]
+    calls: list[Any] = []
+
+    async def fake_to_thread(fn, *args):
+        calls.append(fn)
+        return fn(*args)
+
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+    async def scenario() -> None:
+        await app._restore_large_session(session)
+
+    asyncio.run(scenario())
+
+    assert calls
+    assert all(getattr(fn, "__self__", None) is not app.model for fn in calls)
+
+
+def test_large_restore_drops_result_after_session_switch(monkeypatch):
+    app, _, manager = _make_app()
+    session = manager.current
+    session.history = [Message(role="user", content=f"old-{i}") for i in range(1001)]
+    calls = 0
+
+    async def fake_to_thread(fn, *args):
+        nonlocal calls
+        calls += 1
+        result = fn(*args)
+        if calls == 2:
+            manager.create()
+        return result
+
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+    async def scenario() -> None:
+        await app._restore_large_session(session)
+
+    asyncio.run(scenario())
+
+    assert not any("old-" in line for line in app.model.transcript.all_lines(80))
 
 def test_activity_timer_runs_only_while_visible():
     """活动提示有独立 UI 定时器，正文到达后立即停止。"""

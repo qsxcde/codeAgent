@@ -30,9 +30,11 @@ from codeagent.app.tui.commands import (
 )
 from codeagent.session.tree import SessionNode, build_tree
 from codeagent.app.tui.components import FooterInfo, Span, TuiModel, ToolCallBlock
+from codeagent.app.tui.runtime import phase_label
+from codeagent.app.tui.rendering import FrameScheduler, ResizeDebouncer
 from codeagent.app.tui.fuzzy import fuzzy_rank
 from codeagent.app.tui.theme import ACCENT, DIM, ERROR, SUCCESS, WARNING
-from codeagent.core.events import EventType
+from codeagent.core.events import AgentEvent, EventType
 
 #: 退出文档的兜底宽度(视口尺寸不可用时)。
 _DEFAULT_EXIT_WIDTH = 120
@@ -119,6 +121,11 @@ class TuiApp:
         self._provider = footer.provider if footer is not None else ""
         #: 当前待确认请求(confirmation_requested 的 payload;None = 无确认条)。
         self._pending_confirmation: dict[str, Any] | None = None
+        self._render_pending = False
+        self._frame_scheduler = FrameScheduler(target_fps=30.0)
+        self._resize_debouncer = ResizeDebouncer(self._schedule_render)
+        self._activity_task: asyncio.Task[None] | None = None
+        self._restore_task: asyncio.Task[None] | None = None
         self.model = TuiModel()
         if footer is not None:
             # 底部状态栏装配数据在组合根解析固化(design D5):模型名/思考强度/工作目录。
@@ -127,8 +134,6 @@ class TuiApp:
             self.model.status.cwd = footer.cwd
         self._hydrate_current_session()
         self._sync_context_status()
-        self._render_pending = False
-        self._activity_task: asyncio.Task[None] | None = None
         self._manager.subscribe(self._on_event)
 
     # -- 生命周期 ----------------------------------------------------------
@@ -138,7 +143,7 @@ class TuiApp:
         self._backend.on_submit(self._submit)
         self._backend.on_interrupt(self._interrupt)
         self._backend.on_quit(self._quit)
-        self._backend.on_resize(self._schedule_render)
+        self._backend.on_resize(self._resize_debouncer.notify)
         self._backend.on_click(self._click)
         self._backend.on_input_changed(self._on_input_changed)
         self._backend.on_suggestion_navigate(self._on_suggestion_navigate)
@@ -465,7 +470,14 @@ class TuiApp:
         session = self._manager.current
         if session is None:
             return
-        loop = asyncio.get_running_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if hasattr(session, "run_sync"):
+                session.run_sync(text)
+            else:
+                asyncio.run(session.run(text))
+            return
         loop.create_task(session.run(text))
 
     # -- 斜杠命令分派(T-44)-----------------------------------------------
@@ -481,6 +493,9 @@ class TuiApp:
             "tree": self._cmd_tree,
             "fork": self._cmd_fork,
             "compact": self._cmd_compact,
+            "output": self._cmd_output,
+            "retry": self._cmd_retry,
+            "continue": self._cmd_continue,
             "skills": self._cmd_skills,
             "mcp": self._cmd_mcp,
             "provider": self._cmd_provider,
@@ -504,7 +519,8 @@ class TuiApp:
     def _cmd_status(self, cmd: Command) -> None:
         session = self._manager.current
         session_id = session.session_id if session is not None else "(无会话)"
-        state = "运行中" if self.model.running else "空闲"
+        runtime = self.model.runtime
+        state = phase_label(runtime.phase)
         model = self.model.status.model or "(未配置)"
         effort = self.model.status.effort or ""
         lines = [
@@ -512,6 +528,45 @@ class TuiApp:
             f"状态: {state}",
             f"模型: {model} {effort}".rstrip(),
         ]
+        render = self.model.render_stats
+        output = self.model.output_stats
+        if runtime.phase != "idle" or runtime.error_code:
+            lines.extend(
+                [
+                    f"阶段: {phase_label(runtime.phase)} · {runtime.elapsed_ms / 1000:.1f}s",
+                    f"当前操作: {runtime.current_operation or '(无)'}",
+                    f"工具: {runtime.tool_counts or '(无)'}",
+                ]
+            )
+            if runtime.error_code:
+                lines.extend(
+                    [
+                        f"错误码: {runtime.error_code}",
+                        f"错误: {runtime.error_message or '(无详情)'}",
+                        f"可重试: {'是' if runtime.retryable else '否'}",
+                        f"清理状态: {'不确定' if runtime.cleanup_uncertain else runtime.side_effect_state}",
+                    ]
+                )
+            lines.extend(
+                [
+                    "渲染: 帧 {frames} · 缓存命中 {hits} · 最近 {last:.1f}ms".format(
+                        frames=int(render.get("frames", 0)),
+                        hits=int(render.get("cache_hits", 0)),
+                        last=float(render.get("last_render_ms", 0.0)),
+                    ),
+                    "输出: {results} 个结果 · {bytes} B · {lines} 行 · 截断 {truncated}".format(
+                        results=output.get("results", 0),
+                        bytes=output.get("bytes", 0),
+                        lines=output.get("lines", 0),
+                        truncated=output.get("truncated", 0),
+                    ),
+                ]
+            )
+        else:
+            lines.append(
+                f"诊断: 阶段 空闲 · 渲染 {int(render.get('frames', 0))} 帧 · "
+                f"输出 {output.get('results', 0)} 个"
+            )
         # 分层上下文文件来源(agents-md-hierarchy:加载结果可见可断言)。
         if self._agents_sources:
             lines.append("上下文文件:")
@@ -839,11 +894,60 @@ class TuiApp:
         loop = asyncio.get_running_loop()
         loop.create_task(self._run_compact(session))
 
+    def _cmd_output(self, cmd: Command) -> None:
+        """分页/导出输出视图；动作只触碰本地显示缓冲。"""
+        action = cmd.args[0] if cmd.args else "status"
+        call_id = cmd.args[1] if len(cmd.args) >= 2 else None
+        if action in {"next", "prev", "previous"}:
+            delta = 1 if action == "next" else -1
+            if not self.model.page_output(delta, call_id):
+                self.model.append_info("没有更多输出页")
+            return
+        if action == "export":
+            if len(cmd.args) < 2:
+                self.model.append_info("用法: /output export <path> [tool-call-id]")
+                return
+            path = cmd.args[1]
+            call_id = cmd.args[2] if len(cmd.args) >= 3 else None
+            try:
+                exported = self.model.export_output(path, call_id)
+            except (OSError, ValueError) as exc:
+                self.model.append_info(f"输出导出失败: {exc}")
+            else:
+                self.model.append_info(f"已导出工具输出: {exported}")
+            return
+        self.model.append_info("用法: /output next|prev | /output export <path> [tool-call-id]")
+
+    def _cmd_retry(self, cmd: Command) -> None:
+        """启动最近一次无副作用模型失败的安全重试。"""
+        session = self._manager.current
+        failure = getattr(session, "last_failure", None) if session is not None else None
+        if not failure or not failure.get("retryable"):
+            self.model.append_info("当前失败不可安全重试,请确认副作用后使用 /continue <新消息>")
+            return
+        loop = asyncio.get_running_loop()
+        loop.create_task(self._run_retry(session))
+
+    async def _run_retry(self, session: Any) -> None:
+        try:
+            await session.retry()
+        except ValueError as exc:
+            self.model.append_info(str(exc))
+        self._schedule_render()
+
+    def _cmd_continue(self, cmd: Command) -> None:
+        """失败后执行新的可追踪消息，不复制上一轮工具调用。"""
+        if not cmd.args:
+            self.model.append_info("用法: /continue <新消息>")
+            return
+        self._run_conversation(" ".join(cmd.args))
+
     async def _run_compact(self, session: Any) -> None:
         try:
             compacted = await session.compact()
-        except ValueError as exc:
+        except Exception as exc:
             self.model.append_info(str(exc))
+            self._schedule_render()
             return
         if compacted:
             self.model.append_info("已压缩:早期轮次已摘要化,上下文已精简")
@@ -994,7 +1098,7 @@ class TuiApp:
         if self._close_runtime is not None:
             self._close_runtime()
         width = self._transcript_width()
-        self._backend.exit_document(self.model.transcript.all_lines(width))
+        self._backend.exit_document(self.model.transcript.iter_lines(width))
 
     # -- 事件 → 渲染 -------------------------------------------------------
 
@@ -1006,11 +1110,95 @@ class TuiApp:
             self.model.hydrate_history([])
             self._sync_context_status()
             return
-        self.model.hydrate_history(
-            list(getattr(session, "history", []) or []),
-            summary=getattr(session, "summary", None),
+        self.model.apply(
+            AgentEvent(
+                EventType.RESTORE_STARTED,
+                metadata={"session_id": getattr(session, "session_id", None)},
+            )
         )
+        history = list(getattr(session, "history", []) or [])
+        summary = getattr(session, "summary", None)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.model.hydrate_history(history, summary=summary)
+        else:
+            if len(history) > 1000:
+                # 大型恢复的组件构建卸载到线程，完成后校验 session_id，
+                # 避免旧会话晚到的快照覆盖当前界面。
+                if self._restore_task is not None and not self._restore_task.done():
+                    self._restore_task.cancel()
+                self._restore_task = loop.create_task(
+                    self._restore_large_session(session)
+                )
+                self._sync_context_status()
+                return
+            self.model.hydrate_history(history, summary=summary)
         self._sync_context_status()
+        self.model.apply(
+            AgentEvent(
+                EventType.RESTORE_FINISHED,
+                metadata={"session_id": getattr(session, "session_id", None)},
+            )
+        )
+
+    async def _restore_large_session(self, session: Any) -> None:
+        """后台构建大型 transcript，过期会话结果只被丢弃。"""
+        target_id = getattr(session, "session_id", None)
+
+        def load_snapshot() -> tuple[list[Any], str | None]:
+            return (
+                list(getattr(session, "history", []) or []),
+                getattr(session, "summary", None),
+            )
+
+        def build_model(snapshot: tuple[list[Any], str | None]) -> TuiModel:
+            history, summary = snapshot
+            restored = TuiModel()
+            restored.hydrate_history(history, summary)
+            return restored
+
+        try:
+            snapshot = await asyncio.to_thread(load_snapshot)
+            restored = await asyncio.to_thread(build_model, snapshot)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            if self._manager.current is session and getattr(session, "session_id", None) == target_id:
+                self.model.apply(
+                    AgentEvent(
+                        EventType.RESTORE_FINISHED,
+                        metadata={
+                            "session_id": target_id,
+                            "success": False,
+                            "error_code": "restore_failed",
+                            "error_message": str(exc),
+                        },
+                    )
+                )
+                self.model.append_info(f"恢复会话失败: {exc}")
+                self._schedule_render()
+            return
+        if (
+            self._manager.current is not session
+            or getattr(session, "session_id", None) != target_id
+        ):
+            return
+        self.model.transcript = restored.transcript
+        self.model._assistant = restored._assistant
+        self.model._pending_tools = restored._pending_tools
+        self.model._pending_tools_by_id = restored._pending_tools_by_id
+        self.model.running = restored.running
+        self.model.activity_visible = restored.activity_visible
+        self.model.activity_frame = restored.activity_frame
+        self._sync_context_status()
+        self.model.apply(
+            AgentEvent(
+                EventType.RESTORE_FINISHED,
+                metadata={"session_id": target_id, "message_count": len(snapshot[0])},
+            )
+        )
+        self._schedule_render()
 
     def _refresh_skills(self) -> None:
         """从组合根重新读取 Package Registry/Adapter 视图(可选注入)。"""
@@ -1031,9 +1219,13 @@ class TuiApp:
         if session is None:
             self.model.status.context_tokens = None
             self.model.status.context_window = None
+            self.model.set_context_status(None, None)
             return
-        self.model.status.context_tokens = getattr(session, "context_tokens", None)
-        self.model.status.context_window = getattr(session, "context_window", None)
+        tokens = getattr(session, "context_tokens", None)
+        window = getattr(session, "context_window", None)
+        self.model.status.context_tokens = tokens
+        self.model.status.context_window = window
+        self.model.set_context_status(tokens, window)
 
     def _on_event(self, event: Any) -> None:
         ev_type = getattr(event, "type", None)
@@ -1089,11 +1281,20 @@ class TuiApp:
             return
         if self._render_pending:
             return
+        now = asyncio.get_running_loop().time()
+        if not self._frame_scheduler.request(now):
+            last = self._frame_scheduler.last_completed_at
+            delay = max(0.0, self._frame_scheduler.interval - (now - last)) if last is not None else 0.0
+            self._render_pending = True
+            loop.call_later(delay, self._flush_render)
+            return
         self._render_pending = True
         loop.call_soon(self._flush_render)
 
     def _flush_render(self) -> None:
         self._render_pending = False
+        first_frame = int(self.model.render_stats["frames"]) == 0
+        self._frame_scheduler.complete()
         width, height = self._backend.transcript_size()
         if width <= 0 or height <= 0:
             return  # 尚未布局完成,等待下次 resize/事件
@@ -1102,6 +1303,10 @@ class TuiApp:
         # 单行底部状态栏:模型、思考强度与工作目录(富样式行,design D5)。
         self._sync_context_status()
         self._backend.set_status(self.model.status.render(width)[0])
+        # Let the first post-startup event paint immediately; subsequent
+        # frames are still admitted through the scheduler's interval gate.
+        if first_frame:
+            self._frame_scheduler.last_completed_at = None
 
     def _transcript_width(self) -> int:
         width, _ = self._backend.transcript_size()

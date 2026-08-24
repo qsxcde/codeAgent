@@ -154,6 +154,27 @@ def test_create_tui_app_injects_rebuild_ports():
     assert app._manager._ports is not None
 
 
+def test_rebuild_ports_syncs_model_context_window():
+    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.spec import ModelSpec
+        from codeagent.app.container import create_tui_app
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        registry = ModelRegistry()
+        registry._catalogs.setdefault("fake", {})["small-model"] = ModelSpec(
+            id="small-model", context_window=32_000
+        )
+        app = create_tui_app(
+            provider="fake", model="small-model", registry=registry, backend=_StubBackend()
+        )
+        assert app._manager.current.context_window == 32_000
+        app._rebuild_ports("fake", "small-model", None)
+
+    assert app._manager.current.context_window == 32_000
+
+
 def test_create_tui_app_injects_selector_candidates():
     """选择器候选经组合根注入(T-45):provider/model/effort 各一份。"""
     with patch("codeagent.ai.factory.create_llm") as mock_llm:

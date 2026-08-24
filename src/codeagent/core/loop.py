@@ -73,6 +73,8 @@ async def _call_model(
     ids: dict[int, str] = {}
     finish_reason: str | None = None
 
+    emit(AgentEvent(EventType.MODEL_REQUEST_STARTED, metadata={"operation": "model"}))
+
     async for event in ports.model.stream(history, ports.tools):
         if event.type == "thinking":
             thinking_parts.append(event.text)
@@ -92,6 +94,13 @@ async def _call_model(
             usage = event.usage
         elif event.type == "finish":
             finish_reason = event.finish_reason
+
+    emit(
+        AgentEvent(
+            EventType.MODEL_REQUEST_FINISHED,
+            metadata={"finish_reason": finish_reason, "operation": "model"},
+        )
+    )
 
     tool_calls: list[ToolCall] = []
     for index in sorted(arg_buffers):
@@ -179,7 +188,7 @@ async def _execute_tools(
     policy = ports.policy
     runtime = ports.tool_runtime or ToolExecutionRuntime()
     results_by_index: dict[int, ToolResult] = {}
-    to_run: list[tuple[int, ToolCall, Any]] = []
+    to_run: list[tuple[int, ToolCall, Any, str]] = []
     #: allow 但带警告(越界读):结果文本前置警告,模型可见(spec「文件访问边界」)。
     warnings_by_index: dict[int, str] = {}
 
@@ -211,7 +220,8 @@ async def _execute_tools(
         if decision is None or decision.action == "allow":
             if decision is not None and decision.warning and decision.reason:
                 warnings_by_index[index] = decision.reason
-            to_run.append((index, call, tool))
+            operation_id = new_id()
+            to_run.append((index, call, tool, operation_id))
         elif decision.action == "deny":
             results_by_index[index] = ToolResult(
                 call.id,
@@ -239,7 +249,7 @@ async def _execute_tools(
             )
             approved = await _await_confirmation(request_id, confirm_queue)
             if approved:
-                to_run.append((index, call, tool))
+                to_run.append((index, call, tool, new_id()))
             else:
                 results_by_index[index] = ToolResult(
                     call.id,
@@ -253,10 +263,54 @@ async def _execute_tools(
                 )
 
     if to_run:
+        async def execute_one(
+            call: ToolCall, tool: Any, operation_id: str
+        ) -> ToolResult:
+            emit(
+                AgentEvent(
+                    EventType.TOOL_STARTED,
+                    payload={"name": call.name, "id": call.id},
+                    metadata={
+                        "tool_call_id": call.id,
+                        "tool_name": call.name,
+                        "operation_id": operation_id,
+                    },
+                )
+            )
+            result = await runtime.execute(tool, call, timeout, operation_id=operation_id)
+            emit(
+                AgentEvent(
+                    EventType.TOOL_FINISHED,
+                    payload=result.content,
+                    metadata={
+                        "tool_call_id": result.tool_call_id,
+                        "tool_name": result.name,
+                        "operation_id": result.operation_id,
+                        "status": result.status,
+                        "error": result.error,
+                        "cleanup_confirmed": result.cleanup_confirmed,
+                        "cleanup_uncertain": result.status == ToolExecutionStatus.CLEANUP_UNCERTAIN,
+                        "total_bytes": result.total_bytes,
+                        "total_lines": result.total_lines,
+                        "shown_lines": result.shown_lines,
+                        "truncated_by": result.truncated_by,
+                        "artifact_path": result.artifact_path,
+                        "side_effect_state": (
+                            "uncertain"
+                            if result.status == ToolExecutionStatus.CLEANUP_UNCERTAIN
+                            else "possible"
+                            if result.error and result.status not in {ToolExecutionStatus.REJECTED}
+                            else "none"
+                        ),
+                    },
+                )
+            )
+            return result
+
         gathered = await asyncio.gather(
-            *(runtime.execute(tool, call, timeout) for _, call, tool in to_run)
+            *(execute_one(call, tool, operation_id) for _, call, tool, operation_id in to_run)
         )
-        for (index, _, _), result in zip(to_run, gathered):
+        for (index, _, _, _), result in zip(to_run, gathered):
             warning = warnings_by_index.get(index)
             if warning:
                 result = ToolResult(
@@ -268,6 +322,11 @@ async def _execute_tools(
                     status=result.status,
                     operation_id=result.operation_id,
                     cleanup_confirmed=result.cleanup_confirmed,
+                    total_bytes=result.total_bytes,
+                    total_lines=result.total_lines,
+                    shown_lines=result.shown_lines,
+                    truncated_by=result.truncated_by,
+                    artifact_path=result.artifact_path,
                 )
             results_by_index[index] = result
 
@@ -317,6 +376,14 @@ async def run_turn(
                 payload=[c.to_dict() for c in assistant.tool_calls],
             )
         )
+        for call in assistant.tool_calls:
+            emit(
+                AgentEvent(
+                    EventType.TOOL_QUEUED,
+                    payload=call.to_dict(),
+                    metadata={"tool_call_id": call.id, "tool_name": call.name},
+                )
+            )
         results = await _execute_tools(ports, assistant.tool_calls, tool_timeout, emit, confirm_queue)
         attach_tool_results(history, results)
         for result in results:
@@ -333,6 +400,11 @@ async def run_turn(
                         "status": result.status,
                         "operation_id": result.operation_id,
                         "cleanup_confirmed": result.cleanup_confirmed,
+                        "total_bytes": result.total_bytes,
+                        "total_lines": result.total_lines,
+                        "shown_lines": result.shown_lines,
+                        "truncated_by": result.truncated_by,
+                        "artifact_path": result.artifact_path,
                     },
                 )
             )

@@ -33,6 +33,7 @@ from typing import Any, Iterator, Protocol
 from codeagent.core.messages import Message, ToolCall, new_id
 
 CURRENT_VERSION = 1
+_INDEX_VERSION = 1
 
 #: 派生标题截断长度(design D3)。
 TITLE_MAX = 20
@@ -52,18 +53,18 @@ __all__ = [
 
 #: 文件路径 → 互斥锁(进程内写串行化;与 tools/shared/mutation_queue 同模式,
 #: 但 session 层不 import tools,锁表就地实现——分层约束)。
-_path_locks: dict[str, threading.Lock] = {}
+_path_locks: dict[str, threading.RLock] = {}
 _guard = threading.Lock()
 
 
-def _lock_for(path: str | Path) -> threading.Lock:
+def _lock_for(path: str | Path) -> threading.RLock:
     key = str(path)
     lock = _path_locks.get(key)
     if lock is None:
         with _guard:
             lock = _path_locks.get(key)
             if lock is None:
-                lock = threading.Lock()
+                lock = threading.RLock()
                 _path_locks[key] = lock
     return lock
 
@@ -262,17 +263,287 @@ class JsonFileStore:
     def _path(self, session_id: str) -> Path:
         return self._directory / f"{session_id}.jsonl"
 
+    @staticmethod
+    def _index_path(path: Path) -> Path:
+        return path.with_suffix(".index.json")
+
+    @staticmethod
+    def _source_fingerprint(path: Path) -> dict[str, int]:
+        stat = path.stat()
+        return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+    def _new_index(self, path: Path, header: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "version": _INDEX_VERSION,
+            "source": self._source_fingerprint(path),
+            "session": {
+                "id": header.get("id", path.stem),
+                "timestamp": header.get("timestamp", ""),
+                "cwd": header.get("cwd", ""),
+                "parentSession": header.get("parentSession"),
+                "model": header.get("model", "") or "",
+                "effort": header.get("effort", "") or "",
+                "title": "",
+            },
+            "meta": {
+                "lastName": "",
+                "firstUserTitle": "",
+                "firstUserSeen": False,
+            },
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "cached_tokens": 0,
+            },
+            "lastCompaction": None,
+        }
+
+    def _build_index(self, path: Path) -> dict[str, Any]:
+        """从 JSONL 单遍重建轻量索引,不保留历史 entry。"""
+        index: dict[str, Any] | None = None
+        for entry in self._iter_entries(path):
+            if index is None:
+                index = self._new_index(path, entry)
+                continue
+            entry_type = entry.get("type")
+            if entry_type == "message":
+                meta = index["meta"]
+                content = entry.get("content", "") or ""
+                if entry.get("role") == "user" and not meta["firstUserSeen"] and content:
+                    meta["firstUserSeen"] = True
+                    meta["firstUserTitle"] = _derive_title("", content)
+            elif entry_type == "meta" and entry.get("key") == "name":
+                if entry.get("value") is not None:
+                    index["meta"]["lastName"] = str(entry["value"])
+            elif entry_type == "model_change":
+                session = index["session"]
+                if entry.get("model") is not None:
+                    session["model"] = str(entry["model"])
+                if entry.get("effort") is not None:
+                    session["effort"] = str(entry["effort"])
+            elif entry_type == "usage":
+                usage = index["usage"]
+                usage["input_tokens"] += int(entry.get("input", 0) or 0)
+                usage["output_tokens"] += int(entry.get("output", 0) or 0)
+                usage["reasoning_tokens"] += int(entry.get("reasoning", 0) or 0)
+                usage["cached_tokens"] += int(entry.get("cached", 0) or 0)
+            elif entry_type == "compaction":
+                index["lastCompaction"] = {
+                    "id": entry.get("id", "") or "",
+                    "parentId": entry.get("parentId"),
+                    "firstKeptEntryId": entry.get("firstKeptEntryId", "") or "",
+                }
+        if index is None:
+            raise ValueError(f"会话文件缺少 header: {path}")
+        index["session"]["title"] = _derive_title(
+            index["meta"]["lastName"], index["meta"]["firstUserTitle"]
+        )
+        index["source"] = self._source_fingerprint(path)
+        return index
+
+    def _apply_index_record(
+        self, index: dict[str, Any], path: Path, record: dict[str, Any]
+    ) -> dict[str, Any]:
+        """在已验证的索引上应用一次追加,避免每次写入重扫历史。"""
+        entry_type = record.get("type")
+        if entry_type == "message":
+            meta = index["meta"]
+            content = record.get("content", "") or ""
+            if record.get("role") == "user" and not meta["firstUserSeen"] and content:
+                meta["firstUserSeen"] = True
+                meta["firstUserTitle"] = _derive_title("", content)
+        elif entry_type == "meta" and record.get("key") == "name":
+            if record.get("value") is not None:
+                index["meta"]["lastName"] = str(record["value"])
+        elif entry_type == "model_change":
+            session = index["session"]
+            if record.get("model") is not None:
+                session["model"] = str(record["model"])
+            if record.get("effort") is not None:
+                session["effort"] = str(record["effort"])
+        elif entry_type == "usage":
+            usage = index["usage"]
+            usage["input_tokens"] += int(record.get("input", 0) or 0)
+            usage["output_tokens"] += int(record.get("output", 0) or 0)
+            usage["reasoning_tokens"] += int(record.get("reasoning", 0) or 0)
+            usage["cached_tokens"] += int(record.get("cached", 0) or 0)
+        elif entry_type == "compaction":
+            index["lastCompaction"] = {
+                "id": record.get("id", "") or "",
+                "parentId": record.get("parentId"),
+                "firstKeptEntryId": record.get("firstKeptEntryId", "") or "",
+            }
+        index["session"]["title"] = _derive_title(
+            index["meta"]["lastName"], index["meta"]["firstUserTitle"]
+        )
+        index["source"] = self._source_fingerprint(path)
+        return index
+
+    def _read_valid_index(self, path: Path) -> dict[str, Any] | None:
+        index_path = self._index_path(path)
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return None
+            if type(data.get("version")) is not int or data["version"] != _INDEX_VERSION:
+                return None
+            source = data.get("source")
+            if not isinstance(source, dict):
+                return None
+            if not all(
+                isinstance(source.get(key), int) and not isinstance(source.get(key), bool)
+                for key in ("size", "mtime_ns")
+            ):
+                return None
+            if source != self._source_fingerprint(path):
+                return None
+            session = data.get("session")
+            if not isinstance(session, dict):
+                return None
+            if not all(
+                key in session and isinstance(session[key], str)
+                for key in ("id", "timestamp", "cwd", "model", "effort", "title")
+            ):
+                return None
+            if "parentSession" not in session or not isinstance(
+                session["parentSession"], (str, type(None))
+            ):
+                return None
+            meta = data.get("meta")
+            if not isinstance(meta, dict):
+                return None
+            if not all(
+                key in meta
+                for key in ("lastName", "firstUserTitle", "firstUserSeen")
+            ):
+                return None
+            if not isinstance(meta["lastName"], str):
+                return None
+            if not isinstance(meta["firstUserTitle"], str):
+                return None
+            if not isinstance(meta["firstUserSeen"], bool):
+                return None
+            usage = data.get("usage")
+            if not isinstance(usage, dict):
+                return None
+            if not all(
+                key in usage
+                and isinstance(usage[key], int)
+                and not isinstance(usage[key], bool)
+                for key in (
+                    "input_tokens",
+                    "output_tokens",
+                    "reasoning_tokens",
+                    "cached_tokens",
+                )
+            ):
+                return None
+            if "lastCompaction" not in data:
+                return None
+            compaction = data["lastCompaction"]
+            if compaction is not None and not isinstance(compaction, dict):
+                return None
+            if compaction is not None:
+                if not all(
+                    key in compaction
+                    for key in ("id", "parentId", "firstKeptEntryId")
+                ):
+                    return None
+                if not isinstance(compaction["id"], str):
+                    return None
+                if not isinstance(compaction["firstKeptEntryId"], str):
+                    return None
+                if not isinstance(compaction["parentId"], (str, type(None))):
+                    return None
+            return data
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _write_index(self, path: Path, index: dict[str, Any]) -> None:
+        """以同目录临时文件原子替换索引,索引权限与会话文件一致。"""
+        self._directory.mkdir(parents=True, exist_ok=True)
+        self._private_dir()
+        index_path = self._index_path(path)
+        temp_path = index_path.with_name(
+            f".{index_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            with temp_path.open("w", encoding="utf-8") as stream:
+                json.dump(index, stream, ensure_ascii=False, separators=(",", ":"))
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            self._chmod_private(temp_path)
+            os.replace(temp_path, index_path)
+            self._chmod_private(index_path)
+        finally:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+    def _invalidate_index(self, path: Path) -> None:
+        try:
+            self._index_path(path).unlink()
+        except OSError:
+            pass
+
+    def _safe_write_index(self, path: Path, index: dict[str, Any]) -> None:
+        """缓存失败不得阻塞 JSONL 真相源的写入或读取。"""
+        try:
+            self._write_index(path, index)
+        except Exception:
+            self._invalidate_index(path)
+
+    def _index_for_read(self, path: Path) -> dict[str, Any] | None:
+        """优先命中索引,否则流式重建;失败时返回 None 让调用方直读。"""
+        with _lock_for(path):
+            index = self._read_valid_index(path)
+            if index is not None:
+                return index
+            try:
+                index = self._build_index(path)
+            except Exception:
+                return None
+            self._safe_write_index(path, index)
+            return index
+
+    @staticmethod
+    def _ref_from_index(
+        index: dict[str, Any], session_id: str
+    ) -> SessionRef:
+        session = index["session"]
+        return SessionRef(
+            id=session.get("id", session_id),
+            timestamp=session.get("timestamp", ""),
+            cwd=session.get("cwd", ""),
+            parent_session=session.get("parentSession"),
+            model=session.get("model", "") or "",
+            effort=session.get("effort", "") or "",
+            title=session.get("title", "") or "",
+        )
+
     def _iter_entries(self, path: Path) -> Iterator[dict[str, Any]]:
         """逐行解析 entry:JSON 损坏行跳过(append-only 崩溃可能留残缺行,
-        审计 M-4);结构性错误(缺 header / 版本不兼容)由调用方校验照常抛错。"""
+        审计 M-4);首个有效 entry 负责 header/version 校验。"""
+        header_seen = False
         with _lock_for(path):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # 残缺行容错:跳过,不阻断整文件解析
+            with path.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # 残缺行容错:跳过,不阻断整文件解析
+                    if not header_seen:
+                        _validate_header(entry, path)
+                        header_seen = True
+                    yield entry
+        if not header_seen:
+            raise ValueError(f"会话文件缺少 header: {path}")
 
     @staticmethod
     def _chmod_private(path: Path) -> None:
@@ -328,13 +599,20 @@ class JsonFileStore:
             header["effort"] = effort
         with _lock_for(path):
             path.write_text(json.dumps(header, ensure_ascii=False) + "\n", encoding="utf-8")
-        self._chmod_private(path)  # 会话文件 0600(审计 M-10)
+            self._chmod_private(path)  # 会话文件 0600(审计 M-10)
+            try:
+                self._safe_write_index(path, self._new_index(path, header))
+            except Exception:
+                self._invalidate_index(path)
         return ref
 
     def get(self, session_id: str) -> SessionRef | None:
         path = self._path(session_id)
         if not path.exists():
             return None
+        index = self._index_for_read(path)
+        if index is not None:
+            return self._ref_from_index(index, session_id)
         header, first_user, last_name, model, effort = self._scan(path)
         return SessionRef(
             id=header.get("id", session_id),
@@ -366,7 +644,7 @@ class JsonFileStore:
         if not path.exists():
             raise ValueError(f"会话不存在: {session_id}")
         messages: list[Message] = []
-        for entry in self._read_entries(path):
+        for entry in self._iter_entries(path):
             if entry.get("type") == "message":
                 messages.append(_dict_to_message(entry))
         return messages
@@ -382,22 +660,21 @@ class JsonFileStore:
         if not path.exists():
             raise ValueError(f"会话不存在: {session_id}")
         latest: dict[str, Any] | None = None
-        all_messages: list[Message] = []
-        for entry in self._read_entries(path):
+        for entry in self._iter_entries(path):
             if entry.get("type") == "compaction":
                 latest = entry
-            elif entry.get("type") == "message":
-                all_messages.append(_dict_to_message(entry))
         if latest is None:
-            return CompactionState(None, None, None, {}, all_messages)
-        cut = str(latest.get("firstKeptEntryId") or "")
-        kept = list(all_messages)
-        if cut:
-            cut_index = next(
-                (i for i, m in enumerate(all_messages) if m.id == cut), None
+            return CompactionState(
+                None, None, None, {}, self.load_messages(session_id)
             )
-            if cut_index is not None:
-                kept = all_messages[cut_index:]
+        cut = str(latest.get("firstKeptEntryId") or "")
+        if cut:
+            kept, cut_found = self._load_messages_from_cut(path, cut)
+            if not cut_found:
+                # 异常文件回退全量,与原实现保持一致,不丢上下文。
+                kept = self.load_messages(session_id)
+        else:
+            kept = self.load_messages(session_id)
         return CompactionState(
             summary=str(latest.get("summary") or ""),
             entry_id=str(latest.get("id") or ""),
@@ -447,7 +724,7 @@ class JsonFileStore:
         if not path.exists():
             raise ValueError(f"会话不存在: {session_id}")
         found: Any = None
-        for entry in self._read_entries(path):
+        for entry in self._iter_entries(path):
             if entry.get("type") == "meta" and entry.get("key") == key:
                 found = entry.get("value")
         return found
@@ -475,8 +752,20 @@ class JsonFileStore:
         path = self._path(session_id)
         if not path.exists():
             raise ValueError(f"会话不存在: {session_id}")
+        index = self._index_for_read(path)
+        if index is not None:
+            try:
+                usage = index["usage"]
+                return UsageStats(
+                    input_tokens=int(usage.get("input_tokens", 0) or 0),
+                    output_tokens=int(usage.get("output_tokens", 0) or 0),
+                    reasoning_tokens=int(usage.get("reasoning_tokens", 0) or 0),
+                    cached_tokens=int(usage.get("cached_tokens", 0) or 0),
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
         total = UsageStats()
-        for entry in self._read_entries(path):
+        for entry in self._iter_entries(path):
             if entry.get("type") != "usage":
                 continue
             total = UsageStats(
@@ -505,34 +794,30 @@ class JsonFileStore:
         new_path = self._path(new_session_id)
         if new_path.exists():
             raise ValueError(f"会话已存在: {new_session_id}")
-        entries = self._read_entries(path)
-        header = entries[0]
-        messages = [e for e in entries[1:] if e.get("type") == "message"]
-        index = next(
-            (i for i, e in enumerate(messages) if e.get("id") == target_message_id), None
-        )
-        if index is None:
+        header: dict[str, Any] | None = None
+        target_found = False
+        target_is_user = False
+        latest_compaction: dict[str, Any] | None = None
+        for entry in self._iter_entries(path):
+            if header is None:
+                header = entry
+                continue
+            if entry.get("type") == "compaction":
+                latest_compaction = entry
+            elif (
+                entry.get("type") == "message"
+                and not target_found
+                and entry.get("id") == target_message_id
+            ):
+                target_found = True
+                target_is_user = entry.get("role") == "user"
+        if not target_found:
             raise ValueError(f"消息不存在: {target_message_id}")
-        if messages[index].get("role") != "user":
+        if not target_is_user:
             raise ValueError(f"分叉点必须是 user 消息: {target_message_id}")
-        # 分叉点 = 该 user 消息之前(不含该消息,对齐 Pi position=before)。
-        latest_compaction = next(
-            (e for e in reversed(entries[1:]) if e.get("type") == "compaction"), None
-        )
-        copied = messages[:index]
-        if latest_compaction is not None:
-            first_kept = str(latest_compaction.get("firstKeptEntryId") or "")
-            first_kept_index = next(
-                (i for i, m in enumerate(messages) if m.get("id") == first_kept), None
-            )
-            if first_kept_index is not None:
-                # 切点之前的窗口消息已被摘要:只复制切点起、分叉点前的消息。
-                copied = (
-                    messages[first_kept_index:index]
-                    if first_kept_index <= index
-                    else []
-                )
+        assert header is not None
         self._directory.mkdir(parents=True, exist_ok=True)
+        self._private_dir()
         ref = SessionRef(
             id=new_session_id,
             timestamp=_now(),
@@ -553,17 +838,91 @@ class JsonFileStore:
             new_header["model"] = header["model"]
         if header.get("effort"):
             new_header["effort"] = header["effort"]
-        with _lock_for(new_path):
-            lines = [json.dumps(new_header, ensure_ascii=False)]
-            lines.extend(json.dumps(e, ensure_ascii=False) for e in copied)
+        temp_path = new_path.with_name(
+            f".{new_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        first_kept = str(
+            (latest_compaction or {}).get("firstKeptEntryId") or ""
+        )
+        copy_all = latest_compaction is None or not first_kept
+        try:
+            cut_found, _ = self._write_fork_file(
+                path,
+                temp_path,
+                new_header,
+                target_message_id,
+                first_kept,
+                copy_all=copy_all,
+                latest_compaction=latest_compaction,
+            )
+            if latest_compaction is not None and first_kept and not cut_found:
+                # 损坏文件中切点缺失时,保留旧实现的全量回退语义。
+                self._write_fork_file(
+                    path,
+                    temp_path,
+                    new_header,
+                    target_message_id,
+                    first_kept,
+                    copy_all=True,
+                    latest_compaction=latest_compaction,
+                )
+            self._chmod_private(temp_path)
+            with _lock_for(new_path):
+                if new_path.exists():
+                    raise ValueError(f"会话已存在: {new_session_id}")
+                os.replace(temp_path, new_path)
+        finally:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        self._chmod_private(new_path)  # 分叉新文件同样 0600(审计 M-10)
+        try:
+            self._safe_write_index(new_path, self._build_index(new_path))
+        except Exception:
+            self._invalidate_index(new_path)
+        return ref
+
+    def _write_fork_file(
+        self,
+        source_path: Path,
+        destination_path: Path,
+        header: dict[str, Any],
+        target_message_id: str,
+        first_kept_entry_id: str,
+        *,
+        copy_all: bool,
+        latest_compaction: dict[str, Any] | None,
+    ) -> tuple[bool, str | None]:
+        """流式写入分叉文件,返回切点是否在源文件中及最后复制消息 id。"""
+        cut_found = False
+        target_seen = False
+        last_copied_id: str | None = None
+        with destination_path.open("w", encoding="utf-8") as destination:
+            destination.write(json.dumps(header, ensure_ascii=False) + "\n")
+
+            for entry in self._iter_entries(source_path):
+                if entry.get("type") == "message":
+                    message_id = entry.get("id")
+                    if first_kept_entry_id and message_id == first_kept_entry_id:
+                        cut_found = True
+                    if message_id == target_message_id and not target_seen:
+                        target_seen = True
+                        continue
+                    if target_seen:
+                        continue
+                    if copy_all or (first_kept_entry_id and cut_found):
+                        destination.write(
+                            json.dumps(entry, ensure_ascii=False) + "\n"
+                        )
+                        last_copied_id = str(message_id or "")
+
             if latest_compaction is not None:
                 # 压缩状态复制:摘要随新会话;parentId 接回复制窗口末尾。
                 record = dict(latest_compaction)
-                record["parentId"] = copied[-1].get("id") if copied else None
-                lines.append(json.dumps(record, ensure_ascii=False))
-            new_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            self._chmod_private(new_path)  # 分叉新文件同样 0600(审计 M-10)
-        return ref
+                record["parentId"] = last_copied_id
+                destination.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return cut_found, last_copied_id
 
 
     def _append(self, session_id: str, record: dict[str, Any]) -> None:
@@ -572,16 +931,33 @@ class JsonFileStore:
             raise ValueError(f"会话不存在: {session_id}")
         line = json.dumps(record, ensure_ascii=False) + "\n"
         with _lock_for(path):
+            index = self._read_valid_index(path)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
-        self._chmod_private(path)  # 追加后保持 0600(审计 M-10)
+            self._chmod_private(path)  # 追加后保持 0600(审计 M-10)
+            try:
+                if index is None:
+                    index = self._build_index(path)
+                else:
+                    index = self._apply_index_record(index, path, record)
+                self._safe_write_index(path, index)
+            except Exception:
+                self._invalidate_index(path)
 
-    def _read_entries(self, path: Path) -> list[dict[str, Any]]:
-        entries = list(self._iter_entries(path))
-        if not entries:
-            raise ValueError(f"会话文件缺少 header: {path}")
-        _validate_header(entries[0], path)
-        return entries
+    def _load_messages_from_cut(
+        self, path: Path, first_kept_entry_id: str
+    ) -> tuple[list[Message], bool]:
+        """流式加载压缩切点后的消息,不构造切点之前的历史列表。"""
+        messages: list[Message] = []
+        cut_found = False
+        for entry in self._iter_entries(path):
+            if entry.get("type") != "message":
+                continue
+            if not cut_found and entry.get("id") == first_kept_entry_id:
+                cut_found = True
+            if cut_found:
+                messages.append(_dict_to_message(entry))
+        return messages, cut_found
 
     def _scan(self, path: Path) -> tuple[dict[str, Any], str, str, str, str]:
         """单遍流式扫描:header / 首条 user 消息 / 最新 meta name / 最新配置。

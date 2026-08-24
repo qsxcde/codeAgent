@@ -19,8 +19,8 @@ import difflib
 import re
 import time
 import unicodedata
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, replace
 from typing import Any
 
 from codeagent.core.events import AgentEvent, EventType
@@ -42,6 +42,13 @@ from codeagent.app.tui.theme import (
     USER_PROMPT,
     WARNING,
 )
+from codeagent.app.tui.runtime import (
+    RuntimePhase,
+    RuntimeReducer,
+    RuntimeSnapshot,
+    phase_label,
+)
+from codeagent.app.tui.output import OutputBuffer, OutputMetadata
 
 __all__ = [
     "Span",
@@ -57,6 +64,9 @@ __all__ = [
     "StatusBar",
     "FooterInfo",
     "TuiModel",
+    "RuntimePhase",
+    "RuntimeSnapshot",
+    "RuntimeReducer",
 ]
 
 
@@ -218,6 +228,18 @@ def _truncate_spans(segs: RichLine, width: int) -> RichLine:
 class Component:
     """组件基类:纯函数渲染(样式标签段),不碰终端。"""
 
+    def __init__(self) -> None:
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        """内容修订号；渲染缓存只复用相同修订的布局。"""
+        return int(getattr(self, "_revision", 0))
+
+    def touch(self) -> None:
+        """标记内容发生变化，使 width/revision 缓存失效。"""
+        self._revision = self.revision + 1
+
     def render(self, width: int) -> list[RichLine]:
         raise NotImplementedError(f"{type(self).__name__} 未实现 render")
 
@@ -268,11 +290,13 @@ class AssistantBlock(Component):
         if self.thinking_started is None:
             self.thinking_started = self._clock()
         self._thinking_parts.append(text)
+        self.touch()
 
     def append_text(self, text: str) -> None:
         if self.thinking_started is not None and self.thinking_ended is None:
             self.thinking_ended = self._clock()
         self._body_parts.append(text)
+        self.touch()
 
     @property
     def thinking(self) -> str:
@@ -347,6 +371,7 @@ class ToolCallBlock(Component):
     """Codex 风格工具摘要与可展开的执行结果/意图差异;含确认环状态(security-permissions)。"""
 
     def __init__(self, name: str, args: dict[str, Any], call_id: str | None = None) -> None:
+        super().__init__()
         self.name = name
         self.args = args
         self.call_id = call_id
@@ -357,24 +382,40 @@ class ToolCallBlock(Component):
         #: 等待用户确认(确认请求已发出,尚未响应);拒绝态见 set_rejected。
         self.awaiting = False
         self.rejected = False
+        self.output_buffer: OutputBuffer | None = None
 
     def set_result(
         self,
         result: str,
         error: bool = False,
         execution_status: str | None = None,
+        output_metadata: dict[str, Any] | None = None,
     ) -> None:
         self.result = result
+        metadata = output_metadata or {}
+        self.output_buffer = OutputBuffer(
+            result,
+            metadata=OutputMetadata(
+                total_bytes=int(metadata.get("total_bytes") or len(result.encode("utf-8"))),
+                total_lines=int(metadata.get("total_lines") or len(result.splitlines())),
+                shown_lines=int(metadata.get("shown_lines") or len(result.splitlines())),
+                truncated_by=metadata.get("truncated_by"),
+                artifact_path=metadata.get("artifact_path"),
+            ),
+            page_size=int(metadata.get("page_size") or 40),
+        )
         self.status = "error" if error else "done"
         if execution_status:
             self.execution_status = execution_status
         elif not error:
             self.execution_status = "ok"
         self.awaiting = False  # 结果已回填:退出等待确认态
+        self.touch()
 
     def set_awaiting(self) -> None:
         """进入等待确认态(循环已 emit 确认请求;security-permissions)。"""
         self.awaiting = True
+        self.touch()
 
     def set_rejected(self, result: str) -> None:
         """进入拒绝态:结果回填拒绝原因,展示为错误(security-permissions)。"""
@@ -383,9 +424,11 @@ class ToolCallBlock(Component):
         self.status = "error"
         self.execution_status = "rejected"
         self.awaiting = False
+        self.touch()
 
     def toggle_expand(self) -> None:
         self.expanded = not self.expanded
+        self.touch()
 
     def _summary(self) -> str:
         path = _tool_path(self.args)
@@ -413,8 +456,16 @@ class ToolCallBlock(Component):
             return f"{labels.get(self.execution_status, 'Failed')} {self.name}"
         if self.name == "bash":
             result = _summarize_result(self.name, self.result)
-            return f"Ran command ({result or 'completed'})"
-        return completed.get(self.name, f"Ran {self.name}")
+            suffix = ""
+            if self.output_buffer is not None and (
+                self.output_buffer.truncated or self.output_buffer.metadata.total_bytes > 4000
+            ):
+                suffix = f" · {self.output_buffer.diagnostic}"
+            return f"Ran command ({result or 'completed'}{suffix})"
+        summary = completed.get(self.name, f"Ran {self.name}")
+        if self.output_buffer is not None and self.output_buffer.truncated:
+            summary += f" · {self.output_buffer.diagnostic}"
+        return summary
 
     def _edit_summary(self, path: str) -> str:
         old = str(self.args.get("old_string", "")).splitlines()
@@ -483,7 +534,18 @@ class ToolCallBlock(Component):
             if self.name in {"edit", "write"} and self.status == "done":
                 lines.extend(self._intent_diff(width))
             if self.result:
-                lines.extend(_wrap_rich(self.result, width, fg=TOOL_OUTPUT))
+                if self.output_buffer is not None:
+                    if self.output_buffer.truncated or self.output_buffer.metadata.total_bytes > 4000:
+                        lines.append([_seg(self.output_buffer.diagnostic, fg=DIM)])
+                    lines.extend(
+                        _wrap_rich(
+                            "\n".join(self.output_buffer.current_page),
+                            width,
+                            fg=TOOL_OUTPUT,
+                        )
+                    )
+                else:
+                    lines.extend(_wrap_rich(self.result, width, fg=TOOL_OUTPUT))
         return lines
 
 
@@ -517,6 +579,16 @@ class Transcript(Component):
         self.follow = True
         self._scroll_top = 0
         self._line_blocks: list[Component | None] = []
+        self._layout_cache: dict[tuple[int, int, int], list[RichLine]] = {}
+        self._last_total = 0
+        self._last_block_count = 0
+        self._new_output_count = 0
+        self.visible_range = (0, 0)
+        self.overscan = 2
+        self.layout_index: list[tuple[int, int, Component]] = []
+        self.overscan_range = (0, 0)
+        self.cache_hits = 0
+        self.cache_misses = 0
 
     def append(self, block: Component) -> None:
         self._blocks.append(block)
@@ -527,6 +599,18 @@ class Transcript(Component):
         self.follow = True
         self._scroll_top = 0
         self._line_blocks = []
+        self._layout_cache.clear()
+        self._last_total = 0
+        self._last_block_count = 0
+        self._new_output_count = 0
+        self.visible_range = (0, 0)
+        self.layout_index = []
+        self.overscan_range = (0, 0)
+
+    @property
+    def new_output_count(self) -> int:
+        """用户离开底部后累积的新输出块数量。"""
+        return self._new_output_count
 
     @property
     def blocks(self) -> list[Component]:
@@ -540,15 +624,28 @@ class Transcript(Component):
         owners: list[Component | None] = []
         persistent: list[tuple[Component, list[RichLine]]] = []
         for block in self._blocks:
-            rendered = block.render(width)
+            key = (id(block), width, int(getattr(block, "revision", 0)))
+            rendered = self._layout_cache.get(key)
+            if rendered is None:
+                rendered = block.render(width)
+                self._layout_cache[key] = rendered
+                self.cache_misses += 1
+            else:
+                self.cache_hits += 1
             if rendered:
                 persistent.append((block, rendered))
+        self.layout_index = []
+        cursor = 0
         for index, (block, rendered) in enumerate(persistent):
             if index:
                 rows.append([])
                 owners.append(None)
+                cursor += 1
+            start = cursor
             rows.extend(rendered)
             owners.extend([block] * len(rendered))
+            cursor += len(rendered)
+            self.layout_index.append((start, cursor, block))
         if transient is not None:
             rendered = transient.render(width)
             if rendered:
@@ -565,23 +662,156 @@ class Transcript(Component):
 
     def all_lines(self, width: int) -> list[str]:
         """以无界高度渲染全部块的纯文本(退出文档,design D6)。"""
-        return rich_to_plain(self.all_rich(width))
+        return list(self.iter_lines(width))
+
+    def iter_lines(self, width: int) -> Iterator[str]:
+        """按顶层块逐行生成完整退出文档，避免先构造超大 list。"""
+        first = True
+        for block in self._blocks:
+            key = (id(block), width, int(getattr(block, "revision", 0)))
+            rendered = self._layout_cache.get(key)
+            if rendered is None:
+                rendered = block.render(width)
+                self._layout_cache[key] = rendered
+                self.cache_misses += 1
+            else:
+                self.cache_hits += 1
+            if not rendered:
+                continue
+            if not first:
+                yield ""
+            first = False
+            for line in rendered:
+                yield "".join(span.text for span in line)
 
     def render(
         self, width: int, height: int, transient: Component | None = None
     ) -> list[RichLine]:
-        """按视口高度渲染可见行(含跟随/滚动裁剪);同步维护行→块映射。"""
-        all_rich, all_blocks = self._rows(width, transient)
-        total = len(all_rich)
+        """只物化视口及 overscan 范围内的块，维护行→块映射。"""
         height = max(0, height)
+        if not self.follow and len(self._blocks) > self._last_block_count:
+            self._new_output_count += len(self._blocks) - self._last_block_count
+
+        transient_rendered: list[RichLine] = []
+        entries: list[tuple[Component, int, int, list[RichLine] | None]] = []
+        total = 0
+        start = 0
+        for _ in range(2):
+            entries, total, transient_entry = self._layout_entries(width, transient)
+            max_start = max(0, total - height)
+            if not self.follow and self._scroll_top >= max_start:
+                self.follow = True  # 滚到底部恢复跟随
+            start = max_start if self.follow else min(self._scroll_top, max_start)
+            self._scroll_top = start
+            window_start = max(0, start - self.overscan)
+            window_end = min(total, start + height + self.overscan)
+            changed = False
+            for block, block_start, block_end, rendered in entries:
+                if rendered is None and block_end > window_start and block_start < window_end:
+                    self._cache_block(block, width)
+                    changed = True
+            if transient_entry is not None:
+                _, transient_start, transient_end, _ = transient_entry
+                if transient_end > window_start and transient_start < window_end:
+                    transient_rendered = transient.render(width) if transient is not None else []
+            if not changed:
+                break
+
+        # Materialization can change a block's height; use the final layout for
+        # the visible slice and its click owners.
+        entries, total, transient_entry = self._layout_entries(width, transient)
         max_start = max(0, total - height)
-        if not self.follow and self._scroll_top >= max_start:
-            self.follow = True  # 滚到底部恢复跟随
-        start = max_start if self.follow else min(self._scroll_top, max_start)
+        if self.follow:
+            start = max_start
+        else:
+            start = min(self._scroll_top, max_start)
         self._scroll_top = start
-        visible = all_rich[start : start + height]
-        self._line_blocks = all_blocks[:total][start : start + height]
+        visible_end = start + height
+        visible_pairs: list[tuple[int, RichLine, Component | None]] = []
+        for entry_index, (block, block_start, _, rendered) in enumerate(entries):
+            if rendered is None:
+                continue
+            if entry_index:
+                separator = block_start - 1
+                if start <= separator < visible_end:
+                    visible_pairs.append((separator, [], None))
+            for index, line in enumerate(rendered, start=block_start):
+                if start <= index < visible_end:
+                    visible_pairs.append((index, line, block))
+        if transient_entry is not None:
+            _, transient_start, _, _ = transient_entry
+            if entries:
+                separator = transient_start - 1
+                if start <= separator < visible_end:
+                    visible_pairs.append((separator, [], None))
+            for index, line in enumerate(transient_rendered, start=transient_start):
+                if start <= index < visible_end:
+                    visible_pairs.append((index, line, None))
+        visible_pairs.sort(key=lambda item: item[0])
+        visible = [line for _, line, _ in visible_pairs]
+        owners = [owner for _, _, owner in visible_pairs]
+        self._line_blocks = owners
+        self.visible_range = (start, min(total, start + len(visible)))
+        self.overscan_range = (
+            max(0, start - self.overscan),
+            min(total, start + height + self.overscan),
+        )
+        self._last_total = total
+        self._last_block_count = len(self._blocks)
+        if self.follow:
+            self._new_output_count = 0
         return visible
+
+    def _cache_block(self, block: Component, width: int) -> list[RichLine]:
+        key = (id(block), width, int(getattr(block, "revision", 0)))
+        rendered = self._layout_cache.get(key)
+        if rendered is None and key not in self._layout_cache:
+            rendered = block.render(width)
+            self._layout_cache[key] = rendered
+            self.cache_misses += 1
+        elif rendered is not None:
+            self.cache_hits += 1
+        return rendered or []
+
+    def _layout_entries(
+        self, width: int, transient: Component | None
+    ) -> tuple[
+        list[tuple[Component, int, int, list[RichLine] | None]],
+        int,
+        tuple[Component, int, int, list[RichLine] | None] | None,
+    ]:
+        entries: list[tuple[Component, int, int, list[RichLine] | None]] = []
+        cursor = 0
+        self.layout_index = []
+        for block in self._blocks:
+            key = (id(block), width, int(getattr(block, "revision", 0)))
+            rendered = self._layout_cache.get(key)
+            if rendered is None and key not in self._layout_cache:
+                # A single row is a conservative estimate until a visible
+                # block is materialized; empty assistant blocks are free.
+                height = 0 if isinstance(block, AssistantBlock) and not block.body else 1
+                if height == 0:
+                    continue
+            else:
+                if not rendered:
+                    continue
+                height = len(rendered)
+            if entries:
+                cursor += 1
+            block_start = cursor
+            block_end = block_start + height
+            entries.append((block, block_start, block_end, rendered))
+            self.layout_index.append((block_start, block_end, block))
+            cursor = block_end
+        transient_entry = None
+        if transient is not None:
+            if entries:
+                cursor += 1
+            transient_entry = (transient, cursor, cursor + 1, None)
+            cursor += 1
+        # ``layout_index`` is an index of the current estimates, not a cache
+        # of rendered rows; callers can use it before every block is painted.
+        return entries, cursor, transient_entry
 
     def block_at(self, relative_y: int) -> Component | None:
         """返回视口第 relative_y 行所属的块(越界 / 空返回 None)。"""
@@ -598,6 +828,7 @@ class Transcript(Component):
     def scroll_to_bottom(self) -> None:
         self.follow = True
         self._scroll_top = 0
+        self._new_output_count = 0
 
 
 class StatusBar(Component):
@@ -613,9 +844,39 @@ class StatusBar(Component):
         self.context_tokens: int | None = None
         #: 上下文窗口上限;None = 装配层尚未提供上下文元数据。
         self.context_window: int | None = None
+        self.runtime = RuntimeSnapshot()
+        self.runtime_visible = False
+        self.new_output_count = 0
+
+    def apply_snapshot(self, snapshot: RuntimeSnapshot, now: float | None = None) -> None:
+        """同步运行快照，并把阶段耗时更新为当前显示时刻。"""
+        elapsed_ms = snapshot.elapsed(now)
+        self.runtime_visible = True
+        self.runtime = replace(snapshot, elapsed_ms=elapsed_ms)
+        self.context_tokens = snapshot.context_tokens
+        self.context_window = snapshot.context_window
+
+    def refresh_runtime(self, now: float | None = None) -> None:
+        """只刷新阶段计时，不改变其它状态。"""
+        self.apply_snapshot(self.runtime, now)
 
     def render(self, width: int) -> list[RichLine]:
         left: RichLine = [_seg("  ", fg=DIM)]
+        runtime = self.runtime
+        if self.runtime_visible:
+            left.append(_seg(phase_label(runtime.phase), fg=WARNING if runtime.phase in {
+                RuntimePhase.ERROR,
+                RuntimePhase.CANCELLING,
+                RuntimePhase.AWAITING_CONFIRMATION,
+            } else ACCENT))
+            if runtime.phase_started_at is not None:
+                left.append(_seg(f" {runtime.elapsed_ms / 1000:.1f}s", fg=DIM))
+            if runtime.current_operation:
+                left.append(_seg(f" · {runtime.current_operation}", fg=DIM))
+            if runtime.context_stale:
+                left.append(_seg(" · 上下文同步中", fg=WARNING))
+            if self.new_output_count:
+                left.append(_seg(f" · 新输出 {self.new_output_count}", fg=WARNING))
         if self.model:
             left.append(_seg(self.model, fg=STATUS_MODEL))
         if self.effort:
@@ -691,14 +952,51 @@ class TuiModel:
         self._pending_tools_by_id: dict[str, ToolCallBlock] = {}
         self.activity_visible = False
         self.activity_frame = 0
+        self.runtime = RuntimeSnapshot()
+        self._runtime_reducer = RuntimeReducer(clock=clock)
+        self.render_stats: dict[str, int | float] = {
+            "frames": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "last_render_ms": 0.0,
+        }
+        self.output_stats: dict[str, int] = {
+            "results": 0,
+            "truncated": 0,
+            "bytes": 0,
+            "lines": 0,
+        }
 
     def render(self, width: int, height: int) -> list[RichLine]:
+        started = self._clock()
         transient = ActivityBlock(self.activity_frame) if self.activity_visible else None
-        return self.transcript.render(width, height, transient=transient)
+        lines = self.transcript.render(width, height, transient=transient)
+        self.status.new_output_count = self.transcript.new_output_count
+        self.render_stats["cache_hits"] = self.transcript.cache_hits
+        self.render_stats["cache_misses"] = self.transcript.cache_misses
+        self.render_stats["frames"] = int(self.render_stats["frames"]) + 1
+        self.render_stats["last_render_ms"] = round((self._clock() - started) * 1000, 3)
+        return lines
 
     def advance_activity(self) -> None:
         if self.activity_visible:
             self.activity_frame += 1
+
+    def set_context_status(
+        self,
+        tokens: int | None,
+        window: int | None,
+        *,
+        stale: bool = False,
+    ) -> None:
+        """同步组合根/会话层提供的上下文窗口信息。"""
+        self.runtime = replace(
+            self.runtime,
+            context_tokens=tokens,
+            context_window=window,
+            context_stale=stale,
+        )
+        self.status.apply_snapshot(self.runtime, now=self._clock())
 
     def _ensure_assistant(self) -> AssistantBlock:
         if self._assistant is None:
@@ -711,6 +1009,36 @@ class TuiModel:
         block = AssistantBlock(clock=self._clock)
         block.append_text(text)
         self.transcript.append(block)
+
+    def page_output(self, delta: int, call_id: str | None = None) -> bool:
+        """切换工具输出页，只改变视图游标。"""
+        candidates = [
+            block
+            for block in self.transcript.blocks
+            if isinstance(block, ToolCallBlock) and block.output_buffer is not None
+        ]
+        if call_id:
+            candidates = [block for block in candidates if block.call_id == call_id]
+        if not candidates:
+            return False
+        block = candidates[-1]
+        changed = block.output_buffer.next_page() if delta > 0 else block.output_buffer.previous_page()
+        if changed:
+            block.touch()
+        return changed
+
+    def export_output(self, path: str, call_id: str | None = None) -> str:
+        """显式导出工具原始输出，返回可定位路径。"""
+        candidates = [
+            block
+            for block in self.transcript.blocks
+            if isinstance(block, ToolCallBlock) and block.output_buffer is not None
+        ]
+        if call_id:
+            candidates = [block for block in candidates if block.call_id == call_id]
+        if not candidates:
+            raise ValueError("没有可导出的工具输出")
+        return str(candidates[-1].output_buffer.export(path))
 
     def hydrate_history(self, history: list[Any], summary: str | None = None) -> None:
         """从会话快照重建 transcript,用于切换/恢复持久化会话。
@@ -781,6 +1109,17 @@ class TuiModel:
         self.transcript.scroll_to_bottom()
 
     def apply(self, event: AgentEvent) -> None:
+        self.runtime = self._runtime_reducer.apply(self.runtime, event)
+        self.status.apply_snapshot(self.runtime, now=self._clock())
+        self.running = self.runtime.phase in {
+            RuntimePhase.WAITING_MODEL,
+            RuntimePhase.STREAMING,
+            RuntimePhase.TOOL_RUNNING,
+            RuntimePhase.AWAITING_CONFIRMATION,
+            RuntimePhase.COMPACTING,
+            RuntimePhase.CANCELLING,
+            RuntimePhase.RESTORING,
+        }
         ev_type = event.type
         if ev_type == EventType.SESSION_STARTED:
             self.transcript.append(UserBlock(_visible_user_content(str(event.payload))))
@@ -817,6 +1156,11 @@ class TuiModel:
             self._assistant = None
         elif ev_type == EventType.TOOL_RESULT:
             metadata = event.metadata or {}
+            self.output_stats["results"] += 1
+            self.output_stats["bytes"] += int(metadata.get("total_bytes") or len(str(event.payload or "").encode("utf-8")))
+            self.output_stats["lines"] += int(metadata.get("total_lines") or len(str(event.payload or "").splitlines()))
+            if metadata.get("truncated_by"):
+                self.output_stats["truncated"] += 1
             call_id = metadata.get("tool_call_id")
             block = self._pending_tools_by_id.pop(str(call_id), None) if call_id else None
             if block is not None:
@@ -834,6 +1178,7 @@ class TuiModel:
                         str(event.payload or ""),
                         error=bool(metadata.get("error")),
                         execution_status=str(metadata.get("status") or ""),
+                        output_metadata=metadata,
                     )
             if not self._pending_tools:
                 self.activity_visible = True

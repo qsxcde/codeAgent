@@ -67,7 +67,11 @@ class McpTool(AtomicTool):
         text = self._client.call_tool(
             self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout
         )
-        truncated, _ = truncate_head(text, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES)
+        truncated, info = truncate_head(
+            text, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES
+        )
+        if info.truncated:
+            truncated += "\n[输出已截断]"
         return truncated
 
     async def ainvoke(self, args: McpArgs) -> str:
@@ -75,7 +79,9 @@ class McpTool(AtomicTool):
         text = await self._client.acall_tool(
             self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout
         )
-        truncated, _ = truncate_head(
+        truncated, info = truncate_head(
             text, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES
         )
+        if info.truncated:
+            truncated += "\n[输出已截断]"
         return truncated

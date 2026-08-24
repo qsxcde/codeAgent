@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
+from dataclasses import replace
 from typing import Any, Callable
 
 from codeagent.core.events import AgentEvent, EventType
@@ -93,6 +94,10 @@ class AgentSession:
         self._confirm_queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
         #: 当前 run 的 asyncio.Task 引用;abort() 据此取消。空闲时为 None。
         self._current_task: asyncio.Task[None] | None = None
+        self._active_run_id: str | None = None
+        self._run_side_effect_state = "none"
+        self._run_cleanup_uncertain = False
+        self._last_failure: dict[str, Any] | None = None
         #: 会话消息历史(权威在 store;无 store 时仅内存)。
         if store is not None:
             store_ref = store.get(self._session_id)
@@ -167,6 +172,27 @@ class AgentSession:
         """当前上下文摘要(若会话曾被压缩),供 TUI 恢复时展示。"""
         return self._summary
 
+    @property
+    def last_failure(self) -> dict[str, Any] | None:
+        """最近一次失败的可操作诊断(副作用状态只读副本)。"""
+        return dict(self._last_failure) if self._last_failure is not None else None
+
+    async def retry(self) -> None:
+        """仅重试确认没有工具副作用的失败轮次。"""
+        failure = self._last_failure
+        if not failure or not failure.get("retryable"):
+            raise ValueError("当前失败不可安全重试,请确认副作用后使用 /continue")
+        prompt = str(failure.get("prompt") or "")
+        self._emit(
+            AgentEvent(
+                EventType.RETRY_STARTED,
+                payload={"prompt": prompt},
+                metadata={"operation": "retry", "previous_error": failure.get("error")},
+            ),
+            self._active_run_id,
+        )
+        await self.run(prompt)
+
     # -- 运行干预 -----------------------------------------------------------
 
     def abort(self) -> None:
@@ -177,6 +203,16 @@ class AgentSession:
         """
         task = self._current_task
         if task is not None and not task.done():
+            self._emit(
+                AgentEvent(
+                    EventType.CANCELLING,
+                    metadata={
+                        "side_effect_state": self._run_side_effect_state,
+                        "cleanup_uncertain": self._run_cleanup_uncertain,
+                    },
+                ),
+                self._active_run_id,
+            )
             task.cancel()
 
     async def close(self) -> None:
@@ -228,6 +264,12 @@ class AgentSession:
         """
         self._ports = ports
 
+    def set_context_window(self, context_window: int) -> None:
+        """在模型/provider 重建后同步新的上下文窗口上限。"""
+        if context_window < 1:
+            raise ValueError("context_window must be positive")
+        self._context_window = context_window
+
     # -- 上下文压缩(session-compaction)--------------------------------------
 
     async def compact(self) -> bool:
@@ -237,47 +279,75 @@ class AgentSession:
         (entry id 记入 ``_summary_entry_id``,新消息父级接回)→ 内存历史
         截断为保留消息。全部保留(切点 0)时不压缩,返回 False。
         """
-        if self._summarizer is None:
-            raise ValueError("压缩不可用:未注入 Summarizer")
-        cut = find_cut_point(self._history, self._compact_budget)
-        if cut <= 0:
-            return False
-        window = self._history[:cut]
-        kept = self._history[cut:]
-        summary = await self._summarizer.summarize(window, self._summary)
-        # 文件操作 details:新窗口提取 + 既有累积(跨压缩持续,对齐 Pi)。
-        fresh = extract_file_ops(window)
-        details = {
-            "readFiles": list(
-                dict.fromkeys(self._prev_details.get("readFiles", []) + fresh["readFiles"])
-            ),
-            "modifiedFiles": list(
-                dict.fromkeys(
-                    self._prev_details.get("modifiedFiles", []) + fresh["modifiedFiles"]
+        self._emit(AgentEvent(EventType.COMPACTION_STARTED), self._active_run_id)
+        try:
+            if self._summarizer is None:
+                raise ValueError("压缩不可用:未注入 Summarizer")
+            cut = find_cut_point(self._history, self._compact_budget)
+            if cut <= 0:
+                self._emit(
+                    AgentEvent(
+                        EventType.COMPACTION_FINISHED,
+                        metadata={"success": True, "compacted": False},
+                    ),
+                    self._active_run_id,
                 )
-            ),
-        }
-        # parentId = 当前叶子(上次压缩记录或历史最后一条消息),照搬 Pi
-        # 「append as child of leaf, then advance leaf」。
-        parent_id = self._summary_entry_id or (
-            self._history[-1].id if self._history else None
-        )
-        entry = CompactionEntry(
-            summary=summary,
-            details=details,
-            parent_id=parent_id,
-            first_kept_entry_id=kept[0].id if kept else "",
-        )
-        if self._store is not None:
-            self._ensure_persisted()
-            entry_id = self._store.append_compaction(self._session_id, entry)
-        else:
-            entry_id = entry.id
-        self._summary = summary
-        self._summary_entry_id = entry_id
-        self._prev_details = details
-        self._history = kept
-        return True
+                return False
+            window = self._history[:cut]
+            kept = self._history[cut:]
+            summary = await self._summarizer.summarize(window, self._summary)
+            fresh = extract_file_ops(window)
+            details = {
+                "readFiles": list(
+                    dict.fromkeys(self._prev_details.get("readFiles", []) + fresh["readFiles"])
+                ),
+                "modifiedFiles": list(
+                    dict.fromkeys(
+                        self._prev_details.get("modifiedFiles", []) + fresh["modifiedFiles"]
+                    )
+                ),
+            }
+            parent_id = self._summary_entry_id or (
+                self._history[-1].id if self._history else None
+            )
+            entry = CompactionEntry(
+                summary=summary,
+                details=details,
+                parent_id=parent_id,
+                first_kept_entry_id=kept[0].id if kept else "",
+            )
+            if self._store is not None:
+                self._ensure_persisted()
+                entry_id = self._store.append_compaction(self._session_id, entry)
+            else:
+                entry_id = entry.id
+            self._summary = summary
+            self._summary_entry_id = entry_id
+            self._prev_details = details
+            self._history = kept
+            self._emit(
+                AgentEvent(
+                    EventType.COMPACTION_FINISHED,
+                    metadata={"success": True, "compacted": True},
+                ),
+                self._active_run_id,
+            )
+            return True
+        except Exception as exc:
+            self._emit(
+                AgentEvent(
+                    EventType.COMPACTION_FINISHED,
+                    metadata={
+                        "success": False,
+                        "error_code": "compaction_unavailable"
+                        if isinstance(exc, ValueError)
+                        else "compaction_failed",
+                        "error_message": str(exc),
+                    },
+                ),
+                self._active_run_id,
+            )
+            raise
 
     def _should_auto_compact(self) -> bool:
         """阈值判断(对齐 Pi shouldCompact):上下文占用超过窗口减保留余量。"""
@@ -317,12 +387,17 @@ class AgentSession:
         压缩后首条新 user 消息的父级接回压缩记录。
         """
         metadata: dict[str, Any] = {}
+        run_id = str(uuid.uuid4())
+        self._active_run_id = run_id
+        self._run_side_effect_state = "none"
+        self._run_cleanup_uncertain = False
+        self._last_failure = None
         if self._previous_session_id:
             # 分叉会话来源标记(session-fork):首轮事件携带父会话 id。
             metadata["previous_session_id"] = self._previous_session_id
         # cost-transparency:每轮开始重置本轮 usage 累计。
         self._turn_usage = UsageStats()
-        self._bus.emit(AgentEvent(EventType.SESSION_STARTED, payload=text, metadata=metadata))
+        self._emit(AgentEvent(EventType.SESSION_STARTED, payload=text, metadata=metadata), run_id)
         self._current_task = asyncio.current_task()
         history_for_turn = list(self._history)
         if self._summary is not None and self._summary_entry_id:
@@ -340,7 +415,7 @@ class AgentSession:
         try:
             new_history = await run_turn(
                 self._ports,
-                self._bus.emit,
+                lambda event: self._on_run_event(event, run_id),
                 text,
                 history=history_for_turn,
                 recursion_limit=(
@@ -352,15 +427,54 @@ class AgentSession:
             )
         except asyncio.CancelledError:
             self._rollback(before_ids)
-            self._bus.emit(AgentEvent(EventType.RUN_CANCELLED))
+            self._emit(
+                AgentEvent(
+                    EventType.RUN_CANCELLED,
+                    metadata={
+                        "side_effect_state": self._run_side_effect_state,
+                        "cleanup_uncertain": self._run_cleanup_uncertain,
+                    },
+                ),
+                run_id,
+            )
             raise
         except Exception as exc:  # 图级异常:回滚 + 错误事件
             self._rollback(before_ids)
-            self._bus.emit(AgentEvent(EventType.ERROR, payload=self._friendly_error(exc)))
+            retryable = self._run_side_effect_state == "none" and not self._run_cleanup_uncertain
+            self._last_failure = {
+                "error": self._friendly_error(exc),
+                "retryable": retryable,
+                "side_effect_state": self._run_side_effect_state,
+                "cleanup_uncertain": self._run_cleanup_uncertain,
+                "error_code": type(exc).__name__.lower(),
+                "prompt": text,
+            }
+            self._emit(
+                AgentEvent(
+                    EventType.ERROR,
+                    payload=self._friendly_error(exc),
+                    metadata={
+                        "retryable": retryable,
+                        "side_effect_state": self._run_side_effect_state,
+                        "cleanup_uncertain": self._run_cleanup_uncertain,
+                        "error_code": type(exc).__name__.lower(),
+                    },
+                ),
+                run_id,
+            )
             return
         finally:
             self._current_task = None
-            self._bus.emit(AgentEvent(EventType.TURN_END))
+            self._emit(
+                AgentEvent(
+                    EventType.TURN_END,
+                    metadata={
+                        "terminal_phase": "error" if self._last_failure else "idle",
+                    },
+                ),
+                run_id,
+            )
+            self._active_run_id = None
         # 成功路径:过滤虚拟摘要消息,更新历史并持久化本轮新增消息
         kept_history = [m for m in new_history if not m.id.startswith(SUMMARY_ID_PREFIX)]
         if self._summary_entry_id:
@@ -396,6 +510,50 @@ class AgentSession:
         # 阈值自动压缩(同步,turn_end 后;不阻塞本轮收尾)。
         if self._should_auto_compact():
             await self.compact()
+
+    def _on_run_event(self, event: AgentEvent, run_id: str) -> None:
+        """记录副作用诊断并为循环事件补齐 session/run 关联。"""
+        metadata = dict(event.metadata or {})
+        if event.type == EventType.TOOL_STARTED:
+            self._run_side_effect_state = "possible"
+        elif event.type == EventType.TOOL_FINISHED:
+            if metadata.get("cleanup_uncertain"):
+                self._run_cleanup_uncertain = True
+                self._run_side_effect_state = "uncertain"
+            elif metadata.get("status") not in {None, "ok", "rejected"}:
+                self._run_side_effect_state = "possible"
+        self._emit(event, run_id)
+
+    def _emit(self, event: AgentEvent, run_id: str | None) -> None:
+        """统一补齐生命周期关联，同时保留旧 metadata 消费方式。"""
+        metadata = dict(event.metadata or {})
+        metadata.setdefault("session_id", self._session_id)
+        if run_id is not None:
+            metadata.setdefault("run_id", run_id)
+        self._bus.emit(
+            replace(
+                event,
+                metadata=metadata,
+                session_id=event.session_id or self._session_id,
+                run_id=event.run_id or run_id,
+                tool_call_id=event.tool_call_id or metadata.get("tool_call_id"),
+                operation_id=event.operation_id or metadata.get("operation_id"),
+                phase=event.phase or metadata.get("phase"),
+                elapsed_ms=event.elapsed_ms or metadata.get("elapsed_ms"),
+                error_code=event.error_code or metadata.get("error_code"),
+                retryable=(
+                    event.retryable
+                    if event.retryable is not None
+                    else metadata.get("retryable")
+                ),
+                cleanup_uncertain=(
+                    event.cleanup_uncertain
+                    if event.cleanup_uncertain is not None
+                    else metadata.get("cleanup_uncertain")
+                ),
+                side_effect_state=event.side_effect_state or metadata.get("side_effect_state"),
+            )
+        )
 
     def _ensure_persisted(self) -> None:
         """首次成功产生消息时创建 deferred session 的持久化 header。"""

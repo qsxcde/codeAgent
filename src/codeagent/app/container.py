@@ -632,6 +632,7 @@ def create_tui_app(
         approval_mode="interactive",  # TUI:敏感操作经确认条交互(security-permissions)
         summarizer=_LazySummarizer(_build_summarizer),  # 首启缺 key:首次 /compact 才建(审计 M-7)
         ports=_LazyPorts(_build_ports),  # 首启缺 key:首次对话才装配(审计 M-7)
+        context_window=_resolve_context_window(registry, cfg, provider, model),
         mcp_diagnostics=mcp_diagnostics,  # MCP 装配诊断(/status 展示)
     )
     manager.create()  # 启动即进入首个会话(命令 /sessions new 可再建)
@@ -681,7 +682,14 @@ def create_tui_app(
         model_id, effort = _resolve_model_effort(
             cfg, target_provider, new_model, new_effort or reasoning_effort
         )
-        manager.replace_ports(new_ports, model=model_id, effort=effort)
+        manager.replace_ports(
+            new_ports,
+            model=model_id,
+            effort=effort,
+            context_window=_resolve_context_window(
+                registry, cfg, target_provider, new_model or model_id
+            ),
+        )
         refresh_skills()
         return model_id, effort
 
@@ -758,6 +766,7 @@ def create_session_manager(
     tool_timeout: float | None = None,
     approval_mode: str = "deny",
     summarizer: Any = None,
+    context_window: int | None = None,
     ports: Any = None,
     mcp_diagnostics: list[str] | None = None,
 ) -> Any:
@@ -802,6 +811,7 @@ def create_session_manager(
         recursion_limit=recursion_limit or 50,
         tool_timeout=tool_timeout,
         summarizer=summarizer,
+        context_window=context_window or _resolve_context_window(registry, cfg, provider, model),
         runtime_closer=_close_runtime,
     )
 
@@ -838,6 +848,31 @@ def _resolve_model_effort(
             if effort is None:
                 effort = defaults.reasoning_effort
     return model_id or "", effort or ""
+
+
+def _resolve_context_window(
+    registry: Any,
+    cfg: Any,
+    provider: str | None,
+    model: str | None,
+) -> int:
+    """从当前模型规格解析上下文窗口，缺失时使用 session 兜底值。"""
+    from codeagent.ai.model_pattern import split_model_pattern
+    from codeagent.app.config import Settings
+    from codeagent.session.session import DEFAULT_CONTEXT_WINDOW
+
+    resolved_provider = (
+        provider or getattr(cfg, "llm_provider", None) or Settings().llm_provider
+    )
+    base = split_model_pattern(model)[0] if model else None
+    if registry is not None and base:
+        try:
+            spec = registry.resolve(base, provider=resolved_provider)
+        except (AttributeError, ValueError):
+            spec = None
+        if spec is not None and getattr(spec, "context_window", None):
+            return int(spec.context_window)
+    return DEFAULT_CONTEXT_WINDOW
 
 
 def _resolve_footer_info(

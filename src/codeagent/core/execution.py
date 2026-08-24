@@ -52,8 +52,9 @@ class ToolExecutionRuntime:
         tool: Any,
         call: ToolCall,
         timeout: float | None = None,
+        operation_id: str | None = None,
     ) -> ToolResult:
-        operation = ToolOperation(new_id(), call.id, call.name)
+        operation = ToolOperation(operation_id or new_id(), call.id, call.name)
         self._active[operation.operation_id] = operation
         try:
             try:
