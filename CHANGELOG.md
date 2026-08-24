@@ -8,7 +8,7 @@
 ### Planned
 
 - Hooks 与任务完成前的验证门禁
-- CI 驱动的构建、安装冒烟测试与发布流程
+- CI 驱动的构建、安装冒烟测试与发布流程（当前 CI 已覆盖测试、版本一致性、补丁格式和 OpenSpec 校验，尚未覆盖构建安装与发布）
 
 ## [0.3.0] - 2026-08-22
 
@@ -35,7 +35,7 @@
 
 ### Verification
 
-- `uv run pytest -q`: 666 passed
+- `uv run pytest -q`: 666 collected, 665 passed, 1 skipped（Windows 无符号链接权限；无失败）
 - `openspec validate --specs`: 9 passed
 - `git diff --check`: passed
 

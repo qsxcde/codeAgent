@@ -6,12 +6,31 @@
 
 from pathlib import Path
 
+import pytest
+
+import codeagent.app.agents as agents_module
 from codeagent.app.agents import (
     AGENTS_CANDIDATES,
     build_system_prompt,
     load_agents_files,
     read_base_prompt,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ancestor_context(monkeypatch, tmp_path):
+    """单元测试只读取临时目录树,不受运行机器上的上级指令文件影响。"""
+    real_first_candidate = agents_module._first_candidate
+    test_root = tmp_path.resolve()
+
+    def isolated_first_candidate(directory: Path) -> Path | None:
+        try:
+            directory.resolve().relative_to(test_root)
+        except ValueError:
+            return None
+        return real_first_candidate(directory)
+
+    monkeypatch.setattr(agents_module, "_first_candidate", isolated_first_candidate)
 
 
 def _write(directory, name: str, content: str = "内容"):

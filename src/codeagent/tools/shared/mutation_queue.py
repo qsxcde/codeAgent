@@ -1,7 +1,7 @@
 """按路径串行化写的互斥队列。
 
-背景(core/nodes/tools.py):工具经 langchain 在线程池中并行执行(同一消息的
-tool_call 用 asyncio.gather 调度),同一文件的并发写(如 write+edit)会竞态丢更新。
+背景:同一消息的多个 tool_call 由自研循环并行调度,同一文件的并发写(如
+write+edit)会竞态丢更新。
 
 职责(design D7;对应 spec「并行写串行化」):
 - 以路径为粒度上 ``threading.Lock``,只包写类工具(write/edit),读类不锁;

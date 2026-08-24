@@ -3,7 +3,7 @@
 - 直接构造 ``/chat/completions`` 请求体,``reasoning_effort`` 原样上传;
 - 流式走自研 SSE 解析(``ai/protocol/sse.py``),thinking / usage 全量透传;
 - 依赖 ``httpx``(轻量 HTTP 客户端),不加载重型 SDK;
-- 框架无关:不 import langchain,编排桥接由组合根经 ``ai/bridge/langchain.py`` 包装。
+- 框架无关:不 import LangChain,由组合根把客户端适配到自研编排所需的模型端口。
 """
 
 from __future__ import annotations
@@ -115,9 +115,7 @@ class OpenAICompatClient:
     def bind_tools(self, tools: list[Any]) -> "OpenAICompatClient":
         """记录工具并返回 self(框架无关;编排适配由组合根 ChatModelPort 负责)。
 
-        - 组合根(container.py)拿到 self 后再 ``to_langchain_runnable`` 包装,
-          得到供 LangGraph 消费的 ``bound_model``;
-        - 内部 ``generate``/``stream`` 走 ``_bind_tools``,避免热路径重复记录。
+        内部 ``generate``/``stream`` 走 ``_bind_tools``,避免热路径重复记录。
         """
         self._bind_tools(tools)
         return self

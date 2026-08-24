@@ -1,6 +1,6 @@
 """OpenAICompatClient 传输层测试:请求构造 / 响应解析 / 重试 / 流式。
 
-网络相关用 mock httpx(不发起真实请求);langchain 桥接测试见 test_bridge.py。
+网络相关用 mock httpx(不发起真实请求);当前模型客户端直接对接自研协议层,不再存在 LangChain 桥接层。
 """
 
 from __future__ import annotations

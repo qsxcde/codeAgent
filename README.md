@@ -2,7 +2,9 @@
 
 基于**自研编排**(2026-08-14 起,已弃用 langgraph/langchain)的编程 Agent,采用 Pi-Agent 的设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态),配合端口-适配器(hexagonal)做横切解耦。
 
-当前 **v0.3 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
+当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
+
+当前验收基线（2026-08-24）:`uv run pytest -q` 收集 **666** 项，**665 passed / 1 skipped**（Windows 当前无创建符号链接权限），无失败；`openspec validate --specs` 为 **9 passed**。CI 已覆盖测试、版本一致性、补丁格式和主规格校验。项目仍未配置覆盖率、Ruff/mypy/Black 或构建后安装冒烟门禁。
 
 ## 项目介绍
 
@@ -10,12 +12,12 @@
 
 - **可演进**:从单个工具调用型 Agent 平滑演进到多 Agent / 多会话 / 平台部署。
 - **可替换**:更换模型供应商(DeepSeek / OpenAI / Qwen / GLM / Kimi / MiniMax)、更换工具集、更换存储,均不触碰 Agent 编排代码。
-- **可感知**:会话运行过程以事件流对外暴露,CLI、TUI、Web、测试都能订阅,而不是只拿一个最终返回值。
+- **可感知**:会话运行过程以事件流对外暴露,CLI、TUI、测试和 CI 都能订阅,而不是只拿一个最终返回值。
 - **可测试**:核心编排层零网络、零密钥即可运行(注入 `FakeClient` 离线假模型)。
 
 设计参考:[earendil-works/pi](https://github.com/earendil-works/pi) 的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。架构设计见 [`docs/design/architecture.md`](docs/design/architecture.md),需求基线见 [`docs/design/requirements-analysis.md`](docs/design/requirements-analysis.md),迭代记录见 [`docs/iteration/v0.1.md`](docs/iteration/v0.1.md) / [`v0.2.md`](docs/iteration/v0.2.md) / [`v0.3.md`](docs/iteration/v0.3.md)。
 
-### 当前能力(v0.3 阶段 1~4)
+### 当前能力(v0.3.0)
 
 - **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频"思考中"提示、人类可读的工具摘要及可展开 edit/write 意图差异、model/effort/cwd 状态栏、斜杠命令体系(含 `/provider` `/model` `/effort` `/login` `/skills` `/mcp` `/sessions` `/tree` `/tools` `/status` `/quit`)与模糊补全 / 选择器、Markdown 渲染、Esc 运行中打断 / 空闲退出并打印完整文档。
 - **Headless CLI**(默认形态):`--prompt` 一次性输入或 stdin 逐行读取,事件聚合输出最终回复。
@@ -26,7 +28,7 @@
 - **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可按用户配置接入 `tools/list` / `tools/call` 工具，并以 `mcp__<server>__<tool>` 命名空间化和分组预算控制提示词膨胀。
 - **Skills 技能系统**:SKILL.md 格式 + 三源发现(内建 / 个人 / 项目)+ 渐进式披露(描述入 system prompt,**正文经 `skill` 工具按需获取**);`/skills` 手动加载。
 - **用量透明**:归一并累计输入 / 输出 / 推理 / 缓存命中 token；`/status` 与 headless CLI 展示会话或本轮用量（不估算费用）。
-- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试（当前实测 666 项全绿）。
+- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试（当前实测 666 项收集，665 passed / 1 skipped，无失败）。
 
 ## 项目环境设置
 
@@ -126,7 +128,7 @@ uv run codeagent --yes --prompt "..."        # 显式承担风险
 ### 运行测试
 
 ```bash
-uv run pytest -q        # 全量离线测试(当前实测 666 项全绿,以实际运行结果为准)
+uv run pytest -q        # 全量离线测试(当前实测 666 项收集,665 passed / 1 skipped,无失败;以实际运行结果为准)
 ```
 
 ## 项目结构
@@ -181,7 +183,7 @@ codeagent/
     │
     └── resources/               # [资源层] 内建 skills / prompts（Skills 已启用）
 
-tests/                          # 按 src 模块镜像分包,666 项全绿(离线实测)
+tests/                          # 按 src 模块镜像分包,666 项收集(665 passed / 1 skipped,无失败)
 ├── conftest.py                 #   _isolate_config_dir / memory_fsops 夹具
 ├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
 ├── test_decoupling.py          #   分层解耦 AST 扫描(AST 强制校验)
@@ -196,7 +198,9 @@ tests/                          # 按 src 模块镜像分包,666 项全绿(离�
 
 ## 当前状态与后续
 
-v0.3 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。以下能力已明确移出 v0.3，待真实需求出现时重估：插件系统、轻量记忆与 Web / HTTP 事件订阅。
+v0.3.0 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。当前未实现且已明确移出本版本的能力包括：费用估算、Web / HTTP 事件订阅、轻量记忆、插件系统、多智能体和自动化任务；它们在出现真实需求后重新评估。
+
+工程后续优先级是补充 Hooks 与完成前验证门禁、覆盖率与静态检查、构建/安装冒烟测试和发布流程。该部分不影响 v0.3.0 的功能验收，但属于下一阶段的交付治理工作。
 
 ## 参考
 

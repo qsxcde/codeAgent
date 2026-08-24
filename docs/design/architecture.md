@@ -2,7 +2,7 @@
 
 > 版本: v0.3(阶段 1~4 落地后校准)
 > 适用范围: 自研编排(2026-08-14 起,已弃用 langgraph/langchain)的 Code Agent 项目
-> 更新日期: 2026-08-22(校准至当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills / MCP / token 用量 / 会话树、TUI 命令体系)
+> 更新日期: 2026-08-24(校准至 v0.3.0 当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills / MCP / token 用量 / 会话树、TUI 命令体系)
 > 事实来源: 本文描述当前代码树;演进决策见 [self-built-orchestration-blueprint.md](./self-built-orchestration-blueprint.md)(决策与收益记录)、迭代记录 `docs/iteration/v0.1.md` / `v0.2.md` / `v0.3.md`
 
 ## 1. 背景与目标
@@ -11,7 +11,7 @@
 
 1. **可演进**:从"单个工具调用型 Agent"平滑演进到多 Agent / 多会话 / 平台部署。
 2. **可替换**:更换模型供应商(DeepSeek / OpenAI / Qwen / GLM / Kimi / MiniMax)、更换工具集、更换存储,均不触碰 Agent 编排代码。
-3. **可感知**:会话的运行过程以事件流对外暴露,CLI、TUI、Web、测试都能订阅,而不是只拿一个最终返回值。
+3. **可感知**:会话的运行过程以事件流对外暴露,CLI、TUI、测试和 CI 都能订阅,而不是只拿一个最终返回值；Web/HTTP 订阅暂未实现。
 4. **可测试**:核心编排层零网络、零密钥即可运行(注入 fake 模型)。
 
 设计参考:Pi-Agent(`earendil-works/pi`)的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。
@@ -45,14 +45,14 @@
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
 - 事件 11 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)。
-- Skills 系统(v0.3 阶段 1):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
+- Skills 系统(v0.3 阶段 1~4):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
 - MCP(v0.3 阶段 2):用户级配置发现、工具 schema 适配、权限分类、`/mcp` 可见诊断与分组预算。
 - token 用量透明(v0.3 阶段 3):usage 归一、会话级 append-only 落库、`/status` 与 headless CLI 展示输入 / 输出 / 缓存命中（不做费用估算）。
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
-- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **666 项全绿**(2026-08-22 实测；2026-08-21 综合审计的 12 条 CONFIRMED 缺陷已修复闭环,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5)。
+- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **666 项收集，665 passed / 1 skipped，无失败**(2026-08-24 复核；唯一跳过项是 Windows 无符号链接权限；2026-08-21 综合审计的 12 条 CONFIRMED 缺陷已修复闭环,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5)。
 
-**v0.3 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。
+**v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前未配置覆盖率、静态检查、构建安装冒烟和发布门禁，这些属于下一阶段工程治理。
 
 ## 4. 总体结构
 
@@ -128,7 +128,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按 src 模块镜像分包,666 项(2026-08-22 实测)
+└── tests/                            # 按 src 模块镜像分包,666 项收集(665 passed / 1 skipped,2026-08-24 复核)
     ├── conftest.py                   # _isolate_config_dir / memory_fsops 夹具
     ├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
     ├── test_decoupling.py            # 分层解耦 AST 扫描(AST 强制校验)
@@ -218,7 +218,7 @@ class AgentSession:
     def abort(self) -> None: ...              # 取消当前 run
 ```
 
-- **`run` 发布事件流而不是返回单个回复**——CLI/TUI/Web/测试都通过 `subscribe` 感知进度。
+- **`run` 发布事件流而不是返回单个回复**——CLI/TUI/测试/CI 都通过 `subscribe` 感知进度。
 - **全异步**:`run()` 为 `async def`,直接驱动 `core/loop.py` 的 `run_turn`,把循环内事件经 `EventBus` 分发。
 - **成功才落盘**:本轮工作在局部历史副本上,`self._history` 仅成功时重赋值,store 循环在其后;失败/取消时内存回滚(历史从未被就地修改,回滚是空操作)。
 - **会话历史**:自研 `Message`(role/content/tool_calls/tool_call_id/id/parentId),`id` 用 uuid7;归约按 tool_call_id 归属、按 id 删除。
@@ -348,11 +348,11 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 
 | 阶段 | 范围 | 产物 |
 |---|---|---|
-| **v0.1 最小可跑** | `config + container + ai + tools + core + session + app(main/tui)` | CLI/TUI 可对话、可调用七个工具(当时集;v0.3 加 skill 后为八工具),事件流可订阅 |
+| **v0.1 最小可跑** | `config + container + ai + tools + core + session + app(main/tui)` | CLI/TUI 可对话、可调用七个工具(当时集;v0.3 加 skill 后为八工具),事件流可订阅(历史记录) |
 | **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
 | **v0.3 生态成型** | Skills(✅)+ MCP(✅)+ 成本透明(✅)+ 会话树 UI(✅);插件 / 轻量记忆 / Web 经评估移出(见 E5/E4/E12) | 扩展生态、体验差异、平台导航 |
 
-v0.3 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树,2026-08-22 基线 **666/666**);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64: pytest 666/666、OpenSpec 主规格 9/9、补丁格式检查通过)。
+v0.3.0 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64)。2026-08-24 复核结果:`uv run pytest -q` **666 collected / 665 passed / 1 skipped**（无失败，跳过原因是 Windows 无符号链接权限）、`openspec validate --specs` **9 passed**、`git diff --check` 通过。CI 已覆盖这些质量检查，但尚未覆盖构建、安装冒烟、覆盖率和静态检查。
 
 ## 12. 参考
 

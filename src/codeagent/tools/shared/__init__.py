@@ -1,6 +1,7 @@
 """tools/shared 共享工具模块:FsOps 抽象 / 路径 / 文本 / 截断 / 写串行化 / 忽略策略。
 
-分层约束:本包可被 tools/ 内部使用,禁止 import core/session/ai;langchain 延迟。
+分层约束:本包可被 tools/ 内部使用,禁止 import core/session/ai;仅提供标准库
+和文件系统抽象,不依赖外部编排框架。
 """
 
 from codeagent.tools.shared.fsops import FsOps, LocalFsOps

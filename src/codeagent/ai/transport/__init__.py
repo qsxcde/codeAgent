@@ -2,8 +2,8 @@
 
 - ``OpenAICompatClient``:直接构造 ``/chat/completions`` 请求体,
   ``reasoning_effort`` 原样上传,流式走自研 SSE 解析(``ai/protocol/sse.py``);
-- 依赖 ``httpx``,框架无关:不 import langchain(编排桥接由组合根经
-  ``ai/bridge/langchain.py`` 包装)。
+- 依赖 ``httpx``,框架无关:不 import LangChain,由组合根适配到自研编排
+  所需的模型端口。
 """
 
 from codeagent.ai.transport.openai_compat import OpenAICompatClient

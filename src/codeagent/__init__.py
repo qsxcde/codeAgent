@@ -1,3 +1,3 @@
-"""codeagent:基于 LangGraph 的编程 Agent。"""
+"""codeagent:基于自研 ReAct 编排的编程 Agent。"""
 
 __version__ = "0.3.0"

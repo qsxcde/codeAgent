@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-基于**自研编排**(2026-08-14,self-built-orchestration,已弃用 langgraph/langchain)的编程 Agent(codeagent),采用 Pi-Agent 设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态)+ 端口-适配器(hexagonal)横切解耦。当前为 v0.3 阶段 1(v0.1 闭环 / v0.2 会话完善 / v0.3 阶段 1 Skills 已落地),CLI(headless 默认 + `--tui` 交互式终端)可对话、可调用 read/write/edit/bash/grep/find/ls/skill 八个工具,事件流可订阅,会话可恢复/切换/压缩/分叉。
+基于**自研编排**(2026-08-14,self-built-orchestration,已弃用 langgraph/langchain)的编程 Agent(codeagent),采用 Pi-Agent 设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态)+ 端口-适配器(hexagonal)横切解耦。当前为 **v0.3.0**(v0.1 闭环 / v0.2 会话完善 / v0.3 阶段 1~4 与全量验收已完成),CLI(headless 默认 + `--tui` 交互式终端)可对话、可调用 read/write/edit/bash/grep/find/ls/skill 八个工具,事件流可订阅,会话可恢复/切换/压缩/分叉/树形导航。
 
-**注意:README.md 与 docs/design/architecture.md 已于 2026-08-21 校准至当前树**(此前曾描述已删除的 cli.py / bridge/langchain.py / langgraph 依赖 / 336 测试)。权威记录是 `docs/iteration/v0.1.md` ~ `v0.3.md`(任务分解 + 变更记录),审计见 `docs/review/audit-2026-08-21.md`。
+**文档口径**:当前代码树无 LangGraph/LangChain 运行时依赖；README、架构设计和 v0.3 迭代记录是当前状态的主要事实来源，v0.1/v0.2 仅记录历史交付过程。审计结论与后续复核见 `docs/review/audit-2026-08-21.md`。
 
 ## 常用命令
 
@@ -26,7 +26,7 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 配置:密钥写在固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下的 `.env`**(安全决策 H10,防止在任意仓库运行时被其 `.env` 劫持)。`LLM_PROVIDER` 选 provider(deepseek / openai / qwen / glm / kimi / minimax / fake)。
 
-**当前测试状态:598 项全绿**(2026-08-21 综合审计 12 条 CONFIRMED 缺陷已全部修复闭环:两条平台/环境相关失败测试已修、`or True` 死断言已修,安全/正确性缺陷按 S/M 优先级落地,见 `docs/review/audit-2026-08-21.md` 与 `docs/iteration/v0.3.md` §6.5)。新增代码请保证 `uv run pytest` 不引入新的失败。
+**当前测试状态:666 项收集，665 passed / 1 skipped，无失败**(2026-08-24 复核；唯一跳过项是 Windows 无符号链接权限导致的安全回归测试跳过；2026-08-21 综合审计的 12 条 CONFIRMED 缺陷已在后续提交中闭环,并经新增回归测试覆盖)。另有 `openspec validate --specs` 9 项通过。新增代码请保证 `uv run pytest` 不引入新的失败。
 
 ## 架构与分层
 
@@ -60,11 +60,11 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
   - `factory.py`:`create_llm` 统一入口;`model_pattern.py`:`model:effort` 解析唯一实现。适配自研循环的 `ChatModelPort` 在组合根 `app/container.py`。
 - **`tools/`**:`AtomicTool` 基类(无状态,子类实现 `_invoke` + 定义 `Args` pydantic schema,自研循环直接 `invoke`)。`make_tools` 注册表产出八个工具:read / write / edit / bash / grep / find / ls / skill(技能寻址);`security.py` 提供执行前安全分类器(deny>ask>allow,组合根适配为 `ApprovalPolicy`);`shared/` 提供 `FsOps` 文件系统抽象缝(注入内存实现即可离线测)、路径/文本/截断/写串行化等共享设施。`BashTool` 带危险命令黑名单(字符串正则 + shlex 分词语义级检测 `rm -rf` 等价写法)、Git for Windows/WSL bash 探测链、默认 120s 超时(上限 600)、30k 输出截断。
 - **`app/tui/` — 交互式终端(MVP)**:`view.py`(TuiApp 视图逻辑)只依赖 `backend.py` 的 `TuiBackend` 端口;`components.py` 纯渲染组件树(样式标签段,引擎无关可离线测);`textual_backend.py` 是当前唯一引擎实现。装配经组合根 `create_tui_app`(footer 的 model/effort 解析固化),本包不读配置、不跨层。
-- **`resources/`**:技能文件源(v0.3 阶段 1 已启用,经 `app/skills.py` 三源发现:内建/个人/项目,同名遮蔽 个人>项目>内建);**`extensions/`**:插件占位(v0.3 阶段 2)。
+- **`resources/`**:技能文件源(v0.3 阶段 1~4 已启用,经 `app/skills.py` 三源发现:内建/个人/项目,同名遮蔽 个人>项目>内建);插件系统未实现，已移出 v0.3，后续按需重估。
 
 ### 事件驱动
 
-事件类型常量见 `core/events.py` 的 `EventType`(11 类):`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`(确认环事件)。CLI、Web、测试都通过 `session.subscribe()` 感知,而不是拿单个返回值。
+事件类型常量见 `core/events.py` 的 `EventType`(11 类):`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`(确认环事件)。CLI、TUI、测试和 CI 都通过 `session.subscribe()` 感知,而不是拿单个返回值；Web/HTTP 订阅尚未实现。
 
 ## 编码规范
 
@@ -95,11 +95,11 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 ### 复杂度工具(可选)
 
-项目当前未配置静态检查工具链。如需落地,在 dev 组加 Black(格式)+ Ruff(lint)+ mypy(类型),阈值按"软告警 + 硬失败"双阈值配置(同上行数双阈值)。
+项目当前未配置静态检查工具链。下一阶段应在 dev 组加入 Black(格式)+ Ruff(lint)+ mypy(类型),并将结果接入 CI；当前这些工具不属于 v0.3.0 验收门禁。
 
 ### 测试规范
 
-- **离线可测是最高原则**(NFR-M2):核心编排层零网络、零密钥即可运行;新模块应能不联网、不碰其它模块、注入 `FakeClient` 即可测通。覆盖目标:核心编排层 100% 离线可测,总体覆盖率 ≥ 80%。
+- **离线可测是最高原则**(NFR-M2):核心编排层零网络、零密钥即可运行;新模块应能不联网、不碰其它模块、注入 `FakeClient` 即可测通。核心离线能力已验证；总体覆盖率 ≥ 80% 仍是目标，但当前没有 pytest-cov 测量门禁。
 - **目录按层镜像,不逐文件 1:1**:`src/<layer>/` 对应 `tests/<layer>/`,层内文件按被测单元命名(`tests/core/test_messages.py` ↔ `core/messages.py`)。例外:`tools/` 单文件 `test_tools.py` 覆盖整个工具包(内聚优先);`app/` 层测试拍平到 `tests/` 根(`test_config.py` / `test_container.py` / `test_cli.py`)。镜像纯为可导航性,测试代码可跨层 import。
 - **夹具集中在 `tests/conftest.py`**:`_isolate_config_dir`(autouse,把 `CONFIG_DIR` 重定向到临时目录,防污染真实 `~/.codeagent`)、`memory_fsops`(内存 FsOps,注入测试用)。离线测试注入 `FakeClient` 或 mock `create_llm`。
 - **`FakeClient` 是编排测试的核心注入点**(`ai/providers/fake.py`,实现 `ChatClient` 协议):`response` 固定文本 / `responses` 按序返回 / `steps` 脚本化多轮 ReAct(含 tool_calls)/ `thinking` / `usage` / `call_history` 断言。异常路径用其**子类覆盖 `_generate`** 抛错,不重写协议层。
