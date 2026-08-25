@@ -21,7 +21,7 @@ from dataclasses import replace
 from typing import Any, Callable
 
 from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.loop import DEFAULT_RECURSION_LIMIT, RecursionLimitError, run_turn
+from codeagent.core.loop import DEFAULT_RECURSION_LIMIT, RecursionLimitError
 from codeagent.core.messages import Message
 from codeagent.core.ports import AgentPorts
 from codeagent.session.bus import EventBus, Subscriber
@@ -30,6 +30,8 @@ from codeagent.session.compaction import (
     extract_file_ops,
     find_cut_point,
 )
+from codeagent.session.session_persistence import SessionPersistence
+from codeagent.session.session_runtime import SessionRuntime
 from codeagent.session.store import CompactionEntry, UsageStats
 
 #: 摘要注入消息的前缀(模型识别"历史摘要";Pi COMPACTION_SUMMARY_PREFIX 对应物)。
@@ -64,7 +66,6 @@ class AgentSession:
     ) -> None:
         self._ports = ports
         self._bus = bus
-        self._store = store
         self._recursion_limit = recursion_limit
         self._tool_timeout = tool_timeout
         self._session_id = session_id or str(uuid.uuid4())
@@ -74,61 +75,37 @@ class AgentSession:
         #: 上下文压缩(session-compaction):Summarizer 端口与上下文窗口。
         self._summarizer = summarizer
         self._context_window = context_window
-        #: 新建会话延迟落盘:首次成功产生消息前只保留内存态。
-        self._defer_persistence = defer_persistence
-        self._persistence_options = dict(persistence_options or {})
-        self._persisted = store is None
         self._runtime_closer = runtime_closer
         self._closed = False
         #: 切点预算(软目标;测试可注入小值)。
         self._compact_budget = compact_budget
         #: 最近一次 usage.input_tokens(本轮请求总输入 = 当前上下文占用)。
         self._last_input_tokens: int | None = None
-        #: 本轮 usage 累计(cost-transparency):每轮 run() 开始重置,
-        #: USAGE 事件逐次累加,成功路径一次性落库。
-        self._turn_usage = UsageStats()
-        #: 注入队列(steer):下一轮循环前消费为 user 消息。
-        self._inject_queue: asyncio.Queue[str] = asyncio.Queue()
-        #: 确认响应队列(security-permissions):(request_id, approved) 对;
-        #: 循环在 ask 后按 id 等待,abort 时随 CancelledError 自然取消。
-        self._confirm_queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
-        #: 当前 run 的 asyncio.Task 引用;abort() 据此取消。空闲时为 None。
-        self._current_task: asyncio.Task[None] | None = None
-        self._active_run_id: str | None = None
-        self._run_side_effect_state = "none"
-        self._run_cleanup_uncertain = False
-        self._last_failure: dict[str, Any] | None = None
-        #: 会话消息历史(权威在 store;无 store 时仅内存)。
-        if store is not None:
-            store_ref = store.get(self._session_id)
-            if store_ref is None and not defer_persistence:
-                store.create(self._session_id)
-                store_ref = store.get(self._session_id)
-            self._persisted = store_ref is not None
-            if self._persisted:
-                # 压缩感知加载:上下文 = 最新摘要 + 保留消息(物理历史保留)。
-                state = store.load_context(self._session_id)
-                self._history = state.messages
-                self._summary: str | None = state.summary
-                self._summary_entry_id: str | None = state.entry_id
-                self._prev_details: dict[str, Any] = state.details
-                # usage entry 是累计统计,不能直接推出“最近一轮”的上下文占用。
-                # 该值以 meta 形式单独保存,旧会话没有时保持 None。
-                saved_context = store.get_meta(self._session_id, "last_context_tokens")
-                if type(saved_context) is int and saved_context >= 0:
-                    self._last_input_tokens = saved_context
-            else:
-                self._history = []
-                self._summary = None
-                self._summary_entry_id = None
-                self._prev_details = {}
-        else:
-            self._history = []
-            self._summary = None
-            self._summary_entry_id = None
-            self._prev_details = {}
+        self._persistence = SessionPersistence(
+            store,
+            self._session_id,
+            defer_persistence=defer_persistence,
+            persistence_options=persistence_options,
+        )
+        self._runtime = SessionRuntime(self._emit, self._on_run_event)
+        restored = self._persistence.load()
+        self._history = restored.history
+        self._summary: str | None = restored.summary
+        self._summary_entry_id: str | None = restored.summary_entry_id
+        self._prev_details: dict[str, Any] = restored.details
+        self._last_input_tokens = restored.context_tokens
         # 内部订阅:捕获 usage 事件(token 统计,阈值触发用)。
         self._bus.subscribe(self._on_internal_event)
+
+    @property
+    def _current_task(self) -> asyncio.Task[None] | None:
+        """Compatibility view; task ownership lives in SessionRuntime."""
+        return self._runtime.current_task
+
+    @_current_task.setter
+    def _current_task(self, task: asyncio.Task[None] | None) -> None:
+        """Compatibility setter for lifecycle adapters and existing tests."""
+        self._runtime.current_task = task
 
     # -- 订阅 / 会话信息 ----------------------------------------------------
 
@@ -148,14 +125,12 @@ class AgentSession:
     @property
     def usage(self) -> UsageStats:
         """会话累计用量(cost-transparency;无 store 或无记录返回全零)。"""
-        if self._store is None or not self._persisted:
-            return UsageStats()
-        return self._store.load_usage(self._session_id)
+        return self._persistence.usage
 
     @property
     def is_persisted(self) -> bool:
         """当前会话是否已经创建持久化记录。"""
-        return self._persisted
+        return self._persistence.persisted
 
     @property
     def context_tokens(self) -> int | None:
@@ -175,11 +150,12 @@ class AgentSession:
     @property
     def last_failure(self) -> dict[str, Any] | None:
         """最近一次失败的可操作诊断(副作用状态只读副本)。"""
-        return dict(self._last_failure) if self._last_failure is not None else None
+        failure = self._runtime.last_failure
+        return dict(failure) if failure is not None else None
 
     async def retry(self) -> None:
         """仅重试确认没有工具副作用的失败轮次。"""
-        failure = self._last_failure
+        failure = self._runtime.last_failure
         if not failure or not failure.get("retryable"):
             raise ValueError("当前失败不可安全重试,请确认副作用后使用 /continue")
         prompt = str(failure.get("prompt") or "")
@@ -189,7 +165,7 @@ class AgentSession:
                 payload={"prompt": prompt},
                 metadata={"operation": "retry", "previous_error": failure.get("error")},
             ),
-            self._active_run_id,
+            self._runtime.active_run_id,
         )
         await self.run(prompt)
 
@@ -201,19 +177,7 @@ class AgentSession:
         取消在 run() 的等待点抛出 ``asyncio.CancelledError``,由 run() 内的
         专用分支回滚并广播 RUN_CANCELLED 后重抛。
         """
-        task = self._current_task
-        if task is not None and not task.done():
-            self._emit(
-                AgentEvent(
-                    EventType.CANCELLING,
-                    metadata={
-                        "side_effect_state": self._run_side_effect_state,
-                        "cleanup_uncertain": self._run_cleanup_uncertain,
-                    },
-                ),
-                self._active_run_id,
-            )
-            task.cancel()
+        self._runtime.abort()
 
     async def close(self) -> None:
         """Stop the current run and release composition-root resources."""
@@ -237,7 +201,7 @@ class AgentSession:
 
     def steer(self, text: str) -> None:
         """运行中注入消息:下一轮循环前消费为 user 消息(不做旁路请求)。"""
-        self._inject_queue.put_nowait(text)
+        self._runtime.inject(text)
 
     def respond_approval(self, request_id: str, approved: bool) -> None:
         """响应工具确认请求(security-permissions):按请求 id 批准或拒绝。
@@ -245,7 +209,7 @@ class AgentSession:
         请求 id 来自 ``confirmation_requested`` 事件的 payload;运行时无
         匹配请求时该响应会被循环丢弃(按 id 匹配,不误伤其它请求)。
         """
-        self._confirm_queue.put_nowait((request_id, approved))
+        self._runtime.respond_approval(request_id, approved)
 
     def followup(self, text: str, recursion_limit: int | None = None) -> None:
         """结束后续跑一轮:在既有会话历史之上继续一轮对话。
@@ -279,7 +243,10 @@ class AgentSession:
         (entry id 记入 ``_summary_entry_id``,新消息父级接回)→ 内存历史
         截断为保留消息。全部保留(切点 0)时不压缩,返回 False。
         """
-        self._emit(AgentEvent(EventType.COMPACTION_STARTED), self._active_run_id)
+        self._emit(
+            AgentEvent(EventType.COMPACTION_STARTED),
+            self._runtime.active_run_id,
+        )
         try:
             if self._summarizer is None:
                 raise ValueError("压缩不可用:未注入 Summarizer")
@@ -290,7 +257,7 @@ class AgentSession:
                         EventType.COMPACTION_FINISHED,
                         metadata={"success": True, "compacted": False},
                     ),
-                    self._active_run_id,
+                    self._runtime.active_run_id,
                 )
                 return False
             window = self._history[:cut]
@@ -316,11 +283,7 @@ class AgentSession:
                 parent_id=parent_id,
                 first_kept_entry_id=kept[0].id if kept else "",
             )
-            if self._store is not None:
-                self._ensure_persisted()
-                entry_id = self._store.append_compaction(self._session_id, entry)
-            else:
-                entry_id = entry.id
+            entry_id = self._persistence.append_compaction(entry)
             self._summary = summary
             self._summary_entry_id = entry_id
             self._prev_details = details
@@ -330,7 +293,7 @@ class AgentSession:
                     EventType.COMPACTION_FINISHED,
                     metadata={"success": True, "compacted": True},
                 ),
-                self._active_run_id,
+                self._runtime.active_run_id,
             )
             return True
         except Exception as exc:
@@ -345,7 +308,7 @@ class AgentSession:
                         "error_message": str(exc),
                     },
                 ),
-                self._active_run_id,
+                self._runtime.active_run_id,
             )
             raise
 
@@ -363,16 +326,7 @@ class AgentSession:
             if tokens:
                 self._last_input_tokens = int(tokens)
             # cost-transparency:本轮累计(归一形状含 cached;多步 ReAct 逐次相加)。
-            self._turn_usage = UsageStats(
-                input_tokens=self._turn_usage.input_tokens
-                + int(payload.get("input_tokens", 0) or 0),
-                output_tokens=self._turn_usage.output_tokens
-                + int(payload.get("output_tokens", 0) or 0),
-                reasoning_tokens=self._turn_usage.reasoning_tokens
-                + int(payload.get("reasoning_tokens", 0) or 0),
-                cached_tokens=self._turn_usage.cached_tokens
-                + int(payload.get("cached_tokens", 0) or 0),
-            )
+            self._runtime.record_usage(payload)
 
     # -- 运行 --------------------------------------------------------------
 
@@ -387,18 +341,11 @@ class AgentSession:
         压缩后首条新 user 消息的父级接回压缩记录。
         """
         metadata: dict[str, Any] = {}
-        run_id = str(uuid.uuid4())
-        self._active_run_id = run_id
-        self._run_side_effect_state = "none"
-        self._run_cleanup_uncertain = False
-        self._last_failure = None
+        run_id = self._runtime.start_run()
         if self._previous_session_id:
             # 分叉会话来源标记(session-fork):首轮事件携带父会话 id。
             metadata["previous_session_id"] = self._previous_session_id
-        # cost-transparency:每轮开始重置本轮 usage 累计。
-        self._turn_usage = UsageStats()
         self._emit(AgentEvent(EventType.SESSION_STARTED, payload=text, metadata=metadata), run_id)
-        self._current_task = asyncio.current_task()
         history_for_turn = list(self._history)
         if self._summary is not None and self._summary_entry_id:
             # 虚拟摘要消息:模型可见,过滤防重复落盘。
@@ -413,17 +360,14 @@ class AgentSession:
             )
         before_ids = {m.id for m in self._history}
         try:
-            new_history = await run_turn(
+            new_history = await self._runtime.execute(
                 self._ports,
-                lambda event: self._on_run_event(event, run_id),
                 text,
                 history=history_for_turn,
                 recursion_limit=(
                     recursion_limit if recursion_limit is not None else self._recursion_limit
                 ),
-                inject_queue=self._inject_queue,
                 tool_timeout=self._tool_timeout,
-                confirm_queue=self._confirm_queue,
             )
         except asyncio.CancelledError:
             self._rollback(before_ids)
@@ -431,8 +375,8 @@ class AgentSession:
                 AgentEvent(
                     EventType.RUN_CANCELLED,
                     metadata={
-                        "side_effect_state": self._run_side_effect_state,
-                        "cleanup_uncertain": self._run_cleanup_uncertain,
+                        "side_effect_state": self._runtime.side_effect_state,
+                        "cleanup_uncertain": self._runtime.cleanup_uncertain,
                     },
                 ),
                 run_id,
@@ -440,12 +384,15 @@ class AgentSession:
             raise
         except Exception as exc:  # 图级异常:回滚 + 错误事件
             self._rollback(before_ids)
-            retryable = self._run_side_effect_state == "none" and not self._run_cleanup_uncertain
-            self._last_failure = {
+            retryable = (
+                self._runtime.side_effect_state == "none"
+                and not self._runtime.cleanup_uncertain
+            )
+            self._runtime.last_failure = {
                 "error": self._friendly_error(exc),
                 "retryable": retryable,
-                "side_effect_state": self._run_side_effect_state,
-                "cleanup_uncertain": self._run_cleanup_uncertain,
+                "side_effect_state": self._runtime.side_effect_state,
+                "cleanup_uncertain": self._runtime.cleanup_uncertain,
                 "error_code": type(exc).__name__.lower(),
                 "prompt": text,
             }
@@ -455,8 +402,8 @@ class AgentSession:
                     payload=self._friendly_error(exc),
                     metadata={
                         "retryable": retryable,
-                        "side_effect_state": self._run_side_effect_state,
-                        "cleanup_uncertain": self._run_cleanup_uncertain,
+                        "side_effect_state": self._runtime.side_effect_state,
+                        "cleanup_uncertain": self._runtime.cleanup_uncertain,
                         "error_code": type(exc).__name__.lower(),
                     },
                 ),
@@ -464,17 +411,18 @@ class AgentSession:
             )
             return
         finally:
-            self._current_task = None
             self._emit(
                 AgentEvent(
                     EventType.TURN_END,
                     metadata={
-                        "terminal_phase": "error" if self._last_failure else "idle",
+                        "terminal_phase": "error"
+                        if self._runtime.last_failure
+                        else "idle",
                     },
                 ),
                 run_id,
             )
-            self._active_run_id = None
+            self._runtime.finish_run()
         # 成功路径:过滤虚拟摘要消息,更新历史并持久化本轮新增消息
         kept_history = [m for m in new_history if not m.id.startswith(SUMMARY_ID_PREFIX)]
         if self._summary_entry_id:
@@ -485,43 +433,17 @@ class AgentSession:
                     break
         self._history = kept_history
         new_messages = [message for message in kept_history if message.id not in before_ids]
-        if self._store is not None and new_messages:
-            self._ensure_persisted()
-            for message in new_messages:
-                self._store.append_message(self._session_id, message)
-            # cost-transparency:成功轮次把本轮聚合 usage 落库(失败/取消
-            # 在异常分支已返回,此处不达——与"未完成轮次永不落盘"一致)。
-            if self._turn_usage.input_tokens or self._turn_usage.output_tokens:
-                self._store.append_usage(
-                    self._session_id,
-                    {
-                        "input_tokens": self._turn_usage.input_tokens,
-                        "output_tokens": self._turn_usage.output_tokens,
-                        "reasoning_tokens": self._turn_usage.reasoning_tokens,
-                        "cached_tokens": self._turn_usage.cached_tokens,
-                    },
-                )
-                if self._last_input_tokens is not None:
-                    self._store.set_meta(
-                        self._session_id,
-                        "last_context_tokens",
-                        self._last_input_tokens,
-                    )
+        self._persistence.commit_turn(
+            new_messages,
+            self._runtime.turn_usage,
+            context_tokens=self._last_input_tokens,
+        )
         # 阈值自动压缩(同步,turn_end 后;不阻塞本轮收尾)。
         if self._should_auto_compact():
             await self.compact()
 
     def _on_run_event(self, event: AgentEvent, run_id: str) -> None:
         """记录副作用诊断并为循环事件补齐 session/run 关联。"""
-        metadata = dict(event.metadata or {})
-        if event.type == EventType.TOOL_STARTED:
-            self._run_side_effect_state = "possible"
-        elif event.type == EventType.TOOL_FINISHED:
-            if metadata.get("cleanup_uncertain"):
-                self._run_cleanup_uncertain = True
-                self._run_side_effect_state = "uncertain"
-            elif metadata.get("status") not in {None, "ok", "rejected"}:
-                self._run_side_effect_state = "possible"
         self._emit(event, run_id)
 
     def _emit(self, event: AgentEvent, run_id: str | None) -> None:
@@ -557,16 +479,11 @@ class AgentSession:
 
     def _ensure_persisted(self) -> None:
         """首次成功产生消息时创建 deferred session 的持久化 header。"""
-        if self._store is None or self._persisted:
-            return
-        if self._store.get(self._session_id) is None:
-            self._store.create(self._session_id, **self._persistence_options)
-        self._persisted = True
+        self._persistence.ensure_persisted()
 
     def update_persistence_options(self, **options: Any) -> None:
         """更新尚未落盘会话的 header 选项(如模型热切换)。"""
-        if not self._persisted:
-            self._persistence_options.update(options)
+        self._persistence.update_options(**options)
 
     def run_sync(self, text: str) -> None:
         """同步运行一轮对话(阻塞等待完成)。
