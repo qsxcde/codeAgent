@@ -143,6 +143,11 @@ class AgentSession:
         return self._context_window
 
     @property
+    def policy(self) -> Any:
+        """当前组合根策略，供应用层任务监督器生成模式策略。"""
+        return getattr(self._ports, "policy", None)
+
+    @property
     def summary(self) -> str | None:
         """当前上下文摘要(若会话曾被压缩),供 TUI 恢复时展示。"""
         return self._summary
@@ -330,7 +335,13 @@ class AgentSession:
 
     # -- 运行 --------------------------------------------------------------
 
-    async def run(self, text: str, recursion_limit: int | None = None) -> None:
+    async def run(
+        self,
+        text: str,
+        recursion_limit: int | None = None,
+        *,
+        policy: Any = None,
+    ) -> None:
         """运行一轮对话(内部可含多轮 ReAct),事件经 bus 分发,不返回值。
 
         持久化策略:先跑完整轮,成功才把本轮新增消息写入 store(JSONL
@@ -368,6 +379,7 @@ class AgentSession:
                     recursion_limit if recursion_limit is not None else self._recursion_limit
                 ),
                 tool_timeout=self._tool_timeout,
+                policy=policy,
             )
         except asyncio.CancelledError:
             self._rollback(before_ids)

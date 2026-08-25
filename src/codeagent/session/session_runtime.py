@@ -53,6 +53,7 @@ class SessionRuntime:
         history: list[Message],
         recursion_limit: int,
         tool_timeout: float | None,
+        policy: Any = None,
     ) -> list[Message]:
         if self.active_run_id is None:
             raise RuntimeError("run must be started before execution")
@@ -68,6 +69,7 @@ class SessionRuntime:
                 inject_queue=self.inject_queue,
                 tool_timeout=tool_timeout,
                 confirm_queue=self.confirm_queue,
+                policy=policy,
             )
         finally:
             self.current_task = None

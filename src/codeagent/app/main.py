@@ -15,6 +15,8 @@ from typing import Any
 
 from codeagent.app import container
 from codeagent.app.skill_packages import PackageManager, PackageValidationError
+from codeagent.app.task_modes import ModeParseError, TaskMode, parse_mode_input
+from codeagent.app.task_supervisor import TaskResult, TaskSupervisor
 
 #: 事件类型字符串(与 core/events.EventType 常量值对齐)。
 _EV_TEXT_DELTA = "text_delta"
@@ -183,7 +185,12 @@ def _list_sessions() -> None:
         print(f"{ref.id}\t{ref.timestamp}\t{ref.model or '-'}\t{ref.title or '(无标题)'}")
 
 
-async def _respond(session: Any, prompt: str) -> tuple[str, dict[str, int]]:
+async def _respond(
+    session: Any,
+    prompt: str,
+    *,
+    mode: TaskMode = TaskMode.AUTO,
+) -> tuple[str, dict[str, int], TaskResult]:
     """运行一轮对话,把会话事件流聚合为最终回复与本轮用量。
 
     - ``text_delta`` 增量累积为回复文本;
@@ -194,12 +201,24 @@ async def _respond(session: Any, prompt: str) -> tuple[str, dict[str, int]]:
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
     unsubscribe = session.subscribe(lambda ev: queue.put_nowait(ev))
-    task = asyncio.create_task(session.run(prompt))
+    supervisor = TaskSupervisor(
+        session,
+        cwd=Path.cwd(),
+        base_policy=getattr(session, "policy", None),
+    )
+    task = asyncio.create_task(supervisor.run(prompt, mode=mode))
     parts: list[str] = []
     usage: dict[str, int] = {}
     try:
         while True:
-            event = await queue.get()
+            event_task = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(
+                {event_task, task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if task in done:
+                event_task.cancel()
+                break
+            event = event_task.result()
             ev_type = getattr(event, "type", None)
             if ev_type == _EV_TEXT_DELTA:
                 parts.append(getattr(event, "payload", "") or "")
@@ -212,12 +231,20 @@ async def _respond(session: Any, prompt: str) -> tuple[str, dict[str, int]]:
                 for key in ("input_tokens", "output_tokens", "cached_tokens"):
                     usage[key] = usage.get(key, 0) + int(payload.get(key, 0) or 0)
             elif ev_type in (_EV_TURN_END, _EV_ERROR, _EV_RUN_CANCELLED):
-                break
+                # The session turn ending is not the task ending; verification
+                # may still be running, so keep waiting for the supervisor.
+                continue
+        while not queue.empty():
+            event = queue.get_nowait()
+            if getattr(event, "type", None) == _EV_TEXT_DELTA:
+                parts.append(getattr(event, "payload", "") or "")
+            elif getattr(event, "type", None) == _EV_AGENT_MESSAGE:
+                parts.append(str(getattr(event, "payload", "") or ""))
     finally:
         unsubscribe()
         if not task.done():
             task.cancel()
-    return "".join(parts), usage
+    return "".join(parts), usage, task.result()
 
 
 def _format_usage_line(usage: dict[str, int]) -> str:
@@ -238,22 +265,44 @@ async def _headless_once(session: Any, prompt: str) -> None:
     prompt = prompt.strip()
     if not prompt:
         return
-    print(f"你: {prompt}")
-    text, usage = await _respond(session, prompt)
+    try:
+        parsed = parse_mode_input(prompt)
+    except ModeParseError as exc:
+        print(str(exc))
+        return
+    if parsed.sticky:
+        print(f"已切换到 {parsed.next_sticky.value} 模式")
+        return
+    print(f"你: {parsed.text}")
+    text, usage, result = await _respond(session, parsed.text, mode=parsed.mode)
     print(text)
+    if result.status.value not in {"no_changes"}:
+        print(f"任务: {result.status.value} · {result.message}")
     line = _format_usage_line(usage)
     if line:
         print(line)
 
 
 async def _headless_loop(session: Any) -> None:
+    sticky = TaskMode.AUTO
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
-        print(f"你: {line}")
-        text, usage = await _respond(session, line)
+        try:
+            parsed = parse_mode_input(line, sticky=sticky)
+        except ModeParseError as exc:
+            print(str(exc))
+            continue
+        if parsed.sticky:
+            sticky = parsed.next_sticky
+            print(f"已切换到 {sticky.value} 模式")
+            continue
+        print(f"你: {parsed.text}")
+        text, usage, result = await _respond(session, parsed.text, mode=parsed.mode)
         print(text)
+        if result.status.value not in {"no_changes"}:
+            print(f"任务: {result.status.value} · {result.message}")
         line_out = _format_usage_line(usage)
         if line_out:
             print(line_out)

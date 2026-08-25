@@ -30,6 +30,7 @@ from codeagent.tools.shared import DEFAULT_MAX_LINES, truncate_tail
 
 __all__ = [
     "BashTool",
+    "BashInvocationResult",
     "DEFAULT_TIMEOUT_S",
     "MAX_TIMEOUT_S",
     "MAX_OUTPUT_CHARS",
@@ -44,6 +45,15 @@ class BashInvocationResult:
     content: str
     status: str = "completed"
     cleanup_confirmed: bool | None = True
+    exit_code: int | None = None
+    duration_ms: int = 0
+    output_truncated: bool = False
+    #: Semantic success is separate from the process status (grep exit 1 is OK).
+    success: bool | None = None
+
+    @property
+    def cleanup_uncertain(self) -> bool:
+        return self.cleanup_confirmed is False
 
 #: 默认超时(秒);命令可在 timeout 参数内延长,上限见 MAX_TIMEOUT_S。
 DEFAULT_TIMEOUT_S = 120
@@ -591,11 +601,22 @@ class BashTool(AtomicTool):
             timed_out,
             time.monotonic() - started,
         )
+        duration = round((time.monotonic() - started) * 1000)
         if timed_out:
             status = "timed_out" if cleanup_confirmed else "cleanup_uncertain"
+            success = False
         else:
-            status = "completed"
-        return BashInvocationResult(content, status, cleanup_confirmed)
+            success = _semantically_ok(returncode, command)
+            status = "completed" if success else "failed"
+        return BashInvocationResult(
+            content,
+            status,
+            cleanup_confirmed,
+            exit_code=returncode,
+            duration_ms=duration,
+            output_truncated=TRUNCATION_MARKER in content,
+            success=success,
+        )
 
     def _format_result(
         self,

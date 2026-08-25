@@ -86,6 +86,12 @@ def default_registry() -> dict[str, CommandSpec]:
     """v0.2 阶段 5 命令表(T-44);``/fork`` 自 session-fork 落地(T-42 改写)。"""
     return {
         "help": CommandSpec("help", "显示命令帮助"),
+        "ask": CommandSpec("ask", "以只读问答模式发送消息", args=("text...",)),
+        "plan": CommandSpec("plan", "以只读规划模式发送消息", args=("text...",)),
+        "code": CommandSpec("code", "以代码模式发送消息", args=("text...",)),
+        "mode": CommandSpec(
+            "mode", "设置粘性模式(ask/plan/code/auto)", args=("mode",)
+        ),
         "clear": CommandSpec("clear", "清空聊天区"),
         "status": CommandSpec("status", "显示会话状态"),
         "sessions": CommandSpec(

@@ -328,6 +328,17 @@ def test_status_bar_shows_context_window_before_first_usage():
     assert plain.endswith("上下文 — / 128k")
 
 
+def test_status_bar_shows_task_verification_progress():
+    bar = StatusBar()
+    bar.set_task_status("verifying", command="python -m pytest", attempt=1, max_attempts=2)
+
+    plain = "".join(s.text for s in bar.render(100)[0])
+
+    assert "验证中" in plain
+    assert "第 1/2 次" in plain
+    assert "python -m pytest" in plain
+
+
 def test_truncate_cjk_by_cell_width():
     """_truncate 按 cell 宽度截断并预留省略号(回归:len() 截断后中文行仍超宽)。"""
     from codeagent.app.tui.components import _truncate

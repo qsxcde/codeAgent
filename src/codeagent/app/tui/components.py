@@ -847,6 +847,28 @@ class StatusBar(Component):
         self.runtime = RuntimeSnapshot()
         self.runtime_visible = False
         self.new_output_count = 0
+        self.task_phase = ""
+        self.task_command = ""
+        self.task_attempt = 0
+        self.task_max_attempts = 0
+        self.task_message = ""
+        self.mode = ""
+
+    def set_task_status(
+        self,
+        phase: str,
+        *,
+        command: str = "",
+        attempt: int = 0,
+        max_attempts: int = 0,
+        message: str = "",
+    ) -> None:
+        """更新任务级验证状态，和单轮 runtime 状态相互独立。"""
+        self.task_phase = phase
+        self.task_command = command
+        self.task_attempt = attempt
+        self.task_max_attempts = max_attempts
+        self.task_message = message
 
     def apply_snapshot(self, snapshot: RuntimeSnapshot, now: float | None = None) -> None:
         """同步运行快照，并把阶段耗时更新为当前显示时刻。"""
@@ -863,6 +885,28 @@ class StatusBar(Component):
     def render(self, width: int) -> list[RichLine]:
         left: RichLine = [_seg("  ", fg=DIM)]
         runtime = self.runtime
+        if self.task_phase:
+            task_labels = {
+                "planning": "准备任务",
+                "editing": "执行修改",
+                "verifying": "验证中",
+                "repairing": "修复中",
+                "completed": "已验证",
+                "verified": "已验证",
+                "unverified": "未验证",
+                "failed": "验证失败",
+                "cancelled": "已取消",
+                "no_changes": "无变更",
+            }
+            left.append(_seg(task_labels.get(self.task_phase, self.task_phase), fg=WARNING))
+            if self.task_attempt and self.task_max_attempts:
+                left.append(_seg(f" · 第 {self.task_attempt}/{self.task_max_attempts} 次", fg=DIM))
+            if self.task_command:
+                left.append(_seg(f" · {self.task_command}", fg=DIM))
+            elif self.task_message:
+                left.append(_seg(f" · {self.task_message}", fg=DIM))
+        if self.mode:
+            left.append(_seg(f" · 模式 {self.mode}", fg=DIM))
         if self.runtime_visible:
             left.append(_seg(phase_label(runtime.phase), fg=WARNING if runtime.phase in {
                 RuntimePhase.ERROR,

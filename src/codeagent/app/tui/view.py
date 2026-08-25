@@ -35,6 +35,8 @@ from codeagent.app.tui.rendering import FrameScheduler, ResizeDebouncer
 from codeagent.app.tui.fuzzy import fuzzy_rank
 from codeagent.app.tui.theme import ACCENT, DIM, ERROR, SUCCESS, WARNING
 from codeagent.core.events import AgentEvent, EventType
+from codeagent.app.task_modes import ModeParseError, TaskMode
+from codeagent.app.task_supervisor import TaskEvent, TaskPhase, TaskResult, TaskSupervisor
 
 #: 退出文档的兜底宽度(视口尺寸不可用时)。
 _DEFAULT_EXIT_WIDTH = 120
@@ -108,6 +110,9 @@ class TuiApp:
         self._refresh_skills_callback = refresh_skills
         self._package_action = package_action
         self._close_runtime = close_runtime
+        self._task_mode = TaskMode.AUTO
+        self._task_active = False
+        self._task_supervisor: TaskSupervisor | None = None
         #: 待输入密钥的 provider(/login 登录态;None = 普通输入)。
         self._login_pending: str | None = None
         self._suggestions: list[str] = []
@@ -224,7 +229,14 @@ class TuiApp:
         name, sep, rest = text[1:].partition(" ")
         if sep == "":
             # 无空格:命令名补全(name 可为空 = 裸 "/" 全量)。
-            return name, list(_COMMANDS)
+            if name in _COMMANDS:
+                return name, [name]
+            candidates = list(_COMMANDS)
+            # Keep the long-standing /mod → /model picker affordance while
+            # retaining the explicit /mode command.
+            if name == "mod":
+                candidates = [candidate for candidate in candidates if candidate != "mode"]
+            return name, candidates
         if name in ("provider", "model", "effort", "login", "skills", "sessions"):
             # 有空格:选择器候选(rest 可为空 = 全量候选)。
             return rest, self._picker_candidates(name)
@@ -410,7 +422,7 @@ class TuiApp:
 
         登录态(/login 密钥输入)优先:提交内容即密钥,走保存分支。
         """
-        if self.model.running:
+        if self.model.running or self._task_active:
             return
         text = text.strip()
         if not text:
@@ -420,7 +432,7 @@ class TuiApp:
             return
         parsed = parse(text, _COMMANDS)
         if isinstance(parsed, Literal):
-            self._run_conversation(parsed.text)
+            self._run_conversation(parsed.text, mode=self._task_mode)
         elif isinstance(parsed, UnknownCommand):
             self.model.append_info(
                 f"未知命令: /{parsed.name}(输入 /help 查看可用命令)"
@@ -465,20 +477,34 @@ class TuiApp:
         )
         self._schedule_render()
 
-    def _run_conversation(self, text: str) -> None:
-        """在当前会话发起一轮对话。"""
+    def _run_conversation(self, text: str, *, mode: TaskMode | None = None) -> None:
+        """在当前会话发起一轮任务；验证只由工作区变更触发。"""
         session = self._manager.current
         if session is None:
             return
+        selected_mode = mode or self._task_mode
+        self._task_active = True
+        self._task_supervisor = TaskSupervisor(
+            session,
+            cwd=self.model.status.cwd or ".",
+            base_policy=getattr(session, "policy", None),
+            event_sink=self._on_task_event,
+        )
+
+        async def _run() -> None:
+            try:
+                await self._task_supervisor.run(text, mode=selected_mode)
+            finally:
+                self._task_active = False
+                self._task_supervisor = None
+                self._schedule_render()
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            if hasattr(session, "run_sync"):
-                session.run_sync(text)
-            else:
-                asyncio.run(session.run(text))
+            asyncio.run(_run())
             return
-        loop.create_task(session.run(text))
+        loop.create_task(_run())
 
     # -- 斜杠命令分派(T-44)-----------------------------------------------
 
@@ -486,6 +512,10 @@ class TuiApp:
         """命令就地执行(纯 TUI 状态或经 manager 的跨层动作)。"""
         handler = {
             "help": self._cmd_help,
+            "ask": self._cmd_ask,
+            "plan": self._cmd_plan,
+            "code": self._cmd_code,
+            "mode": self._cmd_mode,
             "clear": self._cmd_clear,
             "status": self._cmd_status,
             "tools": self._cmd_tools,
@@ -513,6 +543,33 @@ class TuiApp:
     def _cmd_help(self, cmd: Command) -> None:
         self.model.append_info(help_text(_COMMANDS))
 
+    def _cmd_ask(self, cmd: Command) -> None:
+        self._run_with_explicit_mode(cmd, TaskMode.ASK)
+
+    def _cmd_plan(self, cmd: Command) -> None:
+        self._run_with_explicit_mode(cmd, TaskMode.PLAN)
+
+    def _cmd_code(self, cmd: Command) -> None:
+        self._run_with_explicit_mode(cmd, TaskMode.CODE)
+
+    def _run_with_explicit_mode(self, cmd: Command, mode: TaskMode) -> None:
+        if not cmd.args:
+            self.model.append_info(f"用法: /{mode.value} <消息>")
+            return
+        self._run_conversation(" ".join(cmd.args), mode=mode)
+
+    def _cmd_mode(self, cmd: Command) -> None:
+        if not cmd.args:
+            self.model.append_info(f"当前模式: {self._task_mode.value}")
+            return
+        try:
+            self._task_mode = TaskMode(cmd.args[0].lower())
+        except ValueError:
+            self.model.append_info("未知模式；可选 ask、plan、code、auto")
+            return
+        self.model.status.mode = self._task_mode.value
+        self.model.append_info(f"已切换到 {self._task_mode.value} 模式")
+
     def _cmd_clear(self, cmd: Command) -> None:
         self.model.transcript.clear()
 
@@ -526,8 +583,14 @@ class TuiApp:
         lines = [
             f"会话: {session_id}",
             f"状态: {state}",
+            f"模式: {self._task_mode.value}",
             f"模型: {model} {effort}".rstrip(),
         ]
+        if self.model.status.task_phase:
+            lines.append(
+                f"任务: {self.model.status.task_phase}"
+                f" {self.model.status.task_command or self.model.status.task_message}".rstrip()
+            )
         render = self.model.render_stats
         output = self.model.output_stats
         if runtime.phase != "idle" or runtime.error_code:
@@ -1073,7 +1136,10 @@ class TuiApp:
                 self._suppress_next_suggestions = True
                 self._backend.set_input_text("")
             return
-        if self.model.running:
+        if self._task_active and self._task_supervisor is not None:
+            self._task_supervisor.cancel()
+            self.model.append_info("正在取消当前任务")
+        elif self.model.running:
             session = self._manager.current
             if session is not None:
                 session.abort()
@@ -1087,7 +1153,9 @@ class TuiApp:
     def _quit(self) -> None:
         """Ctrl+C / Ctrl+Q:退出——运行中先中止当前轮(未完成轮次不落盘,
         既有回滚语义),再打印完整文档退出。"""
-        if self.model.running:
+        if self._task_active and self._task_supervisor is not None:
+            self._task_supervisor.cancel()
+        elif self.model.running:
             session = self._manager.current
             if session is not None:
                 session.abort()
@@ -1237,6 +1305,25 @@ class TuiApp:
                 self._clear_confirmation()
         self.model.apply(event)
         self._sync_activity_timer()
+        self._schedule_render()
+
+    def _on_task_event(self, event: TaskEvent) -> None:
+        """把任务级状态写入状态栏；完整诊断仍由监督器结果负责。"""
+        self.model.status.set_task_status(
+            event.phase.value,
+            command=event.command,
+            attempt=event.attempt,
+            max_attempts=event.max_attempts,
+            message=event.message,
+        )
+        if event.phase in {
+            TaskPhase.COMPLETED,
+            TaskPhase.UNVERIFIED,
+            TaskPhase.FAILED,
+            TaskPhase.CANCELLED,
+            TaskPhase.NO_CHANGES,
+        }:
+            self._task_active = False
         self._schedule_render()
 
     def _sync_activity_timer(self) -> None:

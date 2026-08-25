@@ -70,6 +70,13 @@ def test_registry_covers_expected_commands():
     assert "undo" not in names  # /undo 槽位已由 /fork 取代
 
 
+def test_registry_exposes_task_mode_commands():
+    assert REGISTRY["ask"].summary
+    assert REGISTRY["plan"].summary
+    assert REGISTRY["code"].summary
+    assert REGISTRY["mode"].args == ("mode",)
+
+
 def test_fork_command_registered_and_parsed():
     """/fork 注册、解析参数(message-id 可选)。"""
     assert REGISTRY["fork"].available is True

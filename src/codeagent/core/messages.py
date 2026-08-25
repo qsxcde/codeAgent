@@ -136,6 +136,11 @@ class ToolResult:
     shown_lines: int = 0
     truncated_by: str | None = None
     artifact_path: str | None = None
+    #: 结构化命令元数据(不依赖解析 content 文本)。
+    exit_code: int | None = None
+    duration_ms: int = 0
+    output_truncated: bool = False
+    semantic_success: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.status:

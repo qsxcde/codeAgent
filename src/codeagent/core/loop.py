@@ -177,6 +177,7 @@ async def _execute_tools(
     timeout: float | None,
     emit: Callable[[AgentEvent], None],
     confirm_queue: asyncio.Queue[tuple[str, bool]] | None,
+    policy_override: Any = None,
 ) -> list[ToolResult]:
     """执行工具调用(并行 gather 保序),执行前经安全策略门(design security-permissions)。
 
@@ -185,7 +186,7 @@ async def _execute_tools(
     (对模型可见,审计用途)。
     """
     by_name = {t.name: t for t in ports.tools}
-    policy = ports.policy
+    policy = ports.policy if policy_override is None else policy_override
     runtime = ports.tool_runtime or ToolExecutionRuntime()
     results_by_index: dict[int, ToolResult] = {}
     to_run: list[tuple[int, ToolCall, Any, str]] = []
@@ -290,6 +291,10 @@ async def _execute_tools(
                         "error": result.error,
                         "cleanup_confirmed": result.cleanup_confirmed,
                         "cleanup_uncertain": result.status == ToolExecutionStatus.CLEANUP_UNCERTAIN,
+                        "exit_code": result.exit_code,
+                        "duration_ms": result.duration_ms,
+                        "output_truncated": result.output_truncated,
+                        "semantic_success": result.semantic_success,
                         "total_bytes": result.total_bytes,
                         "total_lines": result.total_lines,
                         "shown_lines": result.shown_lines,
@@ -327,6 +332,10 @@ async def _execute_tools(
                     shown_lines=result.shown_lines,
                     truncated_by=result.truncated_by,
                     artifact_path=result.artifact_path,
+                    exit_code=result.exit_code,
+                    duration_ms=result.duration_ms,
+                    output_truncated=result.output_truncated,
+                    semantic_success=result.semantic_success,
                 )
             results_by_index[index] = result
 
@@ -343,6 +352,7 @@ async def run_turn(
     inject_queue: asyncio.Queue[str] | None = None,
     tool_timeout: float | None = None,
     confirm_queue: asyncio.Queue[tuple[str, bool]] | None = None,
+    policy: Any = None,
 ) -> list[Message]:
     """跑一轮对话(内部可含多轮 ReAct 循环),返回更新后的消息列表。
 
@@ -384,7 +394,9 @@ async def run_turn(
                     metadata={"tool_call_id": call.id, "tool_name": call.name},
                 )
             )
-        results = await _execute_tools(ports, assistant.tool_calls, tool_timeout, emit, confirm_queue)
+        results = await _execute_tools(
+            ports, assistant.tool_calls, tool_timeout, emit, confirm_queue, policy
+        )
         attach_tool_results(history, results)
         for result in results:
             emit(

@@ -662,6 +662,14 @@ def test_submit_unknown_command_shows_error():
     assert "会话列表" not in text
 
 
+def test_task_mode_command_updates_sticky_mode():
+    app, backend, _ = _make_app()
+    backend.submit("/mode plan")
+
+    assert app.model.status.mode == "plan"
+    assert "已切换到 plan 模式" in "\n".join(app.model.transcript.all_lines(120))
+
+
 def test_submit_double_slash_sends_literal():
     """// 转义 → 按字面量发起对话(去掉一个 /)。"""
     app, backend, manager = _make_app()

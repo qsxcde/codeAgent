@@ -121,6 +121,10 @@ class ToolExecutionRuntime:
                 outcome_status = getattr(content, "status", None)
                 outcome_cleanup = getattr(content, "cleanup_confirmed", True)
                 content_text = getattr(content, "content", content)
+                outcome_exit_code = getattr(content, "exit_code", None)
+                outcome_duration_ms = int(getattr(content, "duration_ms", 0) or 0)
+                outcome_truncated = bool(getattr(content, "output_truncated", False))
+                outcome_success = getattr(content, "success", None)
                 if outcome_status and outcome_status not in (
                     ToolExecutionStatus.OK,
                     "completed",
@@ -135,6 +139,10 @@ class ToolExecutionRuntime:
                         status=operation.status,
                         operation_id=operation.operation_id,
                         cleanup_confirmed=outcome_cleanup,
+                        exit_code=outcome_exit_code,
+                        duration_ms=outcome_duration_ms,
+                        output_truncated=outcome_truncated,
+                        semantic_success=outcome_success,
                     )
                 operation.status = ToolExecutionStatus.OK
                 operation.cleanup_confirmed = outcome_cleanup
@@ -146,6 +154,10 @@ class ToolExecutionRuntime:
                     status=ToolExecutionStatus.OK,
                     operation_id=operation.operation_id,
                     cleanup_confirmed=True,
+                    exit_code=outcome_exit_code,
+                    duration_ms=outcome_duration_ms,
+                    output_truncated=outcome_truncated,
+                    semantic_success=outcome_success,
                 )
         finally:
             self._active.pop(operation.operation_id, None)
