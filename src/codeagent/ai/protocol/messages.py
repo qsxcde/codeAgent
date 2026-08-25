@@ -7,7 +7,7 @@
   thinking / usage 全量透传)。
 
 具体传输实现见 ``ai/transport/openai_compat.py``(OpenAI 兼容端点);
-编排侧适配经组合根 ``app/container.py`` 的 ``ChatModelPort`` 消费(``ai/bridge``
+编排侧适配经组合根 ``app/composition/model_factory.py`` 的 ``ChatModelPort`` 消费(``ai/bridge``
 已随编排自研删除,2026-08-14)。
 """
 

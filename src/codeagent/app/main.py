@@ -1,7 +1,8 @@
 """命令行入口:headless 模式(从 --prompt 或 stdin 读取输入,打印模型回复)。
 
 跨层接线点:事件类型字符串直接引用 core/events.EventType 的值,
-与架构约定一致(跨层 import 只允许出现在 container.py / cli.py)。
+与架构约定一致(跨层 import 只允许出现在组合根 `app/container.py`、
+`app/composition/` 或入口模块)。
 """
 
 from __future__ import annotations

@@ -175,6 +175,38 @@ def test_rebuild_ports_syncs_model_context_window():
     assert app._manager.current.context_window == 32_000
 
 
+def test_rebuild_ports_closes_realized_previous_runtime():
+    """TUI 热切换在新端口构造成功后释放旧模型客户端。"""
+    from codeagent.app.container import create_tui_app
+
+    class ClosableClient:
+        model_id = "fake-model"
+
+        def __init__(self):
+            self.closed = 0
+
+        async def aclose(self):
+            self.closed += 1
+
+    clients: list[ClosableClient] = []
+
+    def make_client(*args, **kwargs):
+        client = ClosableClient()
+        clients.append(client)
+        return client
+
+    with patch("codeagent.ai.factory.create_llm", side_effect=make_client):
+        app = create_tui_app(provider="fake", backend=_StubBackend())
+        # TUI 端口是 lazy 的，先访问共享工具以实现旧 runtime。
+        _ = app._manager.tools
+        assert len(clients) == 1
+        app._rebuild_ports("fake", "fake-model:high", None)
+
+    assert len(clients) == 2
+    assert clients[0].closed == 1
+    assert clients[1].closed == 0
+
+
 def test_create_tui_app_injects_selector_candidates():
     """选择器候选经组合根注入(T-45):provider/model/effort 各一份。"""
     with patch("codeagent.ai.factory.create_llm") as mock_llm:

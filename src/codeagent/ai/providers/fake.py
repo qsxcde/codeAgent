@@ -65,7 +65,7 @@ class FakeClient(ChatClient):
         """记录工具名并返回 self(框架无关;编排适配由组合根 ChatModelPort 负责)。
 
         - 记录工具名(无副作用,离线可测);
-        - 组合根(container.py)拿到 self 后经 ``ChatModelPort`` 适配,
+        - 组合根(app/composition/model_factory.py)拿到 self 后经 ``ChatModelPort`` 适配,
           供自研 ReAct 循环消费。
         """
         self._bind_tools(tools)

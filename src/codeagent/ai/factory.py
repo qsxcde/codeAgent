@@ -2,7 +2,7 @@
 
 - ``PROVIDERS[provider]`` 注册表定义在 ``ai/providers`` 包(provider 名 → 工厂);
 - 模型解析(``ModelRegistry``)见 ``ai/catalog/registry.py``;
-- 只被组合根(container.py)与测试消费。
+- 只被组合根(`app/container.py` / `app/composition/`)与测试消费。
 """
 
 from __future__ import annotations
