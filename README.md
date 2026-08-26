@@ -129,6 +129,9 @@ uv run codeagent --yes --prompt "..."        # 显式承担风险
 
 ```bash
 uv run pytest -q        # 全量离线测试(当前实测 666 项收集,665 passed / 1 skipped,无失败;以实际运行结果为准)
+
+# 运行 TUI 离线性能基准(结果只包含指标与环境元数据)
+uv run python scripts/benchmark_tui.py --scenario stream --blocks 100 --stream-chars 10000 --iterations 3
 ```
 
 ## 项目结构

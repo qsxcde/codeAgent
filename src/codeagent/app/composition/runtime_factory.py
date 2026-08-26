@@ -39,22 +39,28 @@ class AgentRuntime:
         if self._closed:
             return
         self._closed = True
-        if self.tool_runtime is not None:
-            await self.tool_runtime.cancel_all()
-        close_mcp = None
+        config_id = id(self.config)
         try:
-            from codeagent.tools.mcp.loader import close_mcp_tools
+            if self.tool_runtime is not None:
+                await self.tool_runtime.cancel_all()
+            close_mcp = None
+            try:
+                from codeagent.tools.mcp.loader import close_mcp_tools
 
-            close_mcp = close_mcp_tools
-        except ImportError:  # pragma: no cover - optional SDK boundary
-            pass
-        if close_mcp is not None:
-            close_mcp(self.mcp_tools)
-        close = getattr(self.model_client, "aclose", None)
-        if callable(close):
-            result = close()
-            if hasattr(result, "__await__"):
-                await result
+                close_mcp = close_mcp_tools
+            except ImportError:  # pragma: no cover - optional SDK boundary
+                pass
+            if close_mcp is not None:
+                close_mcp(self.mcp_tools)
+            close = getattr(self.model_client, "aclose", None)
+            if callable(close):
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+        finally:
+            # The registry is only an ownership index; a closed runtime must
+            # not keep a provider/model graph alive or be reused by a switch.
+            _RUNTIMES_BY_CONFIG.pop(config_id, None)
 
     def close_sync(self) -> None:
         """TUI 命令回调使用的同步生命周期适配。"""

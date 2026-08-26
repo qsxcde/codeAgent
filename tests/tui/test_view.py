@@ -8,8 +8,10 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-from codeagent.app.tui.components import FooterInfo, ToolCallBlock, rich_to_plain
+from codeagent.app.tui.blocks import ToolCallBlock
 from codeagent.app.tui.commands import Command
+from codeagent.app.tui.primitives import rich_to_plain
+from codeagent.app.tui.status import FooterInfo
 from codeagent.app.tui.view import TuiApp
 from codeagent.core.events import AgentEvent, EventType
 from codeagent.core.messages import Message
@@ -216,6 +218,41 @@ def _make_app() -> tuple[TuiApp, StubBackend, FakeManager]:
     return app, backend, manager
 
 
+def test_fake_backend_regression_contract_covers_top_level_interactions():
+    """FakeBackend 合同固定输入、命令、确认、切换、滚动、恢复、取消和退出边界。
+
+    细节行为由本文件下方的专项测试覆盖；这个场景把拆分协调器时必须保持的
+    顶层接线串起来，避免只迁移单个方法后遗漏后端端口。
+    """
+    app, backend, manager = _make_app()
+
+    backend.submit("/help")
+    assert "可用命令" in "\n".join(app.model.transcript.all_lines(120))
+
+    app.model.apply(AgentEvent(EventType.SESSION_STARTED, payload="prompt"))
+    app.model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {"command": "echo ok"}, "id": "c1"}],
+        )
+    )
+    manager.current._emit(_confirm_event())
+    assert backend.confirmation_lines[-1]
+    backend.confirmation_response(True)
+
+    app.model.transcript.render(60, 10)
+    backend.scroll(3)
+    assert app.model.transcript.follow is False
+
+    manager.create()
+    app._hydrate_current_session()
+    app.model.apply(AgentEvent(EventType.RUN_CANCELLED))
+    assert app.model.running is False
+
+    backend.quit()
+    assert backend.exited is not None
+
+
 def test_session_switch_refreshes_skill_registry_and_diagnostics():
     """切换会话后 TUI 应重读 Adapter/Registry 视图，而非保留启动快照。"""
     backend = StubBackend()
@@ -362,6 +399,45 @@ def test_submit_is_gated_during_restore_and_compaction():
     app.model.apply(AgentEvent(EventType.COMPACTION_STARTED))
     backend.submit("另一条消息")
     assert manager.current.run_texts == []
+
+
+def test_submit_during_busy_state_preserves_draft_and_explains_next_action():
+    app, backend, manager = _make_app()
+    app.model.running = True
+
+    backend.submit("稍后发送")
+
+    assert manager.current.run_texts == []
+    assert backend.input_texts[-1] == "稍后发送"
+    assert "等待" in _rendered_text(app, backend)
+
+
+def test_shutdown_is_idempotent_and_emits_complete_document():
+    app, backend, _ = _make_app()
+    app.model.append_info("退出前保留")
+
+    async def _run() -> None:
+        await app.shutdown()
+        await app.shutdown()
+
+    asyncio.run(_run())
+
+    assert backend.exited is not None
+    assert any("退出前保留" in line for line in backend.exited)
+
+
+def test_shutdown_ignores_late_events_after_unsubscribe():
+    app, backend, manager = _make_app()
+    app.model.append_info("退出前状态")
+
+    async def _run() -> None:
+        await app.shutdown()
+        manager.current._emit(AgentEvent(EventType.TEXT_DELTA, payload="晚到"))
+
+    asyncio.run(_run())
+
+    assert backend.exited is not None
+    assert not any("晚到" in line for line in app.model.transcript.all_lines(80))
 
 
 def test_retry_command_requires_safe_failure_and_continue_starts_new_prompt():

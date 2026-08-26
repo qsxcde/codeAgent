@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Callable, Protocol
 
-from codeagent.app.tui.components import RichLine
+from codeagent.app.tui.primitives import RichLine
 
 #: 提交处理器:收到输入框提交的文本。
 SubmitHandler = Callable[[str], None]

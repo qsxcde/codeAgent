@@ -38,7 +38,7 @@ from codeagent.app.tui.backend import (
     SuggestionConfirmHandler,
     SuggestionNavHandler,
 )
-from codeagent.app.tui.components import RichLine
+from codeagent.app.tui.primitives import RichLine
 from codeagent.app.tui.theme import BOLD, PALETTE
 
 #: 滚轮每格对应的行数(终端惯例:一个齿 ≈ 3 行)。

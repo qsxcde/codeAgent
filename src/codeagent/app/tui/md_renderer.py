@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-from codeagent.app.tui.components import RichLine, Span, _cell_width, _seg, _wrap
+from codeagent.app.tui.primitives import RichLine, Span, _cell_width, _seg, _wrap
 from codeagent.app.tui.theme import BLOCK_MARK, BOLD, CODE_BG, HEADING, LIST_BULLET, TEXT
 
 __all__ = ["md_renderer", "MAX_MD_RENDER_LEN"]

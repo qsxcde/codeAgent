@@ -55,7 +55,7 @@ def _resolve_footer_info(
 ) -> Any:
     """解析底部状态栏所需的 model、effort、provider 和 cwd。"""
     from codeagent.app.config import Settings
-    from codeagent.app.tui.components import FooterInfo
+    from codeagent.app.tui.status import FooterInfo
 
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
     resolved_provider = (

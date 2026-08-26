@@ -6,20 +6,18 @@
 
 import unicodedata
 
-from codeagent.app.tui.components import (
+from codeagent.app.tui.blocks import (
     AssistantBlock,
     ActivityBlock,
     CancelledBlock,
     ErrorBlock,
-    FooterInfo,
-    Span,
-    StatusBar,
     ToolCallBlock,
-    Transcript,
-    TuiModel,
     UserBlock,
-    rich_to_plain,
 )
+from codeagent.app.tui.model import TuiModel
+from codeagent.app.tui.primitives import Span, _truncate, rich_to_plain
+from codeagent.app.tui.status import FooterInfo, StatusBar
+from codeagent.app.tui.transcript import Transcript
 from codeagent.app.tui.theme import (
     ACCENT,
     ACTIVITY,
@@ -341,8 +339,6 @@ def test_status_bar_shows_task_verification_progress():
 
 def test_truncate_cjk_by_cell_width():
     """_truncate 按 cell 宽度截断并预留省略号(回归:len() 截断后中文行仍超宽)。"""
-    from codeagent.app.tui.components import _truncate
-
     assert _truncate("很" * 31, 60) == "很" * 29 + "…"
     assert _cells(_truncate("很" * 31, 60)) <= 60
     assert _truncate("hello world", 8) == "hello w…"

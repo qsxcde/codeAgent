@@ -78,6 +78,24 @@ def test_agent_runtime_close_is_idempotent():
     assert client.closed == 1
 
 
+def test_agent_runtime_is_removed_from_registry_after_close():
+    from codeagent.app.container import AgentRuntime, runtime_for_config
+    from codeagent.core.ports import AgentLoopConfig
+
+    class Closable:
+        async def aclose(self):
+            pass
+
+    client = Closable()
+    config = AgentLoopConfig(model=client, tools=[])
+    runtime = AgentRuntime(config, None, client, [])
+    from codeagent.app.composition.runtime_factory import _RUNTIMES_BY_CONFIG
+
+    _RUNTIMES_BY_CONFIG[id(config)] = runtime
+    asyncio.run(runtime.close())
+    assert runtime_for_config(config) is None
+
+
 def test_create_agent_session_returns_session():
     """create_agent_session 返回可订阅的 AgentSession。"""
     with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:

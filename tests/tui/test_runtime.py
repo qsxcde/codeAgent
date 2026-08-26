@@ -2,12 +2,13 @@
 
 from dataclasses import replace
 
-from codeagent.app.tui.components import StatusBar, TuiModel
+from codeagent.app.tui.model import TuiModel
 from codeagent.app.tui.runtime import (
     RuntimePhase,
     RuntimeReducer,
     RuntimeSnapshot,
 )
+from codeagent.app.tui.status import StatusBar
 from codeagent.core.events import AgentEvent, EventType
 
 

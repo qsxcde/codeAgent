@@ -4,7 +4,7 @@ from pathlib import Path
 
 from codeagent.app.tui.output import OutputBuffer, OutputMetadata
 from codeagent.core.messages import ToolResult
-from codeagent.app.tui.components import TuiModel
+from codeagent.app.tui.model import TuiModel
 from codeagent.core.events import AgentEvent, EventType
 
 

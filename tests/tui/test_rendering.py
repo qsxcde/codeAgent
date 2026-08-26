@@ -2,8 +2,9 @@
 
 import asyncio
 
-from codeagent.app.tui.components import Component, RichLine, Span, Transcript
+from codeagent.app.tui.primitives import Component, RichLine, Span
 from codeagent.app.tui.rendering import FrameScheduler, ResizeDebouncer
+from codeagent.app.tui.transcript import Transcript
 
 
 class CountingComponent(Component):

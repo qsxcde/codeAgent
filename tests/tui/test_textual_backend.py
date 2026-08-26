@@ -9,6 +9,7 @@ import asyncio
 from typing import Any
 
 from textual.events import MouseScrollDown, MouseScrollUp
+from codeagent.app.tui.primitives import Span
 
 
 def _wheel(direction: str) -> Any:
@@ -35,7 +36,6 @@ def test_composer_height_counts_suggestion_lines():
 
 def test_set_suggestions_refreshes_composer_height_in_app():
     """(回归:D3)set_suggestions 接线:浮层弹出/收起同步增减 composer 高度。"""
-    from codeagent.app.tui.components import Span
     from codeagent.app.tui.textual_backend import TextualBackend
 
     async def _run() -> None:
@@ -97,7 +97,6 @@ def test_page_keys_always_scroll_viewport():
 
 def test_set_confirmation_shows_bar_and_activates_keys():
     """set_confirmation 显示确认条并计入 composer 高度;清空后回落。"""
-    from codeagent.app.tui.components import Span
     from codeagent.app.tui.textual_backend import TextualBackend
 
     async def _run() -> None:
