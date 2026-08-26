@@ -39,7 +39,7 @@
 - 入口:`pyproject.toml` 中 `codeagent = "codeagent.app.main:main"`。
 - **已完成(v0.1~v0.3 阶段 1~4)**:
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 仅存 `llm_provider`。
-- `ai/` 层:五层细分(providers / catalog / protocol / transport + factory 统一入口),**无桥接层**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);适配自研循环的 `ChatModelPort` 在组合根 `app/container.py`。
+- `ai/` 层:模型基础设施(provider / catalog / model / transport),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);provider/model/effort 选择位于 `app/composition/model_selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
 - `core/` 编排层:ports / loop / messages / events(全异步自研 ReAct),模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
@@ -87,18 +87,15 @@ codeagent/
 │   │       ├── textual_backend.py    #     textual 引擎实现(当前唯一后端)
 │   │       └── main.py               #     TUI 入口(--tui 转交此处,装配在组合根)
 │   │
-│   ├── ai/                           # [模型配置层]  ← pi-ai ✅ 已落地
-│   │   ├── factory.py                #   create_llm 统一构造入口 + get_available_providers
-│   │   ├── model_pattern.py          #   model:effort 解析唯一实现(跨层共享)
+│   ├── ai/                           # [模型基础设施层]  ← pi-ai ✅ 已落地
+│   │   ├── model/                    #   ChatClient / 消息 / 响应 / 工具 / 流事件契约
 │   │   ├── catalog/                  #   模型目录与解析
 │   │   │   ├── spec.py               #     ModelSpec(不可变值对象)
 │   │   │   ├── builtin.py            #     内置模型目录(deepseek/openai/qwen/glm/kimi/minimax)
 │   │   │   ├── store.py              #     models.json 读写(upsert 合并)
 │   │   │   └── registry.py           #     ModelRegistry 两遍解析(精确 id → 别名)
-│   │   ├── protocol/                 #   框架无关协议层
-│   │   │   ├── messages.py           #     ChatClient 协议 / ChatMessage / ToolCall / ChatResponse
-│   │   │   └── sse.py                #     StreamEvent / SSEParser(thinking/usage 全量透传)
 │   │   ├── transport/                #   OpenAI 兼容传输层
+│   │   │   ├── sse.py                 #     SSEParser(thinking/usage 全量透传)
 │   │   │   └── openai_compat.py      #     OpenAICompatClient(httpx,重试/流式)
 │   │   └── providers/                #   每 provider 一个文件,配置+工厂自包含
 │   │       ├── deepseek.py / openai.py / qwen.py / glm.py / kimi.py / minimax.py
@@ -132,7 +129,7 @@ codeagent/
     ├── conftest.py                   # _isolate_config_dir / memory_fsops 夹具
     ├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
     ├── test_decoupling.py            # 分层解耦 AST 扫描(AST 强制校验)
-    ├── ai/                           # factory / fake_client / model_store / providers / sse / transport
+    ├── ai/                           # model / fake_client / model_store / providers / sse / transport
     ├── core/                         # loop / messages / events
     ├── session/                      # session / store / manager / compaction
     ├── tools/                        # test_tools.py + test_security.py(单文件覆盖工具包)
@@ -148,7 +145,7 @@ codeagent/
 | `app/config.py` | 全局配置(仅 provider 无关字段)+ 模板生成 | 只被 container / ai 读取 |
 | `app/agents.py` | AGENTS.md 分层加载 + 基础提示词 | 纯函数,可离线测 |
 | `app/skills.py` | SKILL.md 三源加载 / 提示词构建 / 渲染块 | 纯函数,可离线测;三源同名遮蔽 个人>项目>内建 |
-| `ai/` | 模型配置层:五层细分 + factory 统一入口 | 不 import 工具、编排 |
+| `ai/` | 模型基础设施:模型契约、provider、transport、catalog | 不 import 应用、工具、编排 |
 | `core/` | 编排层:端口、消息、循环、事件 | 不 import config / ai / tools / session |
 | `session/` | 有状态会话 + 事件分发 + 持久化 + 压缩 | 不 import ai / tools / config |
 | `tools/` | 工具层:原子工具 + 注册表 + 安全分类器 + 共享设施 | 不 import 模型、编排;`shared/` 只被 tools 内部使用 |
@@ -252,7 +249,7 @@ class SessionStore:
 def create_agent_ports(cfg=None, *, registry=None, reasoning_effort=None,
                        provider=None, model=None, approval_mode="deny") -> AgentPorts:
     client = create_llm(cfg, registry=registry, reasoning_effort=reasoning_effort,
-                        provider=provider, model=model)               # ai/factory.create_llm
+                        provider=provider, model=model)               # app.composition.model_selection.create_llm
     skills, _ = _load_skills(cfg)                                     # 技能一次加载两处消费
     rendered = {s.name: format_skill_invocation(s) for s in skills}
     return AgentPorts(

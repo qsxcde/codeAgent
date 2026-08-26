@@ -92,7 +92,7 @@
 | 三层协作 / 双层 loop | Pi-Agent 设计哲学:Factory(装配)/ Session(单对话)/ Runtime(会话生命周期)三层;无状态循环(LangGraph 图)与有状态外壳(`session/`)双层 |
 | 会话即状态 | 会话上下文以 thread 维度累积在图中,状态即会话 |
 | 组合根 | `container.py`(现 `app/container.py`),全项目唯一允许跨层 import 的地方 |
-| ModelRuntime | 自研模型客户端层(自研蓝图第一步):`protocol/` + `transport/` + `providers/`,替代 langchain 模型客户端 |
+| ModelRuntime | 自研模型客户端层(自研蓝图第一步):`model/` + `transport/` + `providers/`,替代 langchain 模型客户端 |
 | ReAct | 推理-行动循环:模型 ↔ 工具交替直至模型不再请求工具 |
 | provider | 模型供应商(deepseek / openai / qwen / glm / kimi / minimax / fake) |
 | effort | 运行时思考强度(`model:effort` 内联语法) |
@@ -276,13 +276,13 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 | ID | 需求 | 说明 | 优先级 | 状态 |
 |---|---|---|---|---|
 | FR-2.1 | 多 provider 支持 | deepseek / openai / qwen / glm / kimi / minimax / fake,每 provider 一个自包含文件(配置+工厂) | P0 | ✅(7 个,`ai/providers/`) |
-| FR-2.2 | 统一模型创建入口 | `factory.create_llm()` 按 provider+model 解析并构造未绑定工具的模型 | P0 | ✅ |
+| FR-2.2 | 统一模型创建入口 | `app.composition.model_selection.create_llm()` 按 provider+model 解析并构造未绑定工具的模型 | P0 | ✅ |
 | FR-2.3 | 内置模型目录 | 模型元数据(id/别名/reasoning/maxTokens)静态登记(`catalog/builtin.py`) | P0 | ✅ |
 | FR-2.4 | 用户模型覆盖 | `~/.codeagent/models.json` 按 id **upsert 合并**(同 id 覆盖、新 id 追加、内置保留) | P1 | ✅ |
-| FR-2.5 | 运行时思考强度切换 | `model:effort` 内联 / `/effort` 命令,优先级:内联>参数>配置默认 | P0 | ✅(`model_pattern.py` 单一解析实现) |
+| FR-2.5 | 运行时思考强度切换 | `model:effort` 内联 / `/effort` 命令,优先级:内联>参数>配置默认 | P0 | ✅(`app/composition/model_selection.py` 单一解析实现) |
 | FR-2.6 | 缺失密钥可操作报错 | 缺 API Key 报"请配置 DEEPSEEK_API_KEY"而非 SDK 原始错误 | P0 | ✅ |
 | FR-2.7 | 模型列表探测 | 调用供应商 `/models` 自动发现模型(当前目录静态兜底) | P2 | 📝 |
-| FR-2.8 | 模型客户端自研(ModelRuntime) | 框架无关协议层 + OpenAI 兼容传输层,替代 langchain 模型客户端(自研蓝图第一步) | P0 | ✅ 已落地:`protocol/`(ChatClient 协议/SSE 解析)+ `transport/openai_compat.py`(httpx);`ai/bridge/` 已随自研编排删除,组合根直接适配 |
+| FR-2.8 | 模型客户端自研(ModelRuntime) | 框架无关模型契约 + OpenAI 兼容传输层,替代 langchain 模型客户端(自研蓝图第一步) | P0 | ✅ 已落地:`model/`(ChatClient 契约)+ `transport/sse.py` 与 `transport/openai_compat.py`(httpx);`ai/bridge/` 已随自研编排删除,组合根直接适配 |
 | FR-2.9 | 默认注册表缓存 | `create_llm` 不每次重建/重读 models.json(性能优化 M11) | P0 | ✅ |
 
 ### 4.4 FR-3 工具系统
@@ -426,7 +426,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 | 模块(当前) | 一句话职责 | 可以 import | 禁止 import |
 |---|---|---|---|
 | `app/config.py` | 全局配置(仅 provider 无关字段) | — | core、session、cli |
-| `ai/` | 模型配置层(protocol/catalog/transport/bridge/providers + factory) | config | core、session、container 的反向 |
+| `ai/` | 模型基础设施(model/catalog/transport/providers) | 基础依赖 | app、core、session、tools 的反向 |
 | `tools/` | 工具层:原子工具 + 注册表 | config | 模型、编排 |
 | `core/` | 编排层:端口、消息、循环、事件 | 只有 `ports.py`(及 core 内部) | config、ai、tools、session |
 | `session/` | 有状态会话 + 事件分发 | core(ports/loop)、bus、store | ai、tools、config |
@@ -499,7 +499,7 @@ class AgentSession:
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 第一步:自研 ModelRuntime | 替代 langchain 模型客户端层(`ai/`) | ✅ 已落地(`protocol/` + `transport/` + `providers/`,pyproject 已移除 langchain-openai) |
+| 第一步:自研 ModelRuntime | 替代 langchain 模型客户端层(`ai/`) | ✅ 已落地(`model/` + `transport/` + `providers/`,pyproject 已移除 langchain-openai) |
 | 第二步:自研 ReAct 编排 | 替代 langgraph 编排层(`core/` + `session/` 部分) | ✅ **已落地**(2026-08-14 `self-built-orchestration`:三未决问题已答——平台部署非刚需、归约 spike 通过(5 场景双跑 diff)、JSONL 树形为格式结论;pyproject 移除 langchain-core/langgraph) |
 
 **第二步蓝图要点**(已落地,2026-08-14 验证):
@@ -572,7 +572,7 @@ class AgentSession:
 | NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentPorts` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
-| NFR-M6 | 同步约束 | `model:effort` 解析唯一实现 | `ai/model_pattern.py` 单一来源,factory 与命令层共用 | ✅ |
+| NFR-M6 | 同步约束 | `model:effort` 解析唯一实现 | `app/composition/model_selection.py` 单一来源,组合根各入口共用 | ✅ |
 
 ### 6.6 可扩展性(NFR-E)
 
@@ -627,7 +627,7 @@ class AgentSession:
 | IR-4 | `AgentSession.run_sync(text)` | 同步便捷入口(新线程 + asyncio.run) | 脚本 / 无 loop 环境 | ✅ |
 | IR-5 | `EventBus.subscribe(fn)` / `emit(ev)` | 订阅方异常隔离;返回退订函数 | 任意感知方 | ✅ |
 | IR-6 | `create_llm(cfg, *, registry, reasoning_effort, provider, model)` | provider+model 解析,返回未绑定工具的 ChatClient | container | ✅ |
-| IR-7 | `ChatClient` 协议 + `SSEParser` | 框架无关消息/流协议;thinking/usage 全量透传 | ai/protocol | ✅ |
+| IR-7 | `ChatClient` 协议 + `SSEParser` | 框架无关消息/流协议;thinking/usage 全量透传 | ai/model + ai/transport/sse | ✅ |
 | IR-8 | `make_tools(cfg) -> list[BaseTool]` | 原子工具注册表枚举 | container | ✅ |
 | IR-9 | CLI(headless) | `codeagent [--prompt P]`;无 `--prompt` 时 stdin 逐行;输出事件聚合文本 | 终端用户 / 脚本 | ✅ |
 | IR-10 | ~~`langgraph.json` 平台入口~~ | ⚠️ 随自研编排废弃(v0.2 定案);改写为 HTTP/事件订阅入口(F-27);**2026-08-22 移出 v0.3(E12),远期按需重估** | Web/HTTP | 📝 远期 |
@@ -815,7 +815,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | 1 | 测试数量 | 219 全绿 | 304 全绿 | 219 全绿 | **336 项全绿**(08-13 曾 204 项:200 通过 + 4 项 bash 环境敏感失败,已由 fix-bash-test-assertions 修复——3 项 cwd 断言改标记文件法、1 项 PIPESTATUS 命令精简;08-14 TUI 修复、主流形态改造与 P2 死代码清理后曾 3 项 bash 失败,根因是 `_resolve_bash` 命中 WSL 转发器,已修复并补回归测试;含 v0.2 解耦扫描 70 项) |
 | 2 | provider 数量 | 3(deepseek/openai/fake) | 6(+qwen/glm/kimi/minimax) | 3 | **7**(deepseek/openai/qwen/glm/kimi/minimax/fake,`PROVIDERS` 注册表确认) |
 | 3 | TUI 状态 | ✅ 已落地(SessionAgentClient 流式渲染) | ✅ 已落地 | ✅ 已落地 | ✅ **已恢复为 MVP**(`app/tui/`:view/components/backend 端口 + textual 后端,`--tui` 进入;E9~E11);斜杠命令/模糊补全/选择器拆 v0.2 |
-| 4 | 目录结构 | 顶层 `cli.py/container.py/config.py/model_pattern.py` + `tui/` | 同左 | 同左 | `app/` 包(main/config/container)+ `app/tui/`;`model_pattern.py` 移入 `ai/`;顶层无 cli/container/config |
+| 4 | 目录结构 | 顶层 `cli.py/container.py/config.py/model_pattern.py` + `tui/` | 同左 | 同左 | `app/` 包(main/config/container/composition)+ `app/tui/`;`ai/` 保留 model/catalog/transport/providers;顶层无 cli/container/config |
 | 5 | 事件类型 | 7 类(无 thinking_delta/run_cancelled/usage) | 7 类 | 7 类 | **10 类**(新增 thinking_delta / run_cancelled / usage,core/events.py 确认) |
 | 6 | 会话接口 | run/subscribe/run_sync;abort 延后 | 同左 | 同左 | 新增 `abort()`、`replace_graph()` 已落地 |
 | 7 | 模型客户端 | langchain-openai 统一接入 | 同左 | 同左 | **自研落地**(协议/传输/桥接三层,pyproject 已移除 langchain-openai;langchain-core/langgraph 保留于编排侧) |

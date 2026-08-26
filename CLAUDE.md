@@ -52,12 +52,12 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 - **`app/main.py` — CLI 入口**:解析 `--prompt` / stdin / `--tui`,订阅 `AgentSession` 事件流聚合成最终回复(TEXT_DELTA 累积、TOOL_CALL 前清零、AGENT_MESSAGE 兜底去重);`--tui` 转交 `app/tui/main.py`。
 - **`core/` — 纯编排层(自研)**:模块顶层零副作用(不建模型、不发请求、不读 key),可被平台直接 import。`AgentPorts`(model 端口 / tools 工具列表 / policy 安全策略)是 core 认识外部世界的唯一窗口;`core/loop.py` 的 `run_turn` 是自研 ReAct 循环(模型→工具→继续/结束,事件直接 emit);`core/messages.py` 是自研消息模型与归约(按 tool_call_id 归属、按 id 删除,id 用 uuid7)。
 - **`session/` — 有状态会话**:`AgentSession.run()` 全异步,直接驱动 `run_turn`,11 类 `AgentEvent` 经 `EventBus` 分发(**不返回值**,订阅方感知进度)。会话历史与 `SessionStore`(JSONL 树形)同步:成功轮次才落盘,失败/取消内存回滚。`abort()` 中断当前 run;`steer()` 运行中注入消息;`followup()` 结束后续跑一轮;`SessionManager` 承担 create/switch/fork/dispose 与端口热切换;`compaction` 上下文压缩。
-- **`ai/` — 模型配置层,五层细分(无桥接层)**:
+- **`ai/` — 模型基础设施层(不负责应用装配)**:
   - `providers/`:每 provider 一个自包含文件(配置类 + `make_llm` 工厂),在 `ai/providers/__init__.py` 的 `PROVIDERS` 注册表登记;`fake.py` 提供离线 `FakeClient`(脚本化多轮,支撑全量离线测试)。
   - `catalog/`:不可变值对象 `ModelSpec` + `ModelRegistry` 两遍解析(先全部精确 id → 再全部别名)+ `models.json` 按 id upsert 合并。
-  - `protocol/`:框架无关协议(`ChatClient` / `ChatMessage` / `ToolCall` / `ChatResponse` / `StreamEvent`)。
-  - `transport/`:`OpenAICompatClient`(httpx,重试/流式,thinking/usage 全量透传)。
-  - `factory.py`:`create_llm` 统一入口;`model_pattern.py`:`model:effort` 解析唯一实现。适配自研循环的 `ChatModelPort` 在组合根 `app/container.py`。
+  - `model/`:框架无关模型契约(`ChatClient` / `ChatMessage` / `ToolCall` / `ChatResponse` / `StreamEvent` 等)。
+  - `transport/`:`SSEParser` 与 `OpenAICompatClient`(httpx,重试/流式,thinking/usage 全量透传)。
+  - provider/model/effort 选择和客户端装配位于 `app/composition/model_selection.py`;适配自研循环的 `ChatModelPort` 位于组合根。
 - **`tools/`**:`AtomicTool` 基类(无状态,子类实现 `_invoke` + 定义 `Args` pydantic schema,自研循环直接 `invoke`)。`make_tools` 注册表产出八个工具:read / write / edit / bash / grep / find / ls / skill(技能寻址);`security.py` 提供执行前安全分类器(deny>ask>allow,组合根适配为 `ApprovalPolicy`);`shared/` 提供 `FsOps` 文件系统抽象缝(注入内存实现即可离线测)、路径/文本/截断/写串行化等共享设施。`BashTool` 带危险命令黑名单(字符串正则 + shlex 分词语义级检测 `rm -rf` 等价写法)、Git for Windows/WSL bash 探测链、默认 120s 超时(上限 600)、30k 输出截断。
 - **`app/tui/` — 交互式终端(MVP)**:`view.py`(TuiApp 视图逻辑)只依赖 `backend.py` 的 `TuiBackend` 端口;`components.py` 纯渲染组件树(样式标签段,引擎无关可离线测);`textual_backend.py` 是当前唯一引擎实现。装配经组合根 `create_tui_app`(footer 的 model/effort 解析固化),本包不读配置、不跨层。
 - **`resources/`**:技能文件源(v0.3 阶段 1~4 已启用,经 `app/skills.py` 三源发现:内建/个人/项目,同名遮蔽 个人>项目>内建);插件系统未实现，已移出 v0.3，后续按需重估。
@@ -115,5 +115,5 @@ uv run pytest tests/tools/test_tools.py::test_bash_timeout  # 单个测试
 
 - **配置命名空间隔离**:全局 `Settings` 与各 provider 的 `Config` 各自解析、各自只认自己的键,所有配置类必须设 `extra="ignore"`(否则共享 `.env` 里其它命名空间的键会报 `extra_forbidden`)。新增 provider 时沿用此模式。
 - **新增 provider 只需动 `ai/providers/` + 环境变量**:不应触碰 `session/`、`core/`。新增工具同理只动 `tools/`。改编排形状只动 `core/`。
-- **模型名解析唯一实现**:`ai/model_pattern.py` 的 `split_model_pattern`(解析 `model:effort` 后缀),不要另写一份。
+- **模型名解析唯一实现**:`app/composition/model_selection.py` 的 `split_model_pattern`(解析 `model:effort` 后缀),不要另写一份。
 - 测试规范(夹具 / FakeClient / 镜像结构 / 平台无关断言等)见上文"测试规范"章节。

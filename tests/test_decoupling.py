@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "codeagent"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: 例外文件/目录:跨层 import 全允许(组合根与入口)。
 _COMPOSITION_ROOTS = {"app/container.py", "app/main.py"}
@@ -133,3 +134,33 @@ def test_composition_modules_do_not_import_container_facade() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imported = _imported_modules(tree)
         assert "codeagent.app.container" not in imported, _rel(path)
+
+
+def test_current_surfaces_do_not_reference_removed_ai_modules() -> None:
+    """源码、测试和当前架构文档不得依赖已删除的 AI 兼容入口。"""
+    legacy_markers = (
+        "codeagent.ai.factory",
+        "codeagent.ai.model_pattern",
+        "codeagent.ai.protocol",
+        "ai/factory.py",
+        "ai/model_pattern.py",
+        "ai/protocol/",
+    )
+    paths = [
+        *SRC_ROOT.rglob("*.py"),
+        *(REPO_ROOT / "tests").rglob("*.py"),
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "CLAUDE.md",
+        REPO_ROOT / "docs" / "design" / "architecture.md",
+        REPO_ROOT / "docs" / "design" / "requirements-analysis.md",
+    ]
+    intentional_boundary_tests = {
+        REPO_ROOT / "tests" / "ai" / "test_import_boundaries.py",
+        REPO_ROOT / "tests" / "test_decoupling.py",
+    }
+    for path in paths:
+        if path in intentional_boundary_tests:
+            continue
+        content = path.read_text(encoding="utf-8")
+        hits = [marker for marker in legacy_markers if marker in content]
+        assert not hits, f"{path.relative_to(REPO_ROOT)} 仍引用已删除入口: {hits}"

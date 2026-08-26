@@ -153,13 +153,11 @@ codeagent/
     │   ├── skills.py            #   SKILL.md 三源加载 / 提示词构建 / 渲染块
     │   └── tui/                 #   交互式终端(命令/补全/选择器/Markdown)
     │
-    ├── ai/                      # [模型配置层] 五层细分
-    │   ├── factory.py           #   create_llm 统一构造入口
+    ├── ai/                      # [模型基础设施层] 模型、provider、transport、目录
+    │   ├── model/               #   ChatClient / 消息 / 响应 / 工具 / 流事件契约
     │   ├── catalog/             #   ModelSpec / 内置目录 / models.json / 两遍解析注册表
-    │   ├── protocol/            #   ChatClient 协议 + 自研 SSE 解析(thinking/usage 透传)
-    │   ├── transport/           #   OpenAICompatClient(httpx,重试/流式)
-    │   ├── providers/           #   每 provider 一个文件:deepseek/openai/qwen/glm/kimi/minimax/fake
-    │   └── model_pattern.py     #   model:effort 解析唯一实现
+    │   ├── transport/            #   SSEParser + OpenAICompatClient(httpx,重试/流式)
+    │   └── providers/            #   每 provider 一个文件:deepseek/openai/qwen/glm/kimi/minimax/fake
     │
     ├── core/                    # [编排层] 零副作用,不 import config/tools/ai/session
     │   ├── ports.py             #   AgentPorts(model / tools / policy)
