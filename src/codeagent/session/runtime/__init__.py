@@ -1,4 +1,4 @@
-"""Compatibility facade for the session runtime controller."""
+"""Runtime coordination for session turns."""
 
 from codeagent.session.runtime.controller import SessionRuntime
 

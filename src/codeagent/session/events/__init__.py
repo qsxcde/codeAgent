@@ -1,4 +1,4 @@
-"""Compatibility facade for the session event bus."""
+"""Session event infrastructure."""
 
 from codeagent.session.events.bus import EventBus, Subscriber
 

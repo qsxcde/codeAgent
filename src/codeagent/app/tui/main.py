@@ -21,6 +21,6 @@ def run_tui() -> None:
     """
     from codeagent.app import container
     from codeagent.app.config import CONFIG_DIR
-    from codeagent.session.store import JsonFileStore
+    from codeagent.session.persistence.jsonl_store import JsonFileStore
 
     container.create_tui_app(store=JsonFileStore(CONFIG_DIR / "sessions")).start()

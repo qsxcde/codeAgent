@@ -108,3 +108,9 @@ def test_extract_file_ops_dedup_and_empty():
     ]
     assert extract_file_ops(messages)["readFiles"] == ["a.py"]  # 去重
     assert extract_file_ops([]) == {"readFiles": [], "modifiedFiles": []}
+
+
+def test_summarizer_is_a_provider_agnostic_boundary() -> None:
+    from codeagent.session.compaction.summarizer import Summarizer
+
+    assert hasattr(Summarizer, "summarize")

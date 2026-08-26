@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         # 会话入口:持久化到 ~/.codeagent/sessions/;恢复或继续既有会话。
         # 默认(无这些参数)仍是一次性 headless,不落盘(既有行为不变)。
         from codeagent.app.config import CONFIG_DIR
-        from codeagent.session.store import JsonFileStore
+        from codeagent.session.persistence.jsonl_store import JsonFileStore
 
         store = JsonFileStore(CONFIG_DIR / "sessions")
         manager = container.create_session_manager(
@@ -175,7 +175,7 @@ def _skill_cli(argv: list[str]) -> int:
 def _list_sessions() -> None:
     """打印会话列表(标识 / 时间 / 模型 / 标题;无会话时提示)。"""
     from codeagent.app.config import CONFIG_DIR
-    from codeagent.session.store import JsonFileStore
+    from codeagent.session.persistence.jsonl_store import JsonFileStore
 
     refs = JsonFileStore(CONFIG_DIR / "sessions").list()
     if not refs:

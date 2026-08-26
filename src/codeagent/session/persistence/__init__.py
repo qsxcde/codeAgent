@@ -1,7 +1,8 @@
-"""Compatibility facade for persistence domain models."""
+"""Session persistence protocols, records and backends."""
 
+from codeagent.session.persistence.jsonl_store import JsonFileStore
+from codeagent.session.persistence.memory_store import MemoryStore
 from codeagent.session.persistence.models import (
-    CURRENT_VERSION,
     CompactionEntry,
     CompactionState,
     SessionRef,
@@ -10,9 +11,10 @@ from codeagent.session.persistence.models import (
 )
 
 __all__ = [
-    "CURRENT_VERSION",
     "CompactionEntry",
     "CompactionState",
+    "JsonFileStore",
+    "MemoryStore",
     "SessionRef",
     "SessionStore",
     "UsageStats",

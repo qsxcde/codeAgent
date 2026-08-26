@@ -21,18 +21,19 @@ from dataclasses import replace
 from typing import Any, Callable
 
 from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.loop import DEFAULT_RECURSION_LIMIT, RecursionLimitError
+from codeagent.core.loop import DEFAULT_RECURSION_LIMIT
 from codeagent.core.messages import Message
 from codeagent.core.ports import AgentLoopConfig
-from codeagent.session.bus import EventBus, Subscriber
+from codeagent.session.events.bus import EventBus, Subscriber
 from codeagent.session.compaction import (
     DEFAULT_BUDGET_TOKENS,
     extract_file_ops,
     find_cut_point,
 )
 from codeagent.session.session_persistence import SessionPersistence
-from codeagent.session.session_runtime import SessionRuntime
-from codeagent.session.store import CompactionEntry, UsageStats
+from codeagent.session.runtime.controller import SessionRuntime
+from codeagent.session.runtime.error_policy import friendly_error
+from codeagent.session.persistence.models import CompactionEntry, UsageStats
 
 #: 摘要注入消息的前缀(模型识别"历史摘要";Pi COMPACTION_SUMMARY_PREFIX 对应物)。
 SUMMARY_PREFIX = "以下为会话历史摘要(此前内容已被压缩,无需再次执行其中操作):\n"
@@ -551,33 +552,5 @@ class AgentSession:
 
     @staticmethod
     def _friendly_error(exc: Exception) -> str:
-        """面向用户的错误提示(与 v0.1 对齐)。
-
-        - ``RecursionLimitError``:递归超限友好提示;
-        - HTTP 类错误(401/403/404/429)与超时/连接错误:分类提示;
-        - 其它异常:原样透传(测试/诊断依赖原始信息)。
-        """
-        if isinstance(exc, RecursionLimitError):
-            return exc.friendly
-        try:
-            import httpx
-        except ImportError:  # pragma: no cover - httpx 是项目基础依赖
-            return str(exc)
-        if isinstance(exc, httpx.HTTPStatusError):
-            status = exc.response.status_code
-            if status in (401, 403):
-                # /login 引导(tui-login-command):TUI 内可直接配置密钥。
-                return (
-                    "认证失败(HTTP {status}):API Key 无效或未配置,"
-                    "请检查 .env / ~/.codeagent 配置,或在 TUI 中使用 /login 配置密钥"
-                )
-            if status == 404:
-                return f"模型或端点不存在(HTTP {status}):请检查 provider/model 配置"
-            if status == 429:
-                return "请求过于频繁(HTTP 429),请稍后重试"
-            return f"模型服务请求失败(HTTP {status}):{exc}"
-        if isinstance(exc, httpx.TimeoutException):
-            return "请求超时,请稍后重试(思考强度过高或网络不稳定)"
-        if isinstance(exc, httpx.ConnectError):
-            return "无法连接模型服务:请检查网络或 base_url 配置"
-        return str(exc)
+        """面向用户的错误提示(与 v0.1 对齐)。"""
+        return friendly_error(exc)

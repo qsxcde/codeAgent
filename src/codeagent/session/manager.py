@@ -20,9 +20,9 @@ import uuid
 import asyncio
 from typing import Any, Callable
 
-from codeagent.session.bus import EventBus, Subscriber
+from codeagent.session.events.bus import EventBus, Subscriber
 from codeagent.session.session import AgentSession, DEFAULT_CONTEXT_WINDOW
-from codeagent.session.store import SessionRef, SessionStore
+from codeagent.session.persistence.models import SessionRef, SessionStore
 
 
 class SessionManager:

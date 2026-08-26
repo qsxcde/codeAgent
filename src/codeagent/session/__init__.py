@@ -3,7 +3,7 @@
 分层约束:session 不 import ai / tools / config,仅依赖 core 与 bus。
 """
 
-from codeagent.session.bus import EventBus
+from codeagent.session.events.bus import EventBus
 from codeagent.session.manager import SessionManager
 from codeagent.session.session import AgentSession
 

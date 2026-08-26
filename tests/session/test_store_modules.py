@@ -35,6 +35,57 @@ def test_store_facade_preserves_public_symbols() -> None:
     assert callable(_message_to_dict)
 
 
+def test_new_persistence_modules_are_the_canonical_store_implementation() -> None:
+    from codeagent.session.json_file_store import JsonFileStore
+    from codeagent.session.memory_store import MemoryStore
+    from codeagent.session.persistence.codec import _dict_to_message, _message_to_dict
+    from codeagent.session.persistence.index import SessionIndex
+    from codeagent.session.persistence.jsonl_store import JsonFileStore as NewJsonFileStore
+    from codeagent.session.persistence.memory_store import MemoryStore as NewMemoryStore
+    from codeagent.session.persistence.models import SessionRef
+    from codeagent.session.persistence.protocol import SessionStore
+    from codeagent.session.persistence.records import MessageRecord
+    from codeagent.session.store_codec import _dict_to_message as LegacyDictToMessage
+    from codeagent.session.store_codec import _message_to_dict as LegacyMessageToDict
+    from codeagent.session.store_index import SessionIndex as LegacySessionIndex
+    from codeagent.session.store_models import SessionRef as LegacySessionRef
+
+    assert JsonFileStore is NewJsonFileStore
+    assert MemoryStore is NewMemoryStore
+    assert LegacyDictToMessage is _dict_to_message
+    assert LegacyMessageToDict is _message_to_dict
+    assert LegacySessionIndex is SessionIndex
+    assert LegacySessionRef is SessionRef
+    assert SessionStore is not None
+    assert MessageRecord is not None
+
+
+def test_persistence_locking_shares_a_lock_per_path() -> None:
+    from codeagent.session.persistence.locking import path_lock
+
+    assert path_lock("sessions/a.jsonl") is path_lock("sessions/a.jsonl")
+    assert path_lock("sessions/a.jsonl") is not path_lock("sessions/b.jsonl")
+
+
+def test_session_committer_only_writes_explicit_successful_payload() -> None:
+    from codeagent.session.persistence.commit import SessionCommitter
+
+    store = MemoryStore()
+    store.create("committed")
+    committer = SessionCommitter(store, "committed")
+
+    committer.turn(
+        [Message(role="user", content="hello")],
+        UsageStats(input_tokens=2),
+        context_tokens=2,
+    )
+
+    assert [message.content for message in store.load_messages("committed")] == [
+        "hello"
+    ]
+    assert store.load_usage("committed").input_tokens == 2
+
+
 def test_session_facade_keeps_public_constants() -> None:
     assert session_module.AgentSession.__name__ == "AgentSession"
     assert session_module.DEFAULT_CONTEXT_WINDOW > 0

@@ -28,7 +28,7 @@ from codeagent.app.tui.commands import (
     help_text,
     parse,
 )
-from codeagent.session.tree import SessionNode, build_tree
+from codeagent.session.navigation.tree import SessionNode, build_tree
 from codeagent.app.tui.components import FooterInfo, Span, TuiModel, ToolCallBlock
 from codeagent.app.tui.runtime import phase_label
 from codeagent.app.tui.rendering import FrameScheduler, ResizeDebouncer

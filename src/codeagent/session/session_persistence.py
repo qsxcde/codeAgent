@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from codeagent.core.messages import Message
-from codeagent.session.store_models import (
+from codeagent.session.persistence.commit import SessionCommitter
+from codeagent.session.persistence.models import (
     CompactionEntry,
     SessionStore,
     UsageStats,
@@ -46,6 +47,15 @@ class SessionPersistence:
         self._defer_persistence = defer_persistence
         self._persistence_options = dict(persistence_options or {})
         self._persisted = store is None
+        self._committer = (
+            SessionCommitter(
+                store,
+                session_id,
+                ensure_persisted=self.ensure_persisted,
+            )
+            if store is not None
+            else None
+        )
 
     @property
     def persisted(self) -> bool:
@@ -99,10 +109,9 @@ class SessionPersistence:
             self._persistence_options.update(options)
 
     def append_compaction(self, entry: CompactionEntry) -> str:
-        if self._store is None:
+        if self._committer is None:
             return entry.id
-        self.ensure_persisted()
-        return self._store.append_compaction(self._session_id, entry)
+        return self._committer.compaction(entry)
 
     def commit_turn(
         self,
@@ -112,24 +121,6 @@ class SessionPersistence:
         context_tokens: int | None,
     ) -> None:
         """Persist a successful turn; no-op for empty or non-persistent turns."""
-        if self._store is None or not messages:
+        if self._committer is None:
             return
-        self.ensure_persisted()
-        for message in messages:
-            self._store.append_message(self._session_id, message)
-        if usage.input_tokens or usage.output_tokens:
-            self._store.append_usage(
-                self._session_id,
-                {
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                    "reasoning_tokens": usage.reasoning_tokens,
-                    "cached_tokens": usage.cached_tokens,
-                },
-            )
-            if context_tokens is not None:
-                self._store.set_meta(
-                    self._session_id,
-                    "last_context_tokens",
-                    context_tokens,
-                )
+        self._committer.turn(messages, usage, context_tokens=context_tokens)

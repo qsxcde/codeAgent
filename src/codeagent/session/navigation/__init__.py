@@ -1,4 +1,4 @@
-"""Compatibility facade for session tree navigation."""
+"""Session navigation and tree views."""
 
 from codeagent.session.navigation.tree import SessionNode, build_tree
 
