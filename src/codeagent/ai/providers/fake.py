@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any, AsyncIterator
 
-from codeagent.ai.protocol.messages import ChatClient, ChatMessage, ChatResponse, ToolCall
-from codeagent.ai.protocol.sse import StreamEvent
+from codeagent.ai.model.protocols import ChatClient
+from codeagent.ai.model.types import ChatMessage, ChatResponse, StreamEvent, ToolCall
 
 
 class FakeClient(ChatClient):

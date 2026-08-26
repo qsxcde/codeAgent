@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from . import model_selection
 from .model_factory import _resolve_context_window, _resolve_model_effort
 from .prompt_builder import _workspace, agents_sources, skills_view
 from .runtime_factory import (
@@ -26,9 +27,15 @@ def _configured_providers() -> set[str]:
 def _resolve_candidates(cfg: Any = None, registry: Any = None) -> dict[str, Any]:
     """解析 provider、model、effort 选择器候选。"""
     from codeagent.ai.catalog.registry import ModelRegistry
+    from codeagent.ai.catalog.store import ModelStore
+    from codeagent.app import config as app_config
     from codeagent.ai.providers import PROVIDERS
 
-    reg = registry if registry is not None else ModelRegistry()
+    reg = (
+        registry
+        if registry is not None
+        else ModelRegistry(ModelStore(app_config.CONFIG_MODELS_FILE))
+    )
     providers = sorted(PROVIDERS)
     models = {provider: sorted(reg.available(provider)) for provider in providers if reg.available(provider)}
     return {
@@ -73,12 +80,18 @@ class TuiAssembler:
         model: str | None = None,
     ) -> None:
         from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.store import ModelStore
+        from codeagent.app import config as app_config
         from codeagent.app.config import CONFIG_DIR
         from codeagent.app.skill_packages import PackageManager
 
         self.cfg = cfg
         self.backend = backend
-        self.registry = registry if registry is not None else ModelRegistry()
+        self.registry = (
+            registry
+            if registry is not None
+            else ModelRegistry(ModelStore(app_config.CONFIG_MODELS_FILE))
+        )
         self.store = store
         self.reasoning_effort = reasoning_effort
         self.provider = provider
@@ -145,12 +158,10 @@ class TuiAssembler:
         raise ValueError(f"未知 Package 操作: {action}")
 
     def _build_summarizer(self) -> Any:
-        from codeagent.ai.factory import create_llm
-
         from .model_factory import LlmSummarizer
 
         return LlmSummarizer(
-            create_llm(
+            model_selection.create_llm(
                 cfg=self.cfg,
                 registry=self.registry,
                 reasoning_effort=self.reasoning_effort,
@@ -199,9 +210,7 @@ class TuiAssembler:
             raise RuntimeError("TUI 尚未完成 SessionManager 装配")
         target_provider = new_provider
         if new_model and target_provider is None and self.registry is not None:
-            from codeagent.ai.model_pattern import split_model_pattern
-
-            base = split_model_pattern(new_model)[0]
+            base = model_selection.split_model_pattern(new_model)[0]
             owners = [
                 provider
                 for provider in self.registry.catalog_providers()
@@ -295,4 +304,3 @@ def create_tui_app(
         provider=provider,
         model=model,
     ).build()
-

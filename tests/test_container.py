@@ -17,7 +17,7 @@ from codeagent.ai.transport.openai_compat import OpenAICompatClient
 
 def test_create_agent_ports_returns_ports():
     """用 fake provider 注入,零网络装配自研端口(模型端口 + 工具)。"""
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -54,7 +54,7 @@ def test_agent_runtime_close_is_idempotent():
 
 def test_create_agent_session_returns_session():
     """create_agent_session 返回可订阅的 AgentSession。"""
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -103,7 +103,7 @@ class _StubBackend:
 
 def test_create_tui_app_assembles_with_stub_backend():
     """create_tui_app 装配 session + backend,不依赖 textual(design D5)。"""
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -119,7 +119,7 @@ def test_create_tui_app_assembles_with_stub_backend():
 
 def test_create_tui_app_resolves_footer_info():
     """状态栏装配数据的 model · effort 优先级:model 内联后缀 > provider 配置默认(design D5)。"""
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -136,7 +136,7 @@ def test_create_tui_app_resolves_footer_info():
 
 def test_create_tui_app_injects_rebuild_ports():
     """组合根注入 rebuild 回调:/provider /model /effort 热切换链路(T-44)。"""
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
         from codeagent.session.store import MemoryStore
 
@@ -155,7 +155,7 @@ def test_create_tui_app_injects_rebuild_ports():
 
 
 def test_rebuild_ports_syncs_model_context_window():
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
         from codeagent.ai.catalog.registry import ModelRegistry
         from codeagent.ai.catalog.spec import ModelSpec
@@ -195,7 +195,7 @@ def test_rebuild_ports_closes_realized_previous_runtime():
         clients.append(client)
         return client
 
-    with patch("codeagent.ai.factory.create_llm", side_effect=make_client):
+    with patch("codeagent.app.composition.model_selection.create_llm", side_effect=make_client):
         app = create_tui_app(provider="fake", backend=_StubBackend())
         # TUI 端口是 lazy 的，先访问共享工具以实现旧 runtime。
         _ = app._manager.tools
@@ -209,7 +209,7 @@ def test_rebuild_ports_closes_realized_previous_runtime():
 
 def test_create_tui_app_injects_selector_candidates():
     """选择器候选经组合根注入(T-45):provider/model/effort 各一份。"""
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -254,7 +254,7 @@ async def test_real_provider_runs_through_loop():
     from codeagent.core import EventType, run_turn
 
     events = []
-    with patch("codeagent.ai.factory.create_llm", return_value=llm), patch(
+    with patch("codeagent.app.composition.model_selection.create_llm", return_value=llm), patch(
         "codeagent.ai.transport.openai_compat.httpx.AsyncClient",
         return_value=mock_async_client,
     ):
@@ -272,7 +272,7 @@ async def test_real_provider_runs_through_loop():
 
 
 def _ports_with_mode(approval_mode: str):
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -334,7 +334,7 @@ def test_ports_inject_system_prompt_with_agents(tmp_path, monkeypatch):
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     (CONFIG_DIR / "AGENTS.md").write_text("全局指令", encoding="utf-8")
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(response="测试回复")
@@ -369,7 +369,7 @@ def test_system_prompt_only_once_and_hot_swap_stable(tmp_path, monkeypatch):
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     (CONFIG_DIR / "AGENTS.md").write_text("全局指令", encoding="utf-8")
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(responses=["第一轮", "第二轮"])
@@ -415,7 +415,7 @@ def test_bootstrap_is_present_once_per_model_context_for_new_and_recovered_turns
     monkeypatch.setattr("codeagent.app.config.CONFIG_DIR", home)
     monkeypatch.chdir(tmp_path)
 
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(responses=["第一轮", "第二轮"])
@@ -461,7 +461,7 @@ def test_bootstrap_is_reinjected_after_context_compaction(tmp_path, monkeypatch)
     monkeypatch.setattr("codeagent.app.config.CONFIG_DIR", home)
     monkeypatch.chdir(tmp_path)
 
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(responses=["答1", "答2", "答3", "答4"])
@@ -490,7 +490,7 @@ def test_ports_inject_skills_section_and_tool(tmp_path, monkeypatch):
     (tmp_path / ".codeagent" / "skills" / "fmt" / "SKILL.md").write_text(
         "---\ndescription: 格式化。\n---\n格式化正文", encoding="utf-8"
     )
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(response="测试回复")
@@ -525,7 +525,7 @@ class _StubSummarizer:
 
 def test_session_with_summarizer_can_compact():
     """注入桩 Summarizer 的会话可压缩;压缩不可用(未注入)时明确报错。"""
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -600,7 +600,7 @@ def test_tui_app_gets_compaction_capable_manager():
         def stop(self):
             pass
 
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -618,7 +618,7 @@ def test_create_tui_app_injects_save_key(tmp_path, monkeypatch):
 
     env_file = tmp_path / ".codeagent" / ".env"
     monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", env_file)
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -649,7 +649,7 @@ def test_tui_app_with_store_persists_session_and_usage():
     import asyncio
 
     session = None
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(
@@ -697,7 +697,7 @@ def test_save_key_unknown_provider_raises(tmp_path, monkeypatch):
     from codeagent.app import config as app_config
 
     monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", tmp_path / ".env")
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -720,7 +720,7 @@ def test_create_tui_app_injects_configured_providers(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", env_file)
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -797,7 +797,7 @@ def test_ports_append_mcp_tools(tmp_path, monkeypatch):
         json.dumps({"servers": [{"name": "mock", "command": sys.executable, "args": [mock_server]}]}),
         encoding="utf-8",
     )
-    with patch("codeagent.ai.factory.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")

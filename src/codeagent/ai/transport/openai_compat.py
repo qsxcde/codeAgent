@@ -1,7 +1,7 @@
 """OpenAI 兼容协议的模型传输层(deepseek / openai / ollama 等)。
 
 - 直接构造 ``/chat/completions`` 请求体,``reasoning_effort`` 原样上传;
-- 流式走自研 SSE 解析(``ai/protocol/sse.py``),thinking / usage 全量透传;
+- 流式走自研 SSE 解析(``ai/transport/sse.py``),thinking / usage 全量透传;
 - 依赖 ``httpx``(轻量 HTTP 客户端),不加载重型 SDK;
 - 框架无关:不 import LangChain,由组合根把客户端适配到自研编排所需的模型端口。
 """
@@ -16,38 +16,27 @@ from typing import Any, AsyncIterator
 import httpx
 from pydantic import SecretStr
 
-from codeagent.ai.protocol.messages import ChatMessage, ChatResponse, ToolCall
-from codeagent.ai.protocol.sse import SSEParser, StreamEvent
+from codeagent.ai.model.types import (
+    ChatMessage,
+    ChatResponse,
+    StreamEvent,
+    ToolCall,
+    ToolDefinition,
+)
+from codeagent.ai.transport.sse import SSEParser
 
 
-#: 工具 → OpenAI function calling schema(原子工具已含 name/description/Args)。
+#: 工具定义 → OpenAI function calling schema。
 def _tool_schema(tool: Any) -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": getattr(tool, "name", ""),
-            "description": getattr(tool, "description", ""),
-            "parameters": _args_schema(getattr(tool, "args_schema", None)),
-        },
-    }
-
-
-def _args_schema(args_schema: Any) -> dict[str, Any]:
-    """从工具的 pydantic Args 生成 JSON Schema;取不到时给宽松的 object。"""
-    schema = getattr(args_schema, "model_json_schema", None)
-    if schema:
-        try:
-            return schema()
-        except Exception:  # noqa: BLE001 - 容错:个别 schema 生成失败给宽松格式
-            pass
-    return {"type": "object", "properties": {}}
+    definition = tool if isinstance(tool, ToolDefinition) else ToolDefinition.from_tool(tool)
+    return definition.to_api_dict()
 
 
 class OpenAICompatClient:
     """OpenAI 兼容协议的模型客户端(deepseek / openai / ollama 等)。
 
     - 直接构造 ``/chat/completions`` 请求体,``reasoning_effort`` 原样上传;
-    - 流式走自研 SSE 解析(``ai/protocol/sse.py``),thinking / usage 全量透传;
+    - 流式走自研 SSE 解析(``ai/transport/sse.py``),thinking / usage 全量透传;
     - 依赖 ``httpx``(轻量 HTTP 客户端),不加载重型 SDK。
     """
 

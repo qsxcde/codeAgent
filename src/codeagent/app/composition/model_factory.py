@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 from typing import Any, AsyncIterator
 
-from codeagent.ai.protocol.messages import ChatMessage, ToolCall as AiToolCall
+from codeagent.ai.model.types import (
+    ChatMessage,
+    ToolCall as AiToolCall,
+    ToolDefinition,
+)
 from codeagent.core.messages import Message, ToolCall, parse_tool_arguments
 from codeagent.core.ports import ModelResponse, StreamEvent
+
+from .model_selection import (
+    _provider_config,
+    create_llm,
+    get_available_providers,
+    split_model_pattern,
+)
 
 
 def _to_chat_message(m: Message) -> ChatMessage:
@@ -77,13 +87,22 @@ class ChatModelPort:
     ) -> AsyncIterator[StreamEvent]:
         return self._stream(messages, tools)
 
+    @staticmethod
+    def _tool_definitions(tools: list[Any] | None) -> list[ToolDefinition] | None:
+        if tools is None:
+            return None
+        return [
+            tool if isinstance(tool, ToolDefinition) else ToolDefinition.from_tool(tool)
+            for tool in tools
+        ]
+
     async def _stream(
         self,
         messages: list[Message],
         tools: list[Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         chat = self._prepend_system([_to_chat_message(m) for m in messages])
-        async for ev in self._client.stream(chat, tools):
+        async for ev in self._client.stream(chat, self._tool_definitions(tools)):
             yield StreamEvent(
                 type=ev.type,
                 text=ev.text,
@@ -101,7 +120,7 @@ class ChatModelPort:
         tools: list[Any] | None = None,
     ) -> ModelResponse:
         chat = self._prepend_system([_to_chat_message(m) for m in messages])
-        resp = await self._client.generate(chat, tools)
+        resp = await self._client.generate(chat, self._tool_definitions(tools))
         calls: list[ToolCall] = []
         for tc in resp.tool_calls:
             args, argument_error = parse_tool_arguments(
@@ -173,31 +192,18 @@ def _resolve_model_effort(
     reasoning_effort: str | None,
 ) -> tuple[str, str]:
     """解析 model / effort：内联后缀 > 显式 effort > provider 默认。"""
-    from codeagent.ai.model_pattern import split_model_pattern
-    from codeagent.ai.providers import PROVIDERS
     from codeagent.app.config import Settings
 
     provider = provider or getattr(cfg, "llm_provider", None) or Settings().llm_provider
     base, inline = split_model_pattern(model) if model else (None, None)
     effort = inline or reasoning_effort
     model_id = base
-    factory = PROVIDERS.get(provider)
-    if factory is not None:
-        module = importlib.import_module(factory.__module__)
-        config_cls = next(
-            (
-                value
-                for name, value in vars(module).items()
-                if name.endswith("Config") and isinstance(value, type)
-            ),
-            None,
-        )
-        if config_cls is not None:
-            defaults = config_cls()
-            if model_id is None:
-                model_id = defaults.model
-            if effort is None:
-                effort = defaults.reasoning_effort
+    defaults = _provider_config(provider)
+    if defaults is not None:
+        if model_id is None:
+            model_id = defaults.model
+        if effort is None:
+            effort = defaults.reasoning_effort
     return model_id or "", effort or ""
 
 
@@ -208,7 +214,6 @@ def _resolve_context_window(
     model: str | None,
 ) -> int:
     """从模型规格解析上下文窗口，缺失时使用 session 兜底值。"""
-    from codeagent.ai.model_pattern import split_model_pattern
     from codeagent.app.config import Settings
     from codeagent.session.session import DEFAULT_CONTEXT_WINDOW
 
@@ -224,4 +229,3 @@ def _resolve_context_window(
         if spec is not None and getattr(spec, "context_window", None):
             return int(spec.context_window)
     return DEFAULT_CONTEXT_WINDOW
-

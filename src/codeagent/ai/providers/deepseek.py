@@ -7,7 +7,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from codeagent.ai.catalog.builtin import DEEPSEEK_MODELS
 from codeagent.ai.catalog.spec import ModelSpec
-from codeagent.app.config import CONFIG_ENV_FILE
 
 
 class DeepSeekConfig(BaseSettings):
@@ -15,7 +14,6 @@ class DeepSeekConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="DEEPSEEK_",
-        env_file=CONFIG_ENV_FILE,  # 固定 home/config 目录,不读 CWD .env(H10)
         extra="ignore",
     )
 

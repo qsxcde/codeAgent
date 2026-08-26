@@ -42,7 +42,12 @@ def _forbidden_for(rel: str) -> list[str]:
     if rel.startswith("session/"):
         return ["codeagent.ai", "codeagent.tools", "codeagent.config"]
     if rel.startswith("ai/"):
-        return ["codeagent.core", "codeagent.session"]
+        return [
+            "codeagent.app",
+            "codeagent.core",
+            "codeagent.session",
+            "codeagent.tools",
+        ]
     if rel.startswith("tools/"):
         return ["codeagent.core", "codeagent.session", "codeagent.ai", "codeagent.app"]
     if rel.startswith("app/tui/"):

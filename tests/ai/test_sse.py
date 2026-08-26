@@ -1,6 +1,6 @@
 """SSE 解析器单元测试:边界帧、tool_calls 跨帧拼接、usage 独立帧、宽容处理。"""
 
-from codeagent.ai.protocol.sse import SSEParser
+from codeagent.ai.transport.sse import SSEParser
 
 
 def _frame(data: dict) -> str:

@@ -9,7 +9,11 @@ from codeagent.ai.catalog.spec import ModelSpec
 from codeagent.ai.catalog.store import ModelStore
 from codeagent.ai.catalog.builtin import BUILTIN_CATALOGS
 from codeagent.ai.catalog.registry import ModelRegistry
-from codeagent.ai.factory import _split_pattern, create_llm, get_available_providers
+from codeagent.app.composition.model_selection import (
+    create_llm,
+    get_available_providers,
+    split_model_pattern,
+)
 from codeagent.ai.providers import PROVIDERS, deepseek, fake, glm, kimi, minimax, qwen
 from codeagent.ai.providers.deepseek import DeepSeekConfig
 from codeagent.ai.providers.fake import FakeClient
@@ -143,10 +147,10 @@ def test_create_llm_unknown_provider(monkeypatch):
 
 
 def test_split_pattern():
-    assert _split_pattern("deepseek-v4-pro:high") == ("deepseek-v4-pro", "high")
-    assert _split_pattern("deepseek-v4-pro") == ("deepseek-v4-pro", None)
+    assert split_model_pattern("deepseek-v4-pro:high") == ("deepseek-v4-pro", "high")
+    assert split_model_pattern("deepseek-v4-pro") == ("deepseek-v4-pro", None)
     # 非合法 effort 不拆
-    assert _split_pattern("deepseek-v4-pro:foo") == ("deepseek-v4-pro:foo", None)
+    assert split_model_pattern("deepseek-v4-pro:foo") == ("deepseek-v4-pro:foo", None)
 
 
 def test_create_llm_inline_effort(monkeypatch):

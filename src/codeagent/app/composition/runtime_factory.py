@@ -9,6 +9,7 @@ from typing import Any, Callable
 from codeagent.core.ports import AgentPorts
 
 from .model_factory import ChatModelPort
+from . import model_selection
 from .policy_factory import _create_policy
 from .prompt_builder import _build_system_prompt, _load_skills
 from .tool_factory import _load_mcp_tools, create_tools
@@ -82,11 +83,10 @@ def create_agent_ports(
     mcp_diagnostics: list[str] | None = None,
 ) -> AgentPorts:
     """装配模型端口、工具集和安全策略。"""
-    from codeagent.ai.factory import create_llm
     from codeagent.app.skills import format_skill_invocation
     from codeagent.tools.mcp.loader import close_mcp_tools
 
-    client = create_llm(
+    client = model_selection.create_llm(
         cfg=cfg,
         registry=registry,
         reasoning_effort=reasoning_effort,
@@ -145,4 +145,3 @@ class _LazySummarizer:
         if self._real is None:
             self._real = self._factory()
         return await self._real.summarize(messages, prev_summary)
-

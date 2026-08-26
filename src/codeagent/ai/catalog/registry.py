@@ -2,9 +2,7 @@
 
 对应 Pi 的 ModelRegistry(解析)层:
 - `ModelRegistry.resolve()` 把模型名解析成 `ModelSpec`;
-- 供应商工厂注册表 ``PROVIDERS`` 与统一构造入口 ``create_llm`` 见
-  ``codeagent.ai.factory``;``available_providers`` 的并集计算也在 factory
-  (catalog 层不依赖 providers 层)。
+- provider 可用性并集与客户端构造由组合根负责(catalog 层不依赖 providers 层)。
 """
 
 from __future__ import annotations
@@ -38,8 +36,8 @@ class ModelRegistry:
     def catalog_providers(self) -> list[str]:
         """模型目录中出现的 provider key(内置 ∪ models.json)。
 
-        "可构造 provider"的并集计算在 ``ai/factory.get_available_providers``
-        (目录 key ∪ 工厂 key),保持本层不依赖 providers。
+        "可构造 provider"的并集计算在组合根(目录 key ∪ 工厂 key)，保持本层
+        不依赖 providers。
         """
         return list(self._catalogs)
 

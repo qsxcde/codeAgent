@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from codeagent.ai.transport.openai_compat import OpenAICompatClient
-from codeagent.ai.protocol.messages import ChatMessage, ToolCall
+from codeagent.ai.model.types import ChatMessage, ToolCall
 
 
 def _client(**kwargs) -> OpenAICompatClient:

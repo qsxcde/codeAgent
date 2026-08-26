@@ -6,7 +6,7 @@
 import asyncio
 
 from codeagent.ai.providers import FakeClient
-from codeagent.ai.protocol.messages import ChatMessage
+from codeagent.ai.model.types import ChatMessage
 
 
 def _msgs(*contents: str) -> list[ChatMessage]:

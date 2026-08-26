@@ -9,9 +9,6 @@ import logging
 from pathlib import Path
 
 from codeagent.ai.catalog.spec import ModelSpec
-from codeagent.app.config import CONFIG_MODELS_FILE
-
-DEFAULT_PATH = CONFIG_MODELS_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +16,13 @@ logger = logging.getLogger(__name__)
 class ModelStore:
     """读写 models.json;文件不存在时返回空。"""
 
-    def __init__(self, path: Path = DEFAULT_PATH):
-        self.path = path
+    def __init__(self, path: Path | None = None):
+        """创建模型目录存储。
+
+        ``None`` 表示不读取用户覆盖文件，仅使用内置目录；应用组合根应
+        显式传入用户级 ``models.json`` 路径。
+        """
+        self.path = Path(path) if path is not None else None
 
     def load(self) -> dict:
         """返回 ``{provider: {"models": [ModelSpec], ...}}``。
@@ -28,7 +30,7 @@ class ModelStore:
         文件不存在、JSON 损坏或编码无法解码时返回空并告警(不阻塞上层启动);
         每条模型记录逐字段校验类型,坏记录跳过并告警,不静默强制(H12/H13)。
         """
-        if not self.path.exists():
+        if self.path is None or not self.path.exists():
             return {}
         try:
             # utf-8-sig:兼容 Windows 记事本写入的 BOM;无 BOM 时等价 utf-8(H13)

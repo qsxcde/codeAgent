@@ -4,8 +4,6 @@
 - ``ModelStore``:models.json 读写(store.py);
 - ``ModelRegistry``:合并内置目录与用户覆盖,提供模型解析(registry.py);
 - ``BUILTIN_CATALOGS``:内置模型目录(builtin.py)。
-
-供应商工厂注册表与统一构造入口见 ``codeagent.ai.factory``。
 """
 
 from codeagent.ai.catalog.builtin import BUILTIN_CATALOGS

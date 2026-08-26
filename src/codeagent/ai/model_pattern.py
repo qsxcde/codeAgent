@@ -1,18 +1,13 @@
-"""模型运行时内的纯函数:model:effort 解析。"""
+"""旧模型选择语法入口，保留为兼容 re-export。"""
 
-from __future__ import annotations
-
-#: 合法思考强度白名单。
-KNOWN_EFFORTS = ("low", "medium", "high")
+import importlib
 
 
-def split_model_pattern(pattern: str) -> tuple[str, str | None]:
-    """``deepseek-v4-pro:high`` → (``deepseek-v4-pro``, ``high``)。
+def __getattr__(name: str):
+    if name in {"KNOWN_EFFORTS", "split_model_pattern"}:
+        module = importlib.import_module("codeagent.app.composition.model_selection")
+        return getattr(module, name)
+    raise AttributeError(name)
 
-    本函数是 model:effort 解析的**唯一实现**,避免多处复制漂移。
-    """
-    if ":" in pattern:
-        base, effort = pattern.rsplit(":", 1)
-        if effort in KNOWN_EFFORTS:
-            return base, effort
-    return pattern, None
+
+__all__ = ["KNOWN_EFFORTS", "split_model_pattern"]
