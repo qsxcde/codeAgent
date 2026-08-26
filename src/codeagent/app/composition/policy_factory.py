@@ -11,7 +11,7 @@ from codeagent.core.ports import PolicyDecision
 def _create_policy(cfg: Any = None, approval_mode: str = "deny") -> Any:
     """按形态装配执行前安全策略。"""
     from codeagent.app.config import CONFIG_DIR
-    from codeagent.tools.mcp.config import parse_mcp_permissions
+    from codeagent.tools.mcp.permissions import parse_mcp_permissions
     from codeagent.tools.security import classify_tool
 
     workspace = getattr(cfg, "cwd", None) if cfg is not None else None
@@ -41,4 +41,3 @@ def _create_policy(cfg: Any = None, approval_mode: str = "deny") -> Any:
             return PolicyDecision(decision.action, decision.reason, decision.warning)
 
     return _Policy()
-

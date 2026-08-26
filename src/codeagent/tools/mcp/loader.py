@@ -12,7 +12,7 @@ from typing import Any
 from codeagent.tools.mcp.adapter import McpTool
 from codeagent.tools.mcp.budget import apply_budget
 from codeagent.tools.mcp.client import McpServerClient
-from codeagent.tools.mcp.config import parse_mcp_config
+from codeagent.tools.mcp.server_config import parse_mcp_config
 
 __all__ = ["load_mcp_tools", "close_mcp_tools", "close_mcp_clients"]
 
