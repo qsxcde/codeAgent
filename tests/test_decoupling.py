@@ -95,6 +95,15 @@ def test_composition_roots_exist() -> None:
         assert (SRC_ROOT / rel).exists(), f"{rel} 缺失"
 
 
+def test_core_exports_runtime_contracts_without_legacy_entrypoints() -> None:
+    """core 对外只暴露新 Agent 运行时，不再暴露旧端口/整轮入口。"""
+    import codeagent.core as core
+
+    assert hasattr(core, "Agent")
+    assert not hasattr(core, "AgentPorts")
+    assert not hasattr(core, "run_turn")
+
+
 def test_scan_has_content() -> None:
     """扫描覆盖全部源码文件(防空转:规则写错导致零文件被测)。"""
     rels = [_rel(p) for p in PY_FILES]
@@ -159,6 +168,8 @@ def test_current_surfaces_do_not_reference_removed_ai_modules() -> None:
         REPO_ROOT / "tests" / "test_decoupling.py",
     }
     for path in paths:
+        if not path.exists():
+            continue
         if path in intentional_boundary_tests:
             continue
         content = path.read_text(encoding="utf-8")

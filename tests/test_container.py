@@ -15,25 +15,51 @@ import pytest
 from codeagent.ai.transport.openai_compat import OpenAICompatClient
 
 
-def test_create_agent_ports_returns_ports():
+async def _run_config(config, prompt: str, *, history=None, emit=None):
+    from codeagent.core import AgentContext, run_agent_loop
+
+    previous = list(history or [])
+    new_messages = await run_agent_loop(
+        AgentContext(messages=previous, tools=list(config.tools)),
+        config,
+        prompt,
+        emit=emit,
+    )
+    return previous + new_messages
+
+
+def test_create_agent_config_returns_config():
     """用 fake provider 注入,零网络装配自研端口(模型端口 + 工具)。"""
     with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
-        from codeagent.app.container import create_agent_ports
-        from codeagent.core.ports import AgentPorts
+        from codeagent.app.container import create_agent_config
+        from codeagent.core.ports import AgentLoopConfig
 
-        ports = create_agent_ports()
-    assert isinstance(ports, AgentPorts)
-    assert len(ports.tools) == 8
-    assert ports.model.model_id == "fake-model"
+        config = create_agent_config()
+    assert isinstance(config, AgentLoopConfig)
+    assert len(config.tools) == 8
+    assert config.model.model_id == "fake-model"
+
+
+def test_create_agent_config_injects_shared_tool_runtime():
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        from codeagent.app.container import create_agent_config
+        from codeagent.core.execution import ToolExecutionRuntime
+
+    config = create_agent_config()
+
+    assert isinstance(config.tool_runtime, ToolExecutionRuntime)
 
 
 def test_agent_runtime_close_is_idempotent():
     """Composition-root runtime closes model resources exactly once."""
     from codeagent.app.container import AgentRuntime
-    from codeagent.core.ports import AgentPorts
+    from codeagent.core.ports import AgentLoopConfig
 
     class Closable:
         model_id = "stub"
@@ -45,8 +71,8 @@ def test_agent_runtime_close_is_idempotent():
             self.closed += 1
 
     client = Closable()
-    ports = AgentPorts(model=client, tools=[])
-    runtime = AgentRuntime(ports, client, [])
+    config = AgentLoopConfig(model=client, tools=[])
+    runtime = AgentRuntime(config, None, client, [])
     asyncio.run(runtime.close())
     asyncio.run(runtime.close())
     assert client.closed == 1
@@ -134,7 +160,7 @@ def test_create_tui_app_resolves_footer_info():
         assert app.model.status.effort == "high"
 
 
-def test_create_tui_app_injects_rebuild_ports():
+def test_create_tui_app_injects_rebuild_config():
     """组合根注入 rebuild 回调:/provider /model /effort 热切换链路(T-44)。"""
     with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
@@ -151,10 +177,10 @@ def test_create_tui_app_injects_rebuild_ports():
     assert effort == "high"
     # 空会话尚未产生对话,配置只更新内存 pending session,不创建 store header。
     assert store.list() == []
-    assert app._manager._ports is not None
+    assert app._manager._config is not None
 
 
-def test_rebuild_ports_syncs_model_context_window():
+def test_rebuild_config_syncs_model_context_window():
     with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
         from codeagent.ai.catalog.registry import ModelRegistry
@@ -175,7 +201,7 @@ def test_rebuild_ports_syncs_model_context_window():
     assert app._manager.current.context_window == 32_000
 
 
-def test_rebuild_ports_closes_realized_previous_runtime():
+def test_rebuild_config_closes_realized_previous_runtime():
     """TUI 热切换在新端口构造成功后释放旧模型客户端。"""
     from codeagent.app.container import create_tui_app
 
@@ -250,20 +276,20 @@ async def test_real_provider_runs_through_loop():
     )
     mock_async_client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(10.0))
 
-    from codeagent.app.container import create_agent_ports
-    from codeagent.core import EventType, run_turn
+    from codeagent.app.container import create_agent_config
+    from codeagent.core import EventType
 
     events = []
     with patch("codeagent.app.composition.model_selection.create_llm", return_value=llm), patch(
         "codeagent.ai.transport.openai_compat.httpx.AsyncClient",
         return_value=mock_async_client,
     ):
-        ports = create_agent_ports()
-        history = await run_turn(ports, events.append, "hi", history=[])
-        await ports.model._client.aclose()
+        config = create_agent_config()
+        history = await _run_config(config, "hi", emit=events.append)
+        await config.model._client.aclose()
 
     types = [e.type for e in events]
-    assert EventType.TEXT_DELTA in types
+    assert EventType.MESSAGE_UPDATE in types
     assert history[-1].role == "assistant"
     assert history[-1].content == "ok"
 
@@ -271,38 +297,40 @@ async def test_real_provider_runs_through_loop():
 # -- 执行前安全策略装配(security-permissions)----------------------------------
 
 
-def _ports_with_mode(approval_mode: str):
+def _config_with_mode(approval_mode: str):
     with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
-        from codeagent.app.container import create_agent_ports
+        from codeagent.app.container import create_agent_config
 
-        return create_agent_ports(approval_mode=approval_mode)
+        config = create_agent_config(approval_mode=approval_mode)
+        from codeagent.app.container import _create_policy
+
+        return config, _create_policy(approval_mode=approval_mode)
 
 
 def test_policy_deny_mode_default_and_fails_closed():
     """缺省/deny 模式:ask 降级 deny(未确认不得执行);allow 直通。"""
-    ports = _ports_with_mode("deny")
-    assert ports.policy is not None
-    assert ports.policy.decide("bash", {"command": "git push"}).action == "deny"
-    assert "未确认不得执行" in ports.policy.decide("bash", {"command": "git push"}).reason
-    assert ports.policy.decide("bash", {"command": "ls"}).action == "allow"
-    assert ports.policy.decide("bash", {"command": "rm -rf /"}).action == "deny"  # 黑名单
+    _, policy = _config_with_mode("deny")
+    assert policy.decide("bash", {"command": "git push"}).action == "deny"
+    assert "未确认不得执行" in policy.decide("bash", {"command": "git push"}).reason
+    assert policy.decide("bash", {"command": "ls"}).action == "allow"
+    assert policy.decide("bash", {"command": "rm -rf /"}).action == "deny"  # 黑名单
 
 
 def test_policy_interactive_mode_keeps_ask():
     """interactive 模式(TUI):ask 保留,交用户确认。"""
-    ports = _ports_with_mode("interactive")
-    decision = ports.policy.decide("bash", {"command": "git push"})
+    _, policy = _config_with_mode("interactive")
+    decision = policy.decide("bash", {"command": "git push"})
     assert decision.action == "ask" and "推送" in decision.reason
 
 
 def test_policy_allow_mode_approves_asks():
     """allow 模式(--yes):ask 放行(显式承担风险)。"""
-    ports = _ports_with_mode("allow")
-    assert ports.policy.decide("bash", {"command": "git push"}).action == "allow"
-    assert ports.policy.decide("bash", {"command": "rm -rf /"}).action == "deny"  # 黑名单仍拦
+    _, policy = _config_with_mode("allow")
+    assert policy.decide("bash", {"command": "git push"}).action == "allow"
+    assert policy.decide("bash", {"command": "rm -rf /"}).action == "deny"  # 黑名单仍拦
 
 
 def test_policy_file_boundary_modes(tmp_path, monkeypatch):
@@ -312,21 +340,21 @@ def test_policy_file_boundary_modes(tmp_path, monkeypatch):
     (tmp_path / "secret.txt").write_text("x")
     monkeypatch.setenv("CODEAGENT_CWD", str(tmp_path))
 
-    interactive = _ports_with_mode("interactive")
-    decision = interactive.policy.decide("write", {"file_path": "ws/a.py"})
+    _, interactive = _config_with_mode("interactive")
+    decision = interactive.decide("write", {"file_path": "ws/a.py"})
     assert decision.action == "allow"  # 界内
-    decision = interactive.policy.decide("write", {"file_path": "../secret.txt"})
+    decision = interactive.decide("write", {"file_path": "../secret.txt"})
     assert decision.action == "ask"  # 越界写 → 确认
-    deny = _ports_with_mode("deny")
-    assert deny.policy.decide("write", {"file_path": "../secret.txt"}).action == "deny"
-    read = interactive.policy.decide("read", {"file_path": "../secret.txt"})
+    _, deny = _config_with_mode("deny")
+    assert deny.decide("write", {"file_path": "../secret.txt"}).action == "deny"
+    read = interactive.decide("read", {"file_path": "../secret.txt"})
     assert read.action == "allow" and read.warning is True  # 越界读警告放行
 
 
 # -- 系统提示词注入(agents-md-hierarchy)---------------------------------------
 
 
-def test_ports_inject_system_prompt_with_agents(tmp_path, monkeypatch):
+def test_config_inject_system_prompt_with_agents(tmp_path, monkeypatch):
     """组合根装配:system prompt = 基础提示词 + 分层 AGENTS.md(首条 system 消息)。"""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "AGENTS.md").write_text("项目级指令", encoding="utf-8")
@@ -339,9 +367,9 @@ def test_ports_inject_system_prompt_with_agents(tmp_path, monkeypatch):
 
         model = FakeClient(response="测试回复")
         mock_llm.return_value = model
-        from codeagent.app.container import create_agent_ports, agents_sources
+        from codeagent.app.container import create_agent_config, agents_sources
 
-        ports = create_agent_ports()
+        ports = create_agent_config()
         sources = agents_sources()
     assert sources  # 全局 + 项目文件被加载
     assert any(str(CONFIG_DIR / "AGENTS.md") in s for s in sources)
@@ -349,10 +377,8 @@ def test_ports_inject_system_prompt_with_agents(tmp_path, monkeypatch):
     # 运行一轮:模型收到的首条消息为 system,含基础提示词 + 来源标注
     import asyncio
 
-    from codeagent.core import run_turn
-
     events: list = []
-    asyncio.run(run_turn(ports, events.append, "你好", history=[]))
+    asyncio.run(_run_config(ports, "你好", emit=events.append))
     assert model.call_history
     first = model.call_history[0]["messages"][0]
     assert first["role"] == "system"
@@ -374,16 +400,14 @@ def test_system_prompt_only_once_and_hot_swap_stable(tmp_path, monkeypatch):
 
         model = FakeClient(responses=["第一轮", "第二轮"])
         mock_llm.return_value = model
-        from codeagent.app.container import create_agent_ports
+        from codeagent.app.container import create_agent_config
 
-        ports = create_agent_ports()
+        ports = create_agent_config()
     import asyncio
 
-    from codeagent.core import run_turn
-
     events: list = []
-    asyncio.run(run_turn(ports, events.append, "第一问", history=[]))
-    asyncio.run(run_turn(ports, events.append, "第二问", history=[]))
+    history = asyncio.run(_run_config(ports, "第一问", emit=events.append))
+    asyncio.run(_run_config(ports, "第二问", history=history, emit=events.append))
     for call in model.call_history:
         roles = [m["role"] for m in call["messages"]]
         assert roles.count("system") == 1  # 每轮恰好一条
@@ -420,16 +444,14 @@ def test_bootstrap_is_present_once_per_model_context_for_new_and_recovered_turns
 
         model = FakeClient(responses=["第一轮", "第二轮"])
         mock_llm.return_value = model
-        from codeagent.app.container import create_agent_ports
+        from codeagent.app.container import create_agent_config
 
-        ports = create_agent_ports()
-
-    from codeagent.core import run_turn
+        ports = create_agent_config()
 
     events: list = []
     history: list = []
-    history = asyncio.run(run_turn(ports, events.append, "第一问", history=history))
-    history = asyncio.run(run_turn(ports, events.append, "第二问", history=history))
+    history = asyncio.run(_run_config(ports, "第一问", history=history, emit=events.append))
+    history = asyncio.run(_run_config(ports, "第二问", history=history, emit=events.append))
     assert history
     for call in model.call_history:
         roles = [message["role"] for message in call["messages"]]
@@ -443,7 +465,7 @@ def test_bootstrap_is_reinjected_after_context_compaction(tmp_path, monkeypatch)
 
     from codeagent.app.skill_packages import PackageManager
     from codeagent.app.skill_runtime import BOOTSTRAP_TAG
-    from codeagent.core import AgentPorts
+    from codeagent.core import AgentLoopConfig
     from codeagent.session import EventBus
     from codeagent.session import AgentSession
 
@@ -466,9 +488,9 @@ def test_bootstrap_is_reinjected_after_context_compaction(tmp_path, monkeypatch)
 
         model = FakeClient(responses=["答1", "答2", "答3", "答4"])
         mock_llm.return_value = model
-        from codeagent.app.container import create_agent_ports
+        from codeagent.app.container import create_agent_config
 
-        ports = create_agent_ports()
+        ports = create_agent_config()
 
     session = AgentSession(
         ports,
@@ -483,7 +505,7 @@ def test_bootstrap_is_reinjected_after_context_compaction(tmp_path, monkeypatch)
     assert BOOTSTRAP_TAG in model.call_history[-1]["messages"][0]["content"]
 
 
-def test_ports_inject_skills_section_and_tool(tmp_path, monkeypatch):
+def test_config_inject_skills_section_and_tool(tmp_path, monkeypatch):
     """组合根装配:system prompt 追加技能段 + skill 工具携带渲染注册表。"""
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".codeagent" / "skills" / "fmt").mkdir(parents=True)
@@ -495,15 +517,13 @@ def test_ports_inject_skills_section_and_tool(tmp_path, monkeypatch):
 
         model = FakeClient(response="测试回复")
         mock_llm.return_value = model
-        from codeagent.app.container import create_agent_ports
+        from codeagent.app.container import create_agent_config
 
-        ports = create_agent_ports()
+        ports = create_agent_config()
     import asyncio
 
-    from codeagent.core import run_turn
-
     events: list = []
-    asyncio.run(run_turn(ports, events.append, "你好", history=[]))
+    asyncio.run(_run_config(ports, "你好", emit=events.append))
     first = model.call_history[0]["messages"][0]
     assert "<available_skills>" in first["content"]
     assert "- fmt: 格式化。 (来源:" in first["content"]
@@ -632,7 +652,7 @@ def test_create_tui_app_injects_save_key(tmp_path, monkeypatch):
     content = env_file.read_text(encoding="utf-8")
     assert "DEEPSEEK_API_KEY=sk-ds-1" in content
     # 热切换生效:manager 端口重建,model/effort 按装配解析返回
-    assert app._manager._ports is not None
+    assert app._manager._config is not None
     assert (model_id, effort) == ("deepseek-v4-flash", "high")
 
 
@@ -663,7 +683,7 @@ def test_tui_app_with_store_persists_session_and_usage():
         from codeagent.app.container import create_tui_app
 
         app = create_tui_app(provider="fake", backend=_StubBackend(), store=store)
-        # _LazyPorts 首次 run 才装配模型客户端:run 必须在 mock 作用域内。
+        # _LazyConfig 首次 run 才装配模型客户端:run 必须在 mock 作用域内。
         session = app._manager.current
         assert session is not None
         asyncio.run(session.run("hi"))
@@ -683,12 +703,12 @@ def test_create_tui_app_without_api_key_starts_lazy():
     穿透 run_tui,/login 首启流(鸡生蛋)不可达;延迟后 /login 写回 .env
     (create_llm 每次重读配置)自然生效。
     """
-    from codeagent.app.container import _LazyPorts, _LazySummarizer, create_tui_app
+    from codeagent.app.container import _LazyConfig, _LazySummarizer, create_tui_app
 
     app = create_tui_app(provider="deepseek", backend=_StubBackend())
-    assert isinstance(app._manager._ports, _LazyPorts)
+    assert isinstance(app._manager._config, _LazyConfig)
     assert isinstance(app._manager._summarizer, _LazySummarizer)
-    assert app._manager._ports._real is None  # 尚未装配:首次对话才构造
+    assert app._manager._config._real is None  # 尚未装配:首次对话才构造
     assert app._manager._summarizer._real is None  # 首次 /compact 才构造
 
 
@@ -785,7 +805,7 @@ def test_usage_of_missing_cached_defaults_zero():
     assert _usage_of({}) is None
 
 
-def test_ports_append_mcp_tools(tmp_path, monkeypatch):
+def test_config_append_mcp_tools(tmp_path, monkeypatch):
     """组合根装配:用户级 mcp.json → MCP 工具追加到内建工具之后(命名前缀)。"""
     monkeypatch.chdir(tmp_path)
     import json
@@ -801,9 +821,9 @@ def test_ports_append_mcp_tools(tmp_path, monkeypatch):
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
-        from codeagent.app.container import create_agent_ports
+        from codeagent.app.container import create_agent_config
 
-        ports = create_agent_ports()
+        ports = create_agent_config()
     names = [t.name for t in ports.tools]
     assert names[:8] == ["read", "write", "edit", "bash", "grep", "find", "ls", "skill"]
     assert "mcp__mock__echo" in names and "mcp__mock__fail" in names

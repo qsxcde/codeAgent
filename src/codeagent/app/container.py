@@ -1,7 +1,7 @@
-"""应用组合根兼容入口。
+"""应用组合根导出入口。
 
-实现按职责位于 :mod:`codeagent.app.composition`，本模块只保留稳定导入
-路径和兼容符号。跨层装配实现不得反向导入本 façade。
+实现按职责位于 :mod:`codeagent.app.composition`，本模块只导出组合根 API。
+跨层装配实现不得反向导入本 façade。
 """
 
 from __future__ import annotations
@@ -24,13 +24,13 @@ from codeagent.app.composition.prompt_builder import (
 )
 from codeagent.app.composition.runtime_factory import (
     AgentRuntime,
-    _LazyPorts,
+    _LazyConfig,
     _LazySummarizer,
-    _RUNTIMES_BY_PORTS,
-    close_runtime_for_ports,
-    create_agent_ports,
+    _RUNTIMES_BY_CONFIG,
+    close_runtime_for_config,
+    create_agent_config,
     create_agent_runtime,
-    runtime_for_ports,
+    runtime_for_config,
 )
 from codeagent.app.composition.session_factory import (
     create_agent_session,
@@ -50,14 +50,14 @@ __all__ = [
     "ChatModelPort",
     "LlmSummarizer",
     "TuiAssembler",
-    "create_agent_ports",
+    "create_agent_config",
     "create_agent_runtime",
     "create_agent_session",
     "create_session_manager",
     "create_tools",
     "create_tui_app",
-    "runtime_for_ports",
-    "close_runtime_for_ports",
+    "runtime_for_config",
+    "close_runtime_for_config",
     "agents_sources",
     "skills_view",
 ]

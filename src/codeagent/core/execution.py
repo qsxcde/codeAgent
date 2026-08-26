@@ -1,9 +1,9 @@
 """Controlled, framework-independent tool execution runtime.
 
-The runtime deliberately knows only the small ``AtomicTool``-like protocol:
-an ``Args`` model and either a cancellable async entry point or ``invoke``.
-This keeps core independent from Bash, MCP and model implementations while
-making timeout/cancellation state observable and bounded.
+The runtime accepts the new ``AgentTool`` protocol and keeps a compatibility
+path for existing schema-based tools during migration.  It owns bounded
+execution, operation state, timeout and cleanup reporting without importing a
+concrete tool implementation.
 """
 
 from __future__ import annotations
@@ -53,12 +53,16 @@ class ToolExecutionRuntime:
         call: ToolCall,
         timeout: float | None = None,
         operation_id: str | None = None,
+        on_update: Any = None,
     ) -> ToolResult:
         operation = ToolOperation(operation_id or new_id(), call.id, call.name)
         self._active[operation.operation_id] = operation
         try:
             try:
-                args_obj = tool.Args(**call.args)
+                if callable(getattr(tool, "execute", None)):
+                    args_obj = call.args
+                else:
+                    args_obj = tool.Args(**call.args)
             except Exception as exc:  # noqa: BLE001 - pydantic/schema error
                 operation.status = ToolExecutionStatus.INVALID_ARGUMENTS
                 operation.cleanup_confirmed = True
@@ -74,7 +78,7 @@ class ToolExecutionRuntime:
 
             async with self._semaphore:
                 operation.task = asyncio.current_task()
-                invoke = self._invoke(tool, args_obj)
+                invoke = self._invoke(tool, args_obj, call, on_update=on_update)
                 try:
                     if timeout is None:
                         content = await invoke
@@ -175,8 +179,19 @@ class ToolExecutionRuntime:
         for operation_id in list(self._active):
             await self.cancel(operation_id)
 
-    def _invoke(self, tool: Any, args_obj: Any) -> Any:
-        """Return an awaitable for async-aware tools, or a thread fallback."""
+    def _invoke(
+        self,
+        tool: Any,
+        args_obj: Any,
+        call: ToolCall,
+        *,
+        on_update: Any = None,
+    ) -> Any:
+        """Return an awaitable for AgentTool or legacy schema-based tools."""
+        agent_execute = getattr(tool, "execute", None)
+        if callable(agent_execute):
+            value = agent_execute(call.id, call.args, signal=None, on_update=on_update)
+            return value if inspect.isawaitable(value) else _completed(value)
         for name in ("ainvoke", "invoke_async"):
             method = getattr(tool, name, None)
             if method is not None:
@@ -186,7 +201,10 @@ class ToolExecutionRuntime:
 
     @staticmethod
     def _is_cancellable(tool: Any) -> bool:
-        return any(callable(getattr(tool, name, None)) for name in ("ainvoke", "invoke_async"))
+        return any(
+            callable(getattr(tool, name, None))
+            for name in ("execute", "ainvoke", "invoke_async")
+        )
 
     async def _cleanup(self, tool: Any, operation: ToolOperation) -> None:
         for name in ("cancel_operation", "cancel", "cleanup"):

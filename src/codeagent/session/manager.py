@@ -6,7 +6,7 @@
   (10 类 AgentEvent 契约零改动,无全局事件转发总线——并行会话的转发列为
   未来演进,``AgentEvent.metadata`` 已预留扩展位);
 - **ports 共享**:模型端口与工具无状态,所有会话共用同一份(组合根装配一次);
-  ``replace_ports`` 属 T-44(/provider /model 时按 Pi 式 ``model_change``
+  ``replace_config`` 属 T-44(/provider /model 时按 Pi 式 ``model_change``
   entry 演进,design D4);
 - **header 元数据**:首轮成功落盘时把模型配置(model/effort)固化进会话头
   (design D4)。
@@ -30,7 +30,7 @@ class SessionManager:
 
     def __init__(
         self,
-        ports: Any,
+        config: Any,
         store: SessionStore | None = None,
         *,
         model: str = "",
@@ -40,8 +40,10 @@ class SessionManager:
         summarizer: Any = None,
         context_window: int = DEFAULT_CONTEXT_WINDOW,
         runtime_closer: Callable[[], Any] | None = None,
+        policy: Any = None,
     ) -> None:
-        self._ports = ports
+        self._config = config
+        self._policy = policy
         self._store = store
         self._model = model
         self._effort = effort
@@ -122,23 +124,26 @@ class SessionManager:
                 return message.id
         raise ValueError("会话没有可分叉的用户消息")
 
-    def replace_ports(
+    def replace_config(
         self,
-        ports: Any,
+        config: Any,
         *,
         model: str = "",
         effort: str = "",
         context_window: int | None = None,
+        policy: Any = None,
     ) -> None:
-        """热切换共享端口与会话配置(design D4,T-44;组合根注入新端口)。
+        """热切换共享模型/工具配置与会话配置(design D4,T-44)。
 
-        - ports 无状态共享:替换后所有会话后续轮次使用新配置,历史不变;
+        - config 无状态共享:替换后所有会话后续轮次使用新配置,历史不变;
         - 运行中的会话先中止,避免旧端口执行中被替换;
         - 当前会话文件追加 ``model_change`` entry(读侧后写覆盖 header);
           新建会话时 header 直接固化新配置。
         """
         self._halt_current()
-        self._ports = ports
+        self._config = config
+        if policy is not None:
+            self._policy = policy
         self._model = model
         self._effort = effort
         if context_window is not None:
@@ -147,7 +152,7 @@ class SessionManager:
             self._context_window = context_window
         # 既有会话壳在构造时固化端口引用:逐壳更新,后续轮次用新配置。
         for session in self._sessions.values():
-            session.replace_ports(ports)
+            session.replace_config(config)
             if context_window is not None:
                 session.set_context_window(context_window)
             session.update_persistence_options(model=model, effort=effort)
@@ -203,7 +208,7 @@ class SessionManager:
     @property
     def tools(self) -> list[Any]:
         """共享端口中的工具列表(供 TUI `/tools` 命令展示,只读视图)。"""
-        return list(getattr(self._ports, "tools", []))
+        return list(getattr(self._config, "tools", []))
 
     # -- 订阅跟随 -----------------------------------------------------------
 
@@ -244,7 +249,7 @@ class SessionManager:
         首轮 SESSION_STARTED 事件携带父会话 id。
         """
         session = AgentSession(
-            self._ports,
+            self._config,
             EventBus(),
             store=self._store,
             session_id=session_id,
@@ -255,6 +260,7 @@ class SessionManager:
             context_window=self._context_window,
             defer_persistence=defer_persistence,
             persistence_options=persistence_options,
+            policy=self._policy,
         )
         for fn, unsubs in self._subscribers:
             for u in unsubs:

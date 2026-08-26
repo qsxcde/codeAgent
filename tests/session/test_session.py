@@ -9,7 +9,7 @@ import pytest
 
 from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
-from codeagent.core import AgentPorts, EventType, RecursionLimitError
+from codeagent.core import AgentLoopConfig, EventType, Message, RecursionLimitError
 from codeagent.session import AgentSession, EventBus
 from codeagent.session.store import MemoryStore
 from codeagent.tools.atomic import (
@@ -24,11 +24,11 @@ from codeagent.tools.atomic import (
 
 
 def _session(model: FakeClient, store=None, session_id: str | None = None) -> AgentSession:
-    ports = AgentPorts(
+    config = AgentLoopConfig(
         model=ChatModelPort(model),
         tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
     )
-    return AgentSession(ports, EventBus(), store=store, session_id=session_id)
+    return AgentSession(config, EventBus(), store=store, session_id=session_id)
 
 
 def _event_types(seen) -> list[str]:
@@ -396,12 +396,11 @@ class _StubPolicy:
 def _session_with_policy(
     model: FakeClient, policy=None, store=None, session_id: str | None = None
 ) -> AgentSession:
-    ports = AgentPorts(
+    config = AgentLoopConfig(
         model=ChatModelPort(model),
         tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
-        policy=policy,
     )
-    return AgentSession(ports, EventBus(), store=store, session_id=session_id)
+    return AgentSession(config, EventBus(), store=store, session_id=session_id, policy=policy)
 
 
 def _ask_model() -> FakeClient:
@@ -490,11 +489,11 @@ def test_abort_while_waiting_confirmation_cancels_without_hanging():
 
 def test_forked_session_started_carries_previous_session_id():
     """分叉会话首轮 SESSION_STARTED 事件 metadata 携带父会话 id(对齐 Pi reason=fork)。"""
-    ports = AgentPorts(
+    config = AgentLoopConfig(
         model=ChatModelPort(FakeClient(response="OK")),
         tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
     )
-    sess = AgentSession(ports, EventBus(), previous_session_id="parent-1")
+    sess = AgentSession(config, EventBus(), previous_session_id="parent-1")
     seen: list = []
     sess.subscribe(seen.append)
     asyncio.run(sess.run("你好"))
@@ -511,6 +510,24 @@ def test_normal_session_started_has_no_previous_session_id():
     asyncio.run(sess.run("你好"))
     started = next(e for e in seen if e.type == EventType.SESSION_STARTED)
     assert "previous_session_id" not in started.metadata
+
+
+def test_session_context_transform_is_model_only_and_does_not_change_history():
+    model = FakeClient(response="OK")
+    config = AgentLoopConfig(model=ChatModelPort(model), tools=[])
+    seen = []
+
+    def transform(messages):
+        transformed = [*messages, Message(role="user", content="memory-only")]
+        seen.append(transformed)
+        return transformed
+
+    sess = AgentSession(config, EventBus(), transform_context=transform)
+    asyncio.run(sess.run("hello"))
+
+    assert seen
+    assert any(message.content == "memory-only" for message in seen[0])
+    assert all(message.content != "memory-only" for message in sess.history)
 
 
 # -- 上下文压缩(session-compaction)-------------------------------------------
@@ -546,12 +563,12 @@ def _compact_session(
     compact_budget: int = 50,
 ) -> AgentSession:
     """构造带 Summarizer 的会话(port 直装,不跨组合根;预算注入小值便于离线测)。"""
-    ports = AgentPorts(
+    config = AgentLoopConfig(
         model=ChatModelPort(model),
         tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
     )
     return AgentSession(
-        ports,
+        config,
         EventBus(),
         store=store,
         summarizer=summarizer,

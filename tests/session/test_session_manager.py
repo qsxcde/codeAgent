@@ -9,14 +9,14 @@ import pytest
 
 from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
-from codeagent.core import AgentPorts, EventType
+from codeagent.core import AgentLoopConfig, EventType
 from codeagent.session import SessionManager
 from codeagent.session.store import MemoryStore
 
 
 def _manager(client: FakeClient | None = None, store=None, **kwargs) -> SessionManager:
-    ports = AgentPorts(model=ChatModelPort(client or FakeClient(response="OK")), tools=[])
-    return SessionManager(ports, store=store, **kwargs)
+    config = AgentLoopConfig(model=ChatModelPort(client or FakeClient(response="OK")), tools=[])
+    return SessionManager(config, store=store, **kwargs)
 
 
 def _event_types(seen) -> list[str]:
@@ -126,14 +126,14 @@ def test_continue_recent_returns_latest():
     assert mgr.continue_recent().session_id == b.session_id
 
 
-def test_replace_ports_switches_config_and_persists():
-    """replace_ports:热切换后会话用新端口,配置写入 store(读侧后写覆盖)。"""
+def test_replace_config_switches_model_and_persists():
+    """replace_config:热切换后会话使用新模型,配置写入 store。"""
     store = MemoryStore()
     mgr = _manager(store=store, model="a", effort="low")
     session = mgr.create()
     asyncio.run(session.run("首轮"))
-    new_ports = AgentPorts(model=ChatModelPort(FakeClient(response="新配置回复")), tools=[])
-    mgr.replace_ports(new_ports, model="b", effort="high")
+    new_config = AgentLoopConfig(model=ChatModelPort(FakeClient(response="新配置回复")), tools=[])
+    mgr.replace_config(new_config, model="b", effort="high")
     ref = store.list()[-1]
     assert ref.model == "b" and ref.effort == "high"
     # 既有会话继续对话使用新端口(历史不丢、回复来自新模型)
@@ -142,19 +142,19 @@ def test_replace_ports_switches_config_and_persists():
     assert assistant[-1] == "新配置回复"
 
 
-def test_replace_ports_halt_running():
-    """replace_ports 先中止运行中的会话(避免旧端口执行中被替换)。"""
+def test_replace_config_halt_running():
+    """replace_config 先中止运行中的会话(避免旧配置执行中被替换)。"""
     mgr = _manager(store=None)
     session = mgr.create()
-    new_ports = AgentPorts(model=ChatModelPort(FakeClient(response="x")), tools=[])
+    new_config = AgentLoopConfig(model=ChatModelPort(FakeClient(response="x")), tools=[])
 
     async def _scenario() -> None:
         task = asyncio.create_task(asyncio.sleep(10))  # 伪装运行中
         session._current_task = task
-        mgr.replace_ports(new_ports, model="c")
+        mgr.replace_config(new_config, model="c")
         await asyncio.sleep(0)  # 让取消在事件循环中生效
         assert task.cancelled()  # halt 中止了运行中任务
-        assert mgr._ports is new_ports
+        assert mgr._config is new_config
 
     asyncio.run(_scenario())
 

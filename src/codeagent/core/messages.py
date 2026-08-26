@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import os
-import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -26,11 +25,9 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "ToolExecutionStatus",
-    "parse_tool_arguments",
     "new_id",
     "remove_by_id",
     "replace_or_append",
-    "attach_tool_results",
 ]
 
 
@@ -55,34 +52,6 @@ class ToolExecutionStatus:
     )
 
 
-def parse_tool_arguments(
-    raw: Any,
-    *,
-    finish_reason: str | None = None,
-) -> tuple[dict[str, Any], str | None]:
-    """Normalize provider tool arguments and return ``(args, error)``.
-
-    Providers are inconsistent about whether arguments arrive as a JSON string
-    or an already decoded mapping.  Invalid/non-object values are represented
-    by an empty object solely for wire compatibility; the error marker prevents
-    the executor from invoking the real tool.
-    """
-    if raw is None or (isinstance(raw, str) and not raw.strip()):
-        return {}, None
-    if isinstance(raw, dict):
-        return dict(raw), None
-    if not isinstance(raw, str):
-        return {}, "工具参数必须是 JSON 对象"
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        suffix = "(可能因响应截断)" if finish_reason == "length" else ""
-        return {}, f"工具参数 JSON 无效{suffix}: {exc.msg} (位置 {exc.pos})"
-    if not isinstance(value, dict):
-        return {}, f"工具参数必须是 JSON 对象,实际为 {type(value).__name__}"
-    return value, None
-
-
 def new_id() -> str:
     """uuid7:时间有序、全局唯一(手写,不引三方依赖)。
 
@@ -104,13 +73,13 @@ class ToolCall:
     id: str
     name: str
     args: dict[str, Any] = field(default_factory=dict)
-    #: Runtime-only parse diagnostic.  It is deliberately omitted from JSONL.
-    argument_error: str | None = None
+    #: Adapter diagnostics stay in an opaque details bag, outside core semantics.
+    details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         result = {"id": self.id, "name": self.name, "args": self.args, "type": "tool_call"}
-        if self.argument_error:
-            result["argument_error"] = self.argument_error
+        if self.details:
+            result["details"] = dict(self.details)
         return result
 
 
@@ -124,6 +93,8 @@ class ToolResult:
 
     tool_call_id: str
     content: str
+    #: Extension metadata owned by the execution adapter, not interpreted by Agent.
+    details: dict[str, Any] = field(default_factory=dict)
     error: bool = False
     name: str = ""
     rejected: bool = False
@@ -209,32 +180,3 @@ def replace_or_append(messages: list[Message], msg: Message) -> None:
             messages[i] = msg
             return
     messages.append(msg)
-
-
-def attach_tool_results(messages: list[Message], results: list[ToolResult]) -> None:
-    """把工具结果按 tool_call_id 归属到对应 assistant 之后(归约语义②)。
-
-    实现依赖写入顺序:遍历现有消息,遇到带 tool_calls 的 assistant 时按
-    ``tool_calls`` 列表序追加对应结果(并行 gather 保序,与 v0.1 一致);
-    未归属的 id(防御:调用列表里没有)追加到列表尾部。
-    """
-    pending = {r.tool_call_id: r for r in results}
-    appended: list[Message] = []
-    for m in messages:
-        if m.tool_calls:
-            for call in m.tool_calls:
-                result = pending.pop(call.id, None)
-                if result is not None:
-                    appended.append(
-                        Message(
-                            role="tool",
-                            content=result.content,
-                            tool_call_id=call.id,
-                            parent_id=m.id,
-                        )
-                    )
-    for result in pending.values():
-        appended.append(
-            Message(role="tool", content=result.content, tool_call_id=result.tool_call_id)
-        )
-    messages.extend(appended)

@@ -2,9 +2,6 @@
 
 from codeagent.core.messages import (
     Message,
-    ToolCall,
-    ToolResult,
-    attach_tool_results,
     new_id,
     remove_by_id,
     replace_or_append,
@@ -39,42 +36,6 @@ def test_message_auto_assigns_id_and_parent():
     assert parent.id
     assert child.id != parent.id
     assert child.parent_id == parent.id
-
-
-def test_attach_tool_results_orders_by_tool_call_list():
-    """工具结果按 assistant.tool_calls 列表序归属(并行 gather 保序语义)。"""
-    messages = [
-        Message(role="user", content="u"),
-        Message(
-            role="assistant",
-            content="",
-            tool_calls=[
-                ToolCall(id="c1", name="bash", args={"command": "echo a"}),
-                ToolCall(id="c2", name="bash", args={"command": "echo b"}),
-            ],
-        ),
-    ]
-    # 结果以乱序返回:归属仍按 calls 顺序落盘
-    attach_tool_results(
-        messages,
-        [
-            ToolResult("c2", "result-b"),
-            ToolResult("c1", "result-a"),
-        ],
-    )
-    roles = [m.role for m in messages]
-    assert roles == ["user", "assistant", "tool", "tool"]
-    assert messages[2].tool_call_id == "c1" and messages[2].content == "result-a"
-    assert messages[3].tool_call_id == "c2" and messages[3].content == "result-b"
-    # 归属的 tool 消息 parent 指向 assistant
-    assert messages[2].parent_id == messages[1].id
-
-
-def test_attach_tool_results_unknown_id_appended():
-    """未知 tool_call_id 的结果追加到列表尾部(防御,不丢失)。"""
-    messages = [Message(role="user", content="u")]
-    attach_tool_results(messages, [ToolResult("ghost", "x")])
-    assert messages[-1].role == "tool" and messages[-1].tool_call_id == "ghost"
 
 
 def test_remove_by_id_and_replace():

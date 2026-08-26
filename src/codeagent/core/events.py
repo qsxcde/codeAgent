@@ -13,6 +13,18 @@ from typing import Any
 class EventType:
     """事件类型常量(字符串,便于序列化与比较)。"""
 
+    # Agent Runtime 生命周期(与 Session 生命周期分开)。
+    AGENT_START = "agent_start"
+    AGENT_END = "agent_end"
+    TURN_START = "turn_start"
+    MESSAGE_START = "message_start"
+    MESSAGE_UPDATE = "message_update"
+    MESSAGE_END = "message_end"
+    TOOL_EXECUTION_START = "tool_execution_start"
+    TOOL_EXECUTION_UPDATE = "tool_execution_update"
+    TOOL_EXECUTION_END = "tool_execution_end"
+    ABORTED = "aborted"
+
     SESSION_STARTED = "session_started"      # 一轮对话开始
     MODEL_REQUEST_STARTED = "model_request_started"  # 一次模型请求开始
     MODEL_REQUEST_FINISHED = "model_request_finished"  # 一次模型请求结束

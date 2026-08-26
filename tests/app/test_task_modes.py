@@ -40,7 +40,7 @@ def test_plan_policy_is_enforced_by_react_tool_boundary():
 
     from codeagent.ai.providers.fake import FakeClient
     from codeagent.app.container import ChatModelPort
-    from codeagent.core import AgentPorts, EventType, run_turn
+    from codeagent.core import AgentContext, AgentLoopConfig, EventType, ToolDecision, run_agent_loop
     from codeagent.tools.atomic import EditTool, ReadTool, WriteTool
 
     model = FakeClient(
@@ -50,13 +50,23 @@ def test_plan_policy_is_enforced_by_react_tool_boundary():
         ]
     )
     events = []
-    ports = AgentPorts(
+    policy = mode_policy(None, TaskMode.PLAN)
+
+    async def before_tool_call(call, _context):
+        decision = policy.decide(call.name, call.args)
+        return (
+            ToolDecision.allow()
+            if decision.action == "allow"
+            else ToolDecision.block(decision.reason)
+        )
+
+    config = AgentLoopConfig(
         model=ChatModelPort(model),
         tools=[ReadTool(), WriteTool(), EditTool()],
-        policy=mode_policy(None, TaskMode.PLAN),
+        before_tool_call=before_tool_call,
     )
 
-    asyncio.run(run_turn(ports, events.append, "plan", history=[]))
+    asyncio.run(run_agent_loop(AgentContext(), config, "plan", emit=events.append))
 
-    result = next(event for event in events if event.type == EventType.TOOL_RESULT)
-    assert result.metadata["status"] == "rejected"
+    result = next(event for event in events if event.type == EventType.TOOL_EXECUTION_END)
+    assert result.payload.status == "rejected"

@@ -10,7 +10,7 @@ from codeagent.ai.model.types import (
     ToolCall as AiToolCall,
     ToolDefinition,
 )
-from codeagent.core.messages import Message, ToolCall, parse_tool_arguments
+from codeagent.core.messages import Message, ToolCall
 from codeagent.core.ports import ModelResponse, StreamEvent
 
 from .model_selection import (
@@ -63,6 +63,28 @@ def _usage_of(usage: dict[str, Any] | None) -> dict[str, int] | None:
     }
 
 
+def _parse_tool_arguments(
+    raw: Any,
+    *,
+    finish_reason: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Parse provider tool JSON at the AI/application boundary."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return {}, None
+    if isinstance(raw, dict):
+        return dict(raw), None
+    if not isinstance(raw, str):
+        return {}, "工具参数必须是 JSON 对象"
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        suffix = "(可能因响应截断)" if finish_reason == "length" else ""
+        return {}, f"工具参数 JSON 无效{suffix}: {exc.msg} (位置 {exc.pos})"
+    if not isinstance(value, dict):
+        return {}, f"工具参数必须是 JSON 对象,实际为 {type(value).__name__}"
+    return value, None
+
+
 class ChatModelPort:
     """把 ai 层 ChatClient 适配为 core ModelPort。"""
 
@@ -86,6 +108,14 @@ class ChatModelPort:
         tools: list[Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         return self._stream(messages, tools)
+
+    def stream_agent(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream core events with provider tool arguments already decoded."""
+        return self._stream_agent(messages, tools)
 
     @staticmethod
     def _tool_definitions(tools: list[Any] | None) -> list[ToolDefinition] | None:
@@ -114,6 +144,49 @@ class ChatModelPort:
                 usage=_usage_of(ev.usage),
             )
 
+    async def _stream_agent(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        chat = self._prepend_system([_to_chat_message(m) for m in messages])
+        buffers: dict[int, list[str]] = {}
+        names: dict[int, str] = {}
+        ids: dict[int, str] = {}
+        finish_reason: str | None = None
+        async for ev in self._client.stream(chat, self._tool_definitions(tools)):
+            if ev.type == "tool_call_arg":
+                index = ev.tool_index if ev.tool_index is not None else 0
+                buffers.setdefault(index, []).append(ev.arg_delta or "")
+                if ev.tool_name:
+                    names[index] = ev.tool_name
+                if ev.tool_id:
+                    ids[index] = ev.tool_id
+                continue
+            if ev.type == "finish":
+                finish_reason = ev.finish_reason
+            yield StreamEvent(
+                type=ev.type,
+                text=ev.text,
+                tool_index=ev.tool_index,
+                tool_name=ev.tool_name,
+                tool_id=ev.tool_id,
+                finish_reason=ev.finish_reason,
+                usage=_usage_of(ev.usage),
+            )
+        for index in sorted(buffers):
+            arguments, argument_error = _parse_tool_arguments(
+                "".join(buffers[index]), finish_reason=finish_reason
+            )
+            yield StreamEvent(
+                type="tool_call",
+                tool_index=index,
+                tool_name=names.get(index, ""),
+                tool_id=ids.get(index, ""),
+                arguments=arguments,
+                argument_error=argument_error,
+            )
+
     async def generate(
         self,
         messages: list[Message],
@@ -123,7 +196,7 @@ class ChatModelPort:
         resp = await self._client.generate(chat, self._tool_definitions(tools))
         calls: list[ToolCall] = []
         for tc in resp.tool_calls:
-            args, argument_error = parse_tool_arguments(
+            args, argument_error = _parse_tool_arguments(
                 tc.arguments, finish_reason=resp.finish_reason
             )
             calls.append(
@@ -131,7 +204,7 @@ class ChatModelPort:
                     id=tc.id,
                     name=tc.name,
                     args=args,
-                    argument_error=argument_error,
+                    details={"argument_error": argument_error} if argument_error else {},
                 )
             )
         return ModelResponse(

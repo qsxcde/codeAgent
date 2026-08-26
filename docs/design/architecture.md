@@ -30,7 +30,7 @@
 - **横切轴**解决"零件怎么装":依赖单向流动,组合根是唯一交汇点。
 - **纵切轴**解决"装好之后会话怎么活":三层生命周期不同、变化率不同,不该绑在一个类里。
 
-**Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构**:无状态循环是自研 ReAct 主循环(`core/loop.py` 的 `run_turn`,模型→工具→继续/结束,直接 emit 事件),有状态外壳由 `session/` 层补齐(会话历史、落盘、abort/steer/followup)。不要把它与横切/纵切混淆。
+**Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构**:无状态循环是 `core/loop.py` 的 `run_agent_loop` / `run_agent_loop_continue`，有状态内存外壳是 `core/agent.py` 的 `Agent`，而 `session/` 只补齐历史提交、落盘、压缩和 Session 事件。不要把它与横切/纵切混淆。
 
 ## 3. 现状
 
@@ -41,7 +41,7 @@
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 仅存 `llm_provider`。
 - `ai/` 层:模型基础设施(provider / catalog / model / transport),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);provider/model/effort 选择位于 `app/composition/model_selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
-- `core/` 编排层:ports / loop / messages / events(全异步自研 ReAct),模块顶层零副作用。
+- `core/` Agent Runtime:context / agent / loop / execution / ports / messages / events(纯内存、全异步),模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
 - 事件 11 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)。
@@ -70,7 +70,7 @@ codeagent/
 │   ├── __init__.py / __main__.py     # 版本 + python -m codeagent
 │   │
 │   ├── app/                          # [组合根 + 入口] ★ 唯一跨层交汇点
-│   │   ├── container.py              #   组合根:create_agent_ports / create_agent_session
+│   │   ├── container.py              #   组合根:create_agent_config / create_agent_session
 │   │   │                             #     / create_session_manager / create_tui_app
 │   │   ├── main.py                   #   CLI 入口:--prompt / stdin / --tui
 │   │   ├── config.py                 #   全局 Settings + ~/.codeagent 模板幂等生成
@@ -101,11 +101,14 @@ codeagent/
 │   │       ├── deepseek.py / openai.py / qwen.py / glm.py / kimi.py / minimax.py
 │   │       └── fake.py               #   FakeClient + make_llm(离线测试)
 │   │
-│   ├── core/                         # [编排层]  ← pi-agent-core ✅ 已落地
-│   │   ├── ports.py                  #   AgentPorts / ModelPort / ApprovalPolicy / Summarizer
-│   │   ├── messages.py               #   自研消息模型 + 归约(按 tool_call_id 归属,uuid7)
-│   │   ├── loop.py                   #   run_turn 自研 ReAct 主循环(模型→工具→继续/结束)
-│   │   └── events.py                 #   事件类型(11 类)+ AgentEvent
+│   ├── core/                         # [Agent Runtime]  ← pi-agent-core ✅ 已落地
+│   │   ├── context.py                #   AgentContext(纯内存上下文)
+│   │   ├── agent.py                  #   Agent(prompt/continue/abort/steer/follow-up)
+│   │   ├── loop.py                   #   run_agent_loop(+continue),返回本轮新增消息
+│   │   ├── execution.py              #   共享工具执行器(并发/超时/取消/清理)
+│   │   ├── ports.py                  #   AgentLoopConfig / AgentTool / 模型流端口
+│   │   ├── messages.py               #   Agent Runtime 消息、ToolCall、ToolResult
+│   │   └── events.py                 #   Agent 生命周期事件
 │   │
 │   ├── session/                      # [Session + Runtime]  ← Pi 核心增量 ✅ 已落地
 │   │   ├── session.py                #   AgentSession: run / subscribe / abort / steer / followup
@@ -146,8 +149,8 @@ codeagent/
 | `app/agents.py` | AGENTS.md 分层加载 + 基础提示词 | 纯函数,可离线测 |
 | `app/skills.py` | SKILL.md 三源加载 / 提示词构建 / 渲染块 | 纯函数,可离线测;三源同名遮蔽 个人>项目>内建 |
 | `ai/` | 模型基础设施:模型契约、provider、transport、catalog | 不 import 应用、工具、编排 |
-| `core/` | 编排层:端口、消息、循环、事件 | 不 import config / ai / tools / session |
-| `session/` | 有状态会话 + 事件分发 + 持久化 + 压缩 | 不 import ai / tools / config |
+| `core/` | 纯内存 Agent Runtime:上下文、循环、工具执行、生命周期事件 | 不 import config / ai / tools / session |
+| `session/` | AgentSession 外壳、事件适配、持久化、分支与压缩 | 不 import ai / tools / config |
 | `tools/` | 工具层:原子工具 + 注册表 + 安全分类器 + 共享设施 | 不 import 模型、编排;`shared/` 只被 tools 内部使用 |
 | `app/tui/` | 交互式终端(视图/组件/命令/后端端口) | view 只依赖 TuiBackend 端口;禁止 import textual(具体后端除外) |
 | `resources/` | 技能 / 提示词按需加载 | v0.3 skills 已启用 |
@@ -166,30 +169,30 @@ codeagent/
 
 ## 5. 核心契约
 
-### 5.1 AgentPorts —— 编排认识外部世界的唯一窗口
+### 5.1 AgentLoopConfig —— 编排认识外部世界的唯一窗口
 
 ```python
 # core/ports.py
-@dataclass(frozen=True)
-class AgentPorts:
+@dataclass
+class AgentLoopConfig:
     model: ModelPort               # 模型端口(组合根适配 ai 层 ChatClient)
-    tools: list[Any]               # 工具列表(自研 AtomicTool 实例,直接 invoke)
-    policy: ApprovalPolicy | None = None   # 执行前安全策略(可空 = 无确认环)
+    tools: list[AgentTool]         # 统一 AgentTool 协议
+    tool_runtime: ToolExecutionRuntimePort | None = None
+    before_tool_call: Callable | None = None
 ```
 
 **为什么 `model` 而不是 `model + tools` 绑定**:工具列表作为数据传入循环(循环按名查找 `invoke`),编排层不需要知道工具内部实现;加/换工具时 `core/` 零改动。
 
 **`store` 不在端口内**:core 循环从不落盘(成功轮次才写由会话层负责),会话存储只经 `AgentSession` / `SessionManager` 注入(`session-manager` change 清理死字段)。
 
-### 5.2 run_turn —— 自研 ReAct 主循环
+### 5.2 run_agent_loop —— 自研 ReAct 主循环
 
 ```python
 # core/loop.py
-async def run_turn(session, model, tools, policy, ...) -> None:
+async def run_agent_loop(context, config, prompt, *, emit=None, recursion_limit=50) -> list[Message]:
     # for 循环:模型 → 工具 → 继续/结束
     # 模型调用 stream/generate → emit(text_delta / thinking_delta / agent_message)
-    # 有 tool_calls → 逐个经 policy.decide(allow/ask/deny) → emit(tool_call / tool_result)
-    # ask → emit(confirmation_requested) + 等确认队列;deny → error ToolResult
+    # 有 tool_calls → 经 config.before_tool_call 决策 → 执行并回填结果
     # 无 tool_calls → 结束本轮
 ```
 
@@ -205,10 +208,10 @@ async def run_turn(session, model, tools, policy, ...) -> None:
 ```python
 # session/session.py
 class AgentSession:
-    def __init__(self, ports, bus, store=None, session_id=None,
+    def __init__(self, config, bus, store=None, session_id=None,
                  recursion_limit=50, tool_timeout=None, summarizer=None): ...
 
-    async def run(self, text) -> None: ...    # 直接驱动 run_turn,发布事件,不返回值
+    async def run(self, text) -> None: ...    # 直接驱动 run_agent_loop,发布事件,不返回值
     async def steer(self, text) -> None: ...  # 运行中注入消息
     async def followup(self) -> None: ...     # 结束后续跑一轮
     def subscribe(self, fn) -> Callable[[], None]: ...   # 订阅事件,返回退订函数
@@ -216,7 +219,7 @@ class AgentSession:
 ```
 
 - **`run` 发布事件流而不是返回单个回复**——CLI/TUI/测试/CI 都通过 `subscribe` 感知进度。
-- **全异步**:`run()` 为 `async def`,直接驱动 `core/loop.py` 的 `run_turn`,把循环内事件经 `EventBus` 分发。
+- **全异步**:`run()` 为 `async def`,直接驱动 `core/loop.py` 的 `run_agent_loop`,把循环内事件经 `EventBus` 分发。
 - **成功才落盘**:本轮工作在局部历史副本上,`self._history` 仅成功时重赋值,store 循环在其后;失败/取消时内存回滚(历史从未被就地修改,回滚是空操作)。
 - **会话历史**:自研 `Message`(role/content/tool_calls/tool_call_id/id/parentId),`id` 用 uuid7;归约按 tool_call_id 归属、按 id 删除。
 - **事件类型(11 类)**:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
@@ -227,40 +230,41 @@ class AgentSession:
 ```python
 # session/manager.py + store.py
 class SessionManager:
-    def __init__(self, ports, store=None, model="", effort="", ...): ...
+    def __init__(self, config, store=None, model="", effort="", ...): ...
     def create(self) -> SessionRef: ...
     def switch(self, session_id) -> None: ...
     def fork(self, session_id) -> SessionRef: ...   # 分支会话(JSONL 树形)
     def dispose(self, session_id) -> None: ...
-    def replace_ports(self, ports, *, model, effort) -> None: ...   # 热切换
+    def replace_config(self, config, *, model, effort) -> None: ...   # 热切换
 
 class SessionStore:
     # JSONL 树形:每轮 append 一条(含消息),重启可恢复;fork 只读源文件、新文件带 parentId
 ```
 
 - `SessionStore`(JSONL 树形,`id`/`parentId`):会话可恢复、可切换、可分叉;MemoryStore 镜像同一语义,两个后端行为一致。
-- `SessionManager` 薄管理器:ports 装配一次共享(模型端口 / 工具无状态,跨会话复用);`replace_ports` 支持 /provider /model /effort 热切换。
+- `SessionManager` 薄管理器:ports 装配一次共享(模型端口 / 工具无状态,跨会话复用);`replace_config` 支持 /provider /model /effort 热切换。
 - `fork`(v0.2 提前落地):只读源文件、新文件带 `parentSession`,按压缩切点拷贝保留窗口、父链重连。
 
 ## 6. 组合根:三层解耦的唯一交汇点
 
 ```python
 # app/container.py
-def create_agent_ports(cfg=None, *, registry=None, reasoning_effort=None,
-                       provider=None, model=None, approval_mode="deny") -> AgentPorts:
+def create_agent_config(cfg=None, *, registry=None, reasoning_effort=None,
+                       provider=None, model=None, approval_mode="deny") -> AgentLoopConfig:
     client = create_llm(cfg, registry=registry, reasoning_effort=reasoning_effort,
                         provider=provider, model=model)               # app.composition.model_selection.create_llm
     skills, _ = _load_skills(cfg)                                     # 技能一次加载两处消费
     rendered = {s.name: format_skill_invocation(s) for s in skills}
-    return AgentPorts(
+    config = AgentLoopConfig(
         model=ChatModelPort(client, system_prompt=_build_system_prompt(cfg, skills)),
         tools=create_tools(cfg, skills=rendered),                     # tools/registry.make_tools
-        policy=_create_policy(cfg, approval_mode),                    # security 分类器适配
     )
+    # policy 由 composition/session 作为 before_tool_call 适配，不进入 core config
+    return config
 
 def create_agent_session(cfg=None, *, registry=None, store=None, session_id=None, ...) -> AgentSession:
-    ports = create_agent_ports(cfg, registry=registry, ...)
-    return AgentSession(ports, EventBus(), store=store, session_id=session_id, ...)
+    config = create_agent_config(cfg, registry=registry, ...)
+    return AgentSession(config, EventBus(), store=store, session_id=session_id, ...)
 
 def create_session_manager(cfg=None, *, store=None, ...) -> SessionManager: ...
 def create_tui_app(cfg=None, *, backend=None, store=None, ...) -> TuiApp: ...
@@ -269,19 +273,19 @@ def create_tui_app(cfg=None, *, backend=None, store=None, ...) -> TuiApp: ...
 要点:
 
 - `approval_mode`(`deny` / `interactive` / `allow`):headless 缺省 `deny`(ask 降级 deny,fail closed),TUI 传 `interactive`(ask 由确认条响应),`--yes` 传 `allow`。
-- `store` 经 `AgentSession` / `SessionManager` 注入;**不进 `AgentPorts`**(core 循环不落盘)。
+- `store` 经 `AgentSession` / `SessionManager` 注入;**不进 `AgentLoopConfig`**(core 循环不落盘)。
 - `registry` / `reasoning_effort` / `provider` / `model` 均可注入;`create_tui_app` 的 `rebuild_ports` 回调支持运行时热切换(/provider /model /effort /login)。
-- `create_agent_ports` 返回端口(平台 / 测试用);`create_agent_session` 供 CLI 入口消费。
+- `create_agent_config` 返回端口(平台 / 测试用);`create_agent_session` 供 CLI 入口消费。
 
 ## 7. 运行时生命周期
 
 ```
 启动:   app/main.py → ensure_config_files() → create_agent_session()
-        → create_agent_ports:create_llm + _load_skills + _build_system_prompt + make_tools + _create_policy
-        → AgentSession(ports, bus, store)
+        → create_agent_config:create_llm + _load_skills + _build_system_prompt + make_tools + _create_policy
+        → AgentSession(config, bus, store)
 
 一轮:   session.run(text)   [async]
-        → run_turn(ports)
+        → run_agent_loop(config)
             → model.stream → emit(text_delta / thinking_delta / usage)
             → agent_message(有 tool_calls 则继续)
             → 逐个 tool_call → policy.decide(allow/ask/deny) → invoke → emit(tool_call / tool_result)

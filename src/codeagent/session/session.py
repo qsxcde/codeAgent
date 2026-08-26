@@ -1,6 +1,6 @@
 """有状态会话壳:AgentSession(自研版,2026-08-14)。
 
-- 全异步 ``run()``:直接驱动自研 ReAct 循环(`core.loop.run_turn`),
+- 全异步 ``run()``:通过 ``SessionRuntime`` 驱动 core Agent ReAct 循环,
   10 类 AgentEvent 经 EventBus 分发(不返回值,订阅方感知进度);
 - 会话维度累积:构造时分配稳定 ``session_id``(或注入既有 id),
   消息历史与 ``store`` 同步(JSONL 树形,成功轮次才落盘);
@@ -23,7 +23,7 @@ from typing import Any, Callable
 from codeagent.core.events import AgentEvent, EventType
 from codeagent.core.loop import DEFAULT_RECURSION_LIMIT, RecursionLimitError
 from codeagent.core.messages import Message
-from codeagent.core.ports import AgentPorts
+from codeagent.core.ports import AgentLoopConfig
 from codeagent.session.bus import EventBus, Subscriber
 from codeagent.session.compaction import (
     DEFAULT_BUDGET_TOKENS,
@@ -49,7 +49,7 @@ class AgentSession:
 
     def __init__(
         self,
-        ports: AgentPorts,
+        config: AgentLoopConfig,
         bus: EventBus,
         *,
         store: Any | None = None,
@@ -63,8 +63,11 @@ class AgentSession:
         defer_persistence: bool = False,
         persistence_options: dict[str, Any] | None = None,
         runtime_closer: Callable[[], Any] | None = None,
+        transform_context: Callable[[list[Message]], Any] | None = None,
+        policy: Any = None,
     ) -> None:
-        self._ports = ports
+        self._config = config
+        self._policy = policy
         self._bus = bus
         self._recursion_limit = recursion_limit
         self._tool_timeout = tool_timeout
@@ -76,6 +79,8 @@ class AgentSession:
         self._summarizer = summarizer
         self._context_window = context_window
         self._runtime_closer = runtime_closer
+        #: Optional Memory/context extension; it only changes model-visible data.
+        self._transform_context = transform_context
         self._closed = False
         #: 切点预算(软目标;测试可注入小值)。
         self._compact_budget = compact_budget
@@ -145,7 +150,7 @@ class AgentSession:
     @property
     def policy(self) -> Any:
         """当前组合根策略，供应用层任务监督器生成模式策略。"""
-        return getattr(self._ports, "policy", None)
+        return self._policy
 
     @property
     def summary(self) -> str | None:
@@ -219,19 +224,19 @@ class AgentSession:
     def followup(self, text: str, recursion_limit: int | None = None) -> None:
         """结束后续跑一轮:在既有会话历史之上继续一轮对话。
 
-        自研循环下与 ``run`` 同机制(再次 ``run_turn``,历史累积、事件
+        自研循环下与 ``run`` 同机制(再次启动 Agent turn,历史累积、事件
         照常分发),保留独立方法名以稳定 v0.1 起的事件契约——CLI/TUI
         结束后续跑不重建会话。
         """
         return self.run(text, recursion_limit=recursion_limit)
 
-    def replace_ports(self, ports: AgentPorts) -> None:
-        """热切换本会话使用的端口(manager.replace_ports 逐壳转发)。
+    def replace_config(self, config: AgentLoopConfig) -> None:
+        """热切换本会话使用的模型/工具配置(manager 逐壳转发)。
 
         会话壳在构造时固化端口引用,配置热切换必须显式更新每个活动壳,
         否则旧壳仍用旧模型继续对话。
         """
-        self._ports = ports
+        self._config = config
 
     def set_context_window(self, context_window: int) -> None:
         """在模型/provider 重建后同步新的上下文窗口上限。"""
@@ -371,15 +376,16 @@ class AgentSession:
             )
         before_ids = {m.id for m in self._history}
         try:
-            new_history = await self._runtime.execute(
-                self._ports,
+            new_messages = await self._runtime.execute(
+                self._config,
                 text,
                 history=history_for_turn,
                 recursion_limit=(
                     recursion_limit if recursion_limit is not None else self._recursion_limit
                 ),
                 tool_timeout=self._tool_timeout,
-                policy=policy,
+                policy=self._policy if policy is None else policy,
+                transform_context=self._transform_context,
             )
         except asyncio.CancelledError:
             self._rollback(before_ids)
@@ -436,7 +442,12 @@ class AgentSession:
             )
             self._runtime.finish_run()
         # 成功路径:过滤虚拟摘要消息,更新历史并持久化本轮新增消息
-        kept_history = [m for m in new_history if not m.id.startswith(SUMMARY_ID_PREFIX)]
+        kept_history = [
+            *history_for_turn,
+            *new_messages,
+        ]
+        kept_history = [m for m in kept_history if not m.id.startswith(SUMMARY_ID_PREFIX)]
+        self._link_persistence_parents(new_messages)
         if self._summary_entry_id:
             # 压缩后首条新 user 消息的父级接回压缩记录(设计决策 4)。
             for message in kept_history:
@@ -453,6 +464,14 @@ class AgentSession:
         # 阈值自动压缩(同步,turn_end 后;不阻塞本轮收尾)。
         if self._should_auto_compact():
             await self.compact()
+
+    def _link_persistence_parents(self, messages: list[Message]) -> None:
+        """在 session 适配边界补齐 JSONL 树关系，不污染 core Agent 消息。"""
+        parent_id = self._summary_entry_id or (self._history[-1].id if self._history else None)
+        for message in messages:
+            if message.parent_id is None:
+                message.parent_id = parent_id
+            parent_id = message.id
 
     def _on_run_event(self, event: AgentEvent, run_id: str) -> None:
         """记录副作用诊断并为循环事件补齐 session/run 关联。"""

@@ -47,8 +47,8 @@
 
 | 条目 | 本文档原文口径 | 现状 |
 |---|---|---|
-| 编排引擎 | LangGraph(StateGraph / ToolNode / checkpointer;FR-4、AR-5、IR-2) | **自研 ReAct 主循环**(`core/loop.py` `run_turn`,模型→工具→继续/结束,事件直接 emit)+ 消息归约(`core/messages.py`,按 tool_call_id 归属,uuid7) |
-| AgentPorts | `bound_model / tool_executor / checkpointer`(IR-1、AR-2) | `model / tools / policy`(无 store;core 循环不落盘,存储经会话层注入) |
+| 编排引擎 | LangGraph(StateGraph / ToolNode / checkpointer;FR-4、AR-5、IR-2) | **自研 ReAct 主循环**(`core/loop.py` `run_agent_loop`,模型→工具→继续/结束,事件直接 emit)+ 消息归约(`core/messages.py`,按 tool_call_id 归属,uuid7) |
+| AgentLoopConfig | `bound_model / tool_executor / checkpointer`(IR-1、AR-2) | `model / tools / policy`(无 store;core 循环不落盘,存储经会话层注入) |
 | 编排自研第二步(FR-4.8 / AR-5) | 📝 暂缓,三未决问题待答 | ✅ **已落地**(2026-08-14,spike 双跑 diff 通过;平台部署非刚需、JSONL 树形为格式结论) |
 | 事件类型(FR-6.1 / NFR-O1) | 10 类 | **11 类**(新增 `confirmation_requested`,执行前安全确认环事件) |
 | 工具数量(附录 B #11) | 7 | **8 个内建工具**(新增 `skill` 技能寻址工具);MCP 工具按用户配置动态加载 |
@@ -88,7 +88,7 @@
 
 | 术语 | 含义 |
 |---|---|
-| 端口-适配器(hexagonal) | 横切解耦架构:编排层只认识端口(`AgentPorts`),具体实现由组合根装配 |
+| 端口-适配器(hexagonal) | 横切解耦架构:编排层只认识端口(`AgentLoopConfig`),具体实现由组合根装配 |
 | 三层协作 / 双层 loop | Pi-Agent 设计哲学:Factory(装配)/ Session(单对话)/ Runtime(会话生命周期)三层;无状态循环(LangGraph 图)与有状态外壳(`session/`)双层 |
 | 会话即状态 | 会话上下文以 thread 维度累积在图中,状态即会话 |
 | 组合根 | `container.py`(现 `app/container.py`),全项目唯一允许跨层 import 的地方 |
@@ -133,7 +133,7 @@
 | **横切轴:依赖方向** | config / 工具 / 编排 / 调用之间谁认识谁 | 端口-适配器(hexagonal) |
 | **纵切轴:生命周期** | 装配(Factory)/ 单个对话(Session)/ 会话生命周期(Runtime) | Pi-Agent 三层协作 |
 
-Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 ReAct 主循环**(`core/loop.py` `run_turn`)提供无状态循环(模型→工具→继续/结束),有状态外壳由 `session/` 层补齐。
+Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 ReAct 主循环**(`core/loop.py` `run_agent_loop`)提供无状态循环(模型→工具→继续/结束),有状态外壳由 `session/` 层补齐。
 
 ### 2.4 差异化定位
 
@@ -302,7 +302,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 
 | ID | 需求 | 说明 | 优先级 | 状态 |
 |---|---|---|---|---|
-| FR-4.1 | AgentPorts 端口 | 编排认识的唯一外部世界:`bound_model / tool_executor / checkpointer` | P0 | ✅ |
+| FR-4.1 | AgentLoopConfig 端口 | 编排认识的唯一外部世界:`bound_model / tool_executor / checkpointer` | P0 | ✅ |
 | FR-4.2 | AgentState | 对话状态结构(基于 MessagesState) | P0 | ✅ |
 | FR-4.3 | ReAct 循环 | agent →(有 tool_calls)→ tools → agent;否则 END;全异步 | P0 | ✅ |
 | FR-4.4 | agent / tools 节点 | 异步节点 + 工具异常兜底 | P0 | ✅ |
@@ -319,11 +319,11 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 | FR-5.2 | 事件总线 | `EventBus.subscribe / emit`,CLI / TUI / 测试统一订阅 | P0 | ✅ |
 | FR-5.3 | 事件流翻译 | `graph.astream(thread_id, [messages, updates])` → `AgentEvent` 序列 | P0 | ✅ |
 | FR-5.4 | 会话持久化 | SessionStore 存储,重启可恢复 | P1 | ✅ 已落地(v0.2:**JSONL 树形**,按 id/parentId) |
-| FR-5.5 | SessionManager | create / fork / switch / dispose | P1 | ✅ 已落地(v0.2,含 `replace_ports` 热切换) |
+| FR-5.5 | SessionManager | create / fork / switch / dispose | P1 | ✅ 已落地(v0.2,含 `replace_config` 热切换) |
 | FR-5.6 | 上下文压缩 | 手动 + 阈值触发 compaction | P1 | ✅ 已落地(v0.2) |
 | FR-5.7 | 会话树/分叉 | 分支会话、对比探索 | P2 | ✅ fork 已落地(v0.2,JSONL 树形);树导航 v0.3 |
 | FR-5.8 | 运行中断 abort | `abort()` 中断当前运行并广播 `run_cancelled` | P0 | ✅ 已落地 |
-| FR-5.9 | 端口热替换 | `replace_ports()` 切换 provider/model/effort 时重建端口 | P0 | ✅ 已落地(`SessionManager.replace_ports`) |
+| FR-5.9 | 端口热替换 | `replace_config()` 切换 provider/model/effort 时重建端口 | P0 | ✅ 已落地(`SessionManager.replace_config`) |
 | FR-5.10 | steer / followup | 运行中注入消息 / 结束后追问一轮 | P1 | ✅ 已落地(v0.2;自研循环下为几行代码,验证蓝图"收益 2") |
 
 ### 4.7 FR-6 可观测性与事件
@@ -364,13 +364,13 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 |---|---|---|
 | F-01 | `tools/` 原子工具 read/write/edit/bash + 注册表 | ✅ 已落地(08-09) |
 | F-02 | ~~`tools/pipeline.py` 拦截管道~~ | ❌ 已删除(危险命令由 bash 黑名单承担) |
-| F-03 | `core/ports.py` AgentPorts | ✅ 已落地(**自研版:`model / tools / policy`,无 store**) |
-| F-04 | `core/messages.py` 消息模型 + `core/loop.py` `run_turn` | ✅ 已落地(自研编排后 `state.py`/`build_graph` 删除,改为自研 ReAct 主循环,2026-08-14) |
+| F-03 | `core/ports.py` AgentLoopConfig | ✅ 已落地(**自研版:`model / tools / policy`,无 store**) |
+| F-04 | `core/messages.py` 消息模型 + `core/loop.py` `run_agent_loop` | ✅ 已落地(自研编排后 `state.py`/`build_graph` 删除,改为自研 ReAct 主循环,2026-08-14) |
 | F-05 | ~~`core/nodes/` agent & tools 节点~~ | ⚠️ 随自研编排删除(循环内直接 emit,工具并行经 `asyncio.gather`) |
 | F-06 | `core/events.py` AgentEvent 类型 | ✅ 已落地(**11 类事件**,含 `confirmation_requested`) |
 | F-07 | `session/bus.py` 事件总线 | ✅ 已落地 |
 | F-08 | `session/session.py` AgentSession | ✅ 已落地(含 abort / steer / followup;自研版) |
-| F-09 | `container.py` 接线(现 `app/container.py`) | ✅ 已落地(create_agent_ports / create_agent_session / create_session_manager / create_tui_app) |
+| F-09 | `container.py` 接线(现 `app/container.py`) | ✅ 已落地(create_agent_config / create_agent_session / create_session_manager / create_tui_app) |
 | F-10 | 流式回复渲染 | ⚠️ 事件→StreamChunk 渲染层随 TUI 移除;headless 事件聚合保留 |
 
 **P1 — v0.2:好用的刚需(1–2 周)**
@@ -436,11 +436,11 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 
 ### 5.2 AR-2 核心契约(P0,✅ 已落地)
 
-**AgentPorts(编排认识外部世界的唯一窗口,自研版)**:
+**AgentLoopConfig(编排认识外部世界的唯一窗口,自研版)**:
 
 ```python
 @dataclass(frozen=True)
-class AgentPorts:
+class AgentLoopConfig:
     model: ModelPort               # 模型端口(组合根适配 ai 层 ChatClient)
     tools: list[Any]               # 工具列表(自研 AtomicTool 实例,直接 invoke)
     policy: ApprovalPolicy | None = None   # 执行前安全策略(可空 = 无确认环)
@@ -448,10 +448,10 @@ class AgentPorts:
 
 - 设计理由:编排层不绑定具体工具——工具列表作为数据传入循环按名查找 `invoke`,加/换工具时 `core/` 零改动;`store` 不在端口内(core 循环不落盘,存储经会话层注入)。
 
-**run_turn(自研 ReAct 主循环)**:
+**run_agent_loop(自研 ReAct 主循环)**:
 
 ```python
-async def run_turn(session, model, tools, policy, ...) -> None:
+async def run_agent_loop(session, model, tools, policy, ...) -> None:
     # for 循环:模型 → 工具 → 继续/结束
     # 有 tool_calls → 逐个经 policy.decide → emit(tool_call / tool_result)
     # 无 tool_calls → 结束本轮
@@ -465,7 +465,7 @@ async def run_turn(session, model, tools, policy, ...) -> None:
 class AgentSession:
     def __init__(self, ports, bus, store=None, session_id=None,
                  recursion_limit=50, tool_timeout=None, summarizer=None): ...
-    async def run(self, text) -> None: ...    # 直接驱动 run_turn,发布事件,不返回值
+    async def run(self, text) -> None: ...    # 直接驱动 run_agent_loop,发布事件,不返回值
     async def steer(self, text) -> None: ...  # 运行中注入消息
     async def followup(self) -> None: ...     # 结束后续跑一轮
     def subscribe(self, fn) -> Subscriber: ...                    # 订阅事件
@@ -473,7 +473,7 @@ class AgentSession:
 ```
 
 - 会话历史自研 `Message` 列表;成功轮次才落盘 `SessionStore`(JSONL 树形),失败/取消内存回滚;
-- `steer / followup / abort` 已落地(v0.2,自研循环下为几行代码,验证蓝图"收益 2");热切换经 `SessionManager.replace_ports`。
+- `steer / followup / abort` 已落地(v0.2,自研循环下为几行代码,验证蓝图"收益 2");热切换经 `SessionManager.replace_config`。
 
 ### 5.3 AR-3 配置命名空间隔离(P0,✅ 已落地,防回归测试覆盖)
 
@@ -569,7 +569,7 @@ class AgentSession:
 |---|---|---|---|---|
 | NFR-M1 | 分层解耦 | 跨层 import 仅发生在 `app/container.py` / `app/main.py` | `tests/test_decoupling.py` AST 强制校验(2026-08-14 重写,70 项断言) | ✅ |
 | NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;2026-08-24 实测 666 项收集 / 665 通过 / 1 跳过,无失败 | ✅(覆盖率目标仍未通过 pytest-cov 实测) |
-| NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentPorts` / `AgentClient`) | ✅ |
+| NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentLoopConfig` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
 | NFR-M6 | 同步约束 | `model:effort` 解析唯一实现 | `app/composition/model_selection.py` 单一来源,组合根各入口共用 | ✅ |
@@ -621,8 +621,8 @@ class AgentSession:
 
 | ID | 接口 | 契约要点 | 消费方 | 状态 |
 |---|---|---|---|---|
-| IR-1 | `AgentPorts` | frozen dataclass:`model`(ModelPort)/ `tools`(list[Any])/ `policy`(ApprovalPolicy,可选);**无 store**(core 不落盘) | core/loop | ✅ 已落地(自研版) |
-| IR-2 | `run_turn(session, model, tools, policy, ...)` | 自研 ReAct 主循环;循环内直接 emit 事件;循环条件看消息形状 | session/session | ✅ 已落地(自研版,替代 build_graph) |
+| IR-1 | `AgentLoopConfig` | frozen dataclass:`model`(ModelPort)/ `tools`(list[Any])/ `policy`(ApprovalPolicy,可选);**无 store**(core 不落盘) | core/loop | ✅ 已落地(自研版) |
+| IR-2 | `run_agent_loop(session, model, tools, policy, ...)` | 自研 ReAct 主循环;循环内直接 emit 事件;循环条件看消息形状 | session/session | ✅ 已落地(自研版,替代 build_graph) |
 | IR-3 | `AgentSession.run(text, recursion_limit=None)` | async;发布事件不返回值;thread 累积;可被 `abort()` 中断 | CLI / TUI / 测试 | ✅ |
 | IR-4 | `AgentSession.run_sync(text)` | 同步便捷入口(新线程 + asyncio.run) | 脚本 / 无 loop 环境 | ✅ |
 | IR-5 | `EventBus.subscribe(fn)` / `emit(ev)` | 订阅方异常隔离;返回退订函数 | 任意感知方 | ✅ |
@@ -631,7 +631,7 @@ class AgentSession:
 | IR-8 | `make_tools(cfg) -> list[BaseTool]` | 原子工具注册表枚举 | container | ✅ |
 | IR-9 | CLI(headless) | `codeagent [--prompt P]`;无 `--prompt` 时 stdin 逐行;输出事件聚合文本 | 终端用户 / 脚本 | ✅ |
 | IR-10 | ~~`langgraph.json` 平台入口~~ | ⚠️ 随自研编排废弃(v0.2 定案);改写为 HTTP/事件订阅入口(F-27);**2026-08-22 移出 v0.3(E12),远期按需重估** | Web/HTTP | 📝 远期 |
-| IR-11 | `SessionManager` | `create / fork / switch / dispose` + `replace_ports` 热切换 | CLI / TUI | ✅ 已落地(v0.2) |
+| IR-11 | `SessionManager` | `create / fork / switch / dispose` + `replace_config` 热切换 | CLI / TUI | ✅ 已落地(v0.2) |
 | IR-12 | `SessionStore` | JSONL 树形 `append(entry)`(按 id/parentId)/ 恢复加载 | SessionManager | ✅ 已落地(v0.2) |
 
 ---
@@ -661,7 +661,7 @@ class AgentSession:
 | 多平台验证成本 | 低~中 | ✅ 已闭环:bash 含 Git for Windows / WSL 探测链,环境差异经断言修复与 WSL 转发器排除(2026-08-14) |
 | 编排自研(第二步) | 中(暂缓) | 三未决问题回答后启动;消息归约先行 spike |
 
-**结论**:核心依赖全部成熟稳定,架构文档已定稿,编排层契约(AgentPorts / run_turn / AgentSession)已落地(自研版)。**技术风险可控,无颠覆性难点。**
+**结论**:核心依赖全部成熟稳定,架构文档已定稿,编排层契约(AgentLoopConfig / run_agent_loop / AgentSession)已落地(自研版)。**技术风险可控,无颠覆性难点。**
 
 ### 9.2 市场定位可行性
 
@@ -780,10 +780,10 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | FR-3.1~3.8 | 工具系统 | P0/P1 | ✅(3.5 待 v0.2) | R §3.1; C | F-01, F-02(删) |
 | FR-4.1~4.7 | 编排引擎 | P0/P2 | ✅ 已落地(自研版;F-04/05 形态变化见 §0.1) | R §3.1; A §5 | F-03~F-05 |
 | FR-4.8 | 编排自研第二步 | P3 | ✅ **已落地**(2026-08-14) | B 全文 | — |
-| FR-5.1~5.3 | AgentSession/总线/循环 | P0 | ✅(自研版:run_turn 直接驱动) | R; A §5.3; C | F-06~F-08 |
+| FR-5.1~5.3 | AgentSession/总线/循环 | P0 | ✅(自研版:run_agent_loop 直接驱动) | R; A §5.3; C | F-06~F-08 |
 | FR-5.4~5.6 | 持久化/Manager/压缩 | P1 | ✅ 已落地(v0.2,JSONL 树形) | R; A §5.4 | F-11~F-13 |
 | FR-5.7 | 会话树/分叉 | P2 | ✅ fork 已落地;树导航 v0.3 | R | F-23 |
-| FR-5.8~5.9 | abort / replace_ports(新增) | P0 | ✅ | C | — |
+| FR-5.8~5.9 | abort / replace_config(新增) | P0 | ✅ | C | — |
 | FR-5.10 | steer / followup | P1 | ✅ 已落地(v0.2) | A §5.3; B 收益2 | — |
 | FR-6.1~6.5 | 可观测性与事件 | P0 | ✅(11 类事件;6.3 随 TUI 落地) | R; C | — |
 | FR-7.1~7.4 | 扩展与部署 | P2 | 🔲/📝(7.1 ✅ Skills;7.3 改写为 F-27,2026-08-22 移出 v0.3 E12) | R; G §5 | F-18~F-24 |
@@ -837,7 +837,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 |---|---|---|---|
 | 1 | 测试数量 | 336 项全绿 | **666 项收集，665 passed / 1 skipped，无失败**(2026-08-24 复核;唯一跳过为 Windows 符号链接权限;2026-08-21 审计 12 条缺陷全部修复闭环,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5) |
 | 5 | 事件类型 | 10 类 | **11 类**(新增 `confirmation_requested`,security-permissions) |
-| 6 | 会话接口 | abort / replace_graph | `abort` / `steer` / `followup`;热切换改 `SessionManager.replace_ports` |
+| 6 | 会话接口 | abort / replace_graph | `abort` / `steer` / `followup`;热切换改 `SessionManager.replace_config` |
 | 7 | 模型客户端 | 自研,langchain-core/langgraph 保留于编排侧 | **langchain-core/langgraph 全部移除**(2026-08-14 自研编排;`ai/bridge/` 删除) |
 | 9 | 解耦扫描测试 | 不在代码树 | ✅ **已重写恢复**(2026-08-14,AST 扫描 70+ 断言,带 anti-wargaming 守卫) |
 | 11 | 工具数量 | 7 | **8**(新增 `skill` 技能寻址工具,v0.3 阶段 1) |

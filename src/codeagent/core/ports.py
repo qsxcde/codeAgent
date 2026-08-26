@@ -12,18 +12,21 @@ core 不 import config / ai / tools / session;端口类型定义在本模块,
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Protocol
+from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
-from codeagent.core.messages import Message, ToolCall
+from codeagent.core.messages import Message, ToolCall, ToolResult
 
 __all__ = [
-    "AgentPorts",
+    "AgentLoopConfig",
+    "AgentTool",
     "ModelPort",
     "ModelResponse",
     "PolicyDecision",
     "StreamEvent",
     "Summarizer",
+    "ToolDecision",
     "ToolExecutionRuntimePort",
 ]
 
@@ -51,6 +54,9 @@ class StreamEvent:
     tool_id: str = ""
     finish_reason: str | None = None
     usage: dict[str, int] | None = None
+    #: Parsed tool arguments supplied by the application model adapter.
+    arguments: dict[str, Any] | None = None
+    argument_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,7 +86,14 @@ class ApprovalPolicy(Protocol):
 class ToolExecutionRuntimePort(Protocol):
     """Optional runtime port used by the ReAct loop for controlled execution."""
 
-    async def execute(self, tool: Any, call: ToolCall, timeout: float | None = None) -> Any: ...
+    async def execute(
+        self,
+        tool: Any,
+        call: ToolCall,
+        timeout: float | None = None,
+        operation_id: str | None = None,
+        on_update: Callable[[Any], Awaitable[None] | None] | None = None,
+    ) -> Any: ...
 
 
 class Summarizer(Protocol):
@@ -115,21 +128,68 @@ class ModelPort(Protocol):
     ) -> AsyncIterator[StreamEvent]: ...
 
 
+@runtime_checkable
+class AgentTool(Protocol):
+    """Minimal tool contract consumed by the new Agent Runtime."""
+
+    name: str
+    description: str
+    parameters: Any
+
+    async def execute(
+        self,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        *,
+        signal: Any = None,
+        on_update: Callable[[Any], Awaitable[None] | None] | None = None,
+    ) -> ToolResult | Any: ...
+
+
 @dataclass(frozen=True)
-class AgentPorts:
-    """编排层的外部端口集合(自研版)。
+class ToolDecision:
+    """Generic pre-execution decision returned by an Agent hook."""
 
-    - ``model``:模型端口(组合根适配 ai 层 ChatClient);
-    - ``tools``:工具列表(自研 AtomicTool 实例,直接 ``invoke``);
-    - ``policy``:执行前安全策略(可空 = 无确认环,保持既有调用方兼容)。
+    action: str
+    reason: str = ""
 
-    ``store`` 不在端口内:core 循环从不落盘(成功轮次才写由会话层负责),
-    会话存储只经 ``AgentSession`` 注入(session-manager change 清理死字段)。
-    """
+    @classmethod
+    def allow(cls) -> "ToolDecision":
+        return cls("allow")
 
-    model: ModelPort
-    tools: list[Any]
-    policy: ApprovalPolicy | None = None
-    #: Optional shared executor.  ``None`` keeps lightweight/test callers
-    #: compatible; the loop creates a bounded runtime on demand.
+    @classmethod
+    def block(cls, reason: str) -> "ToolDecision":
+        return cls("block", reason)
+
+
+async def _identity_context(messages: list[Message]) -> list[Message]:
+    return list(messages)
+
+
+TransformContext = Callable[
+    [list[Message]], Awaitable[list[Message]] | list[Message]
+]
+BeforeToolCall = Callable[
+    [ToolCall, Any], Awaitable[ToolDecision | None] | ToolDecision | None
+]
+AfterToolCall = Callable[
+    [ToolCall, ToolResult, Any],
+    Awaitable[ToolResult | None] | ToolResult | None,
+]
+
+
+@dataclass
+class AgentLoopConfig:
+    """Configuration for the pure in-memory Agent loop."""
+
+    model: Any
+    tools: list[AgentTool] = field(default_factory=list)
+    transform_context: TransformContext = _identity_context
+    before_tool_call: BeforeToolCall | None = None
+    after_tool_call: AfterToolCall | None = None
+    tool_execution: str = "parallel"
+    tool_timeout: float | None = None
+    should_stop_after_turn: Callable[..., Awaitable[bool] | bool] | None = None
     tool_runtime: ToolExecutionRuntimePort | None = None
+    #: Runtime-owned steering queue; Agent drains it between tool batches.
+    steer_queue: list[str] = field(default_factory=list)
