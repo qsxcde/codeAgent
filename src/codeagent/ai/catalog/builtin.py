@@ -8,10 +8,10 @@ from codeagent.ai.catalog.spec import ModelSpec
 
 DEEPSEEK_MODELS: dict[str, ModelSpec] = {
     "deepseek-v4-flash": ModelSpec(
-        id="deepseek-v4-flash", reasoning=True, aliases=["flash"], context_window=128_000
+        id="deepseek-v4-flash", reasoning=True, aliases=["flash"], context_window=256_000
     ),
     "deepseek-v4-pro": ModelSpec(
-        id="deepseek-v4-pro", reasoning=True, context_window=128_000
+        id="deepseek-v4-pro", reasoning=True, context_window=256_000
     ),
 }
 

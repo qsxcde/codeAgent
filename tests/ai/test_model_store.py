@@ -122,4 +122,4 @@ def test_model_spec_context_window_field():
     assert ModelSpec(id="m2").context_window is None  # 缺省兜底
     from codeagent.ai.catalog.builtin import DEEPSEEK_MODELS
 
-    assert DEEPSEEK_MODELS["deepseek-v4-flash"].context_window == 128_000
+    assert DEEPSEEK_MODELS["deepseek-v4-flash"].context_window == 256_000

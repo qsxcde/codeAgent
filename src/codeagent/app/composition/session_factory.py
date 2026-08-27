@@ -42,6 +42,7 @@ def create_agent_session(
         recursion_limit=recursion_limit or 50,
         tool_timeout=tool_timeout,
         summarizer=summarizer,
+        context_window=_resolve_context_window(registry, cfg, provider, model),
         runtime_closer=runtime.close if runtime is not None else None,
         policy=runtime.policy if runtime is not None else None,
     )

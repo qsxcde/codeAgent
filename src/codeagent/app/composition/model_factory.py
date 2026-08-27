@@ -14,6 +14,7 @@ from codeagent.core.messages import Message, ToolCall
 from codeagent.core.ports import ModelResponse, StreamEvent
 
 from .model_selection import (
+    _get_default_registry,
     _provider_config,
     create_llm,
     get_available_providers,
@@ -293,7 +294,13 @@ def _resolve_context_window(
     resolved_provider = (
         provider or getattr(cfg, "llm_provider", None) or Settings().llm_provider
     )
-    base = split_model_pattern(model)[0] if model else None
+    if registry is None:
+        registry = _get_default_registry()
+    effective_model = model
+    if not effective_model:
+        defaults = _provider_config(resolved_provider)
+        effective_model = getattr(defaults, "model", None)
+    base = split_model_pattern(effective_model)[0] if effective_model else None
     if registry is not None and base:
         try:
             spec = registry.resolve(base, provider=resolved_provider)

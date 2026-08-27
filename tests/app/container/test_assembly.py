@@ -1,5 +1,7 @@
 """assembly behavior tests."""
 
+from types import SimpleNamespace
+
 from tests.app.container.fixtures import *  # noqa: F401,F403
 
 
@@ -110,6 +112,84 @@ def test_rebuild_config_syncs_model_context_window():
         app._rebuild_ports("fake", "small-model", None)
 
     assert app._manager.current.context_window == 32_000
+
+
+def test_create_tui_app_uses_provider_default_model_context_window():
+    """TUI 初始未显式传 model 时,按 provider 默认模型读取窗口。"""
+    with (
+        patch("codeagent.app.composition.model_selection.create_llm") as mock_llm,
+        patch(
+            "codeagent.app.composition.model_factory._provider_config",
+            return_value=SimpleNamespace(
+                model="configured-model", reasoning_effort="high"
+            ),
+        ),
+    ):
+        from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.spec import ModelSpec
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_tui_app
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        registry = ModelRegistry()
+        registry._catalogs.setdefault("deepseek", {})["configured-model"] = ModelSpec(
+            id="configured-model", context_window=64_000
+        )
+        app = create_tui_app(
+            provider="deepseek", registry=registry, backend=_StubBackend()
+        )
+
+    assert app._manager.current.context_window == 64_000
+
+
+def test_create_agent_session_uses_model_context_window():
+    """headless AgentSession 使用显式模型的上下文窗口,而非固定默认值。"""
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+        from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.spec import ModelSpec
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_agent_session
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        registry = ModelRegistry()
+        registry._catalogs.setdefault("fake", {})["small-model"] = ModelSpec(
+            id="small-model", context_window=32_000
+        )
+        session = create_agent_session(
+            provider="fake", model="small-model", registry=registry
+        )
+
+    assert session.context_window == 32_000
+
+
+def test_create_agent_session_uses_provider_default_context_window():
+    """headless 未显式传 model 时,按 provider 默认模型读取窗口。"""
+    with (
+        patch("codeagent.app.composition.model_selection.create_llm") as mock_llm,
+        patch(
+            "codeagent.app.composition.model_factory._provider_config",
+            return_value=SimpleNamespace(
+                model="configured-model", reasoning_effort="high"
+            ),
+        ),
+    ):
+        from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.spec import ModelSpec
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_agent_session
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        registry = ModelRegistry()
+        registry._catalogs.setdefault("deepseek", {})["configured-model"] = ModelSpec(
+            id="configured-model", context_window=64_000
+        )
+        with patch(
+            "codeagent.app.composition.model_factory._get_default_registry",
+            return_value=registry,
+        ):
+            session = create_agent_session(provider="deepseek")
+
+    assert session.context_window == 64_000
 
 
 
