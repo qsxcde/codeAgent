@@ -35,7 +35,7 @@ def test_read_only_mode_denies_mutation_and_allows_reads():
     assert policy.decide("bash", {"command": "echo hi > a.py"}).action == "deny"
 
 
-def test_plan_policy_is_enforced_by_react_tool_boundary():
+async def test_plan_policy_is_enforced_by_react_tool_boundary():
     import asyncio
 
     from codeagent.ai.providers.fake import FakeClient
@@ -66,7 +66,7 @@ def test_plan_policy_is_enforced_by_react_tool_boundary():
         before_tool_call=before_tool_call,
     )
 
-    asyncio.run(run_agent_loop(AgentContext(), config, "plan", emit=events.append))
+    await (run_agent_loop(AgentContext(), config, "plan", emit=events.append))
 
     result = next(event for event in events if event.type == EventType.TOOL_EXECUTION_END)
     assert result.payload.status == "rejected"

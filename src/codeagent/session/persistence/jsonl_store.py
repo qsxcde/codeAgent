@@ -158,10 +158,12 @@ class JsonFileStore:
             raise ValueError(f"会话已存在: {session_id}")
         self._directory.mkdir(parents=True, exist_ok=True)
         self._private_dir()  # sessions 目录 0700(转录含敏感内容,审计 M-10)
+        created_at = _now()
         ref = SessionRef(
             id=session_id,
-            timestamp=_now(),
+            timestamp=created_at,
             cwd=cwd or str(Path.cwd()),
+            last_activity_at=created_at,
             parent_session=parent_session,
             model=model or "",
             effort=effort or "",
@@ -173,6 +175,7 @@ class JsonFileStore:
             "parentSession": ref.parent_session,
             "timestamp": ref.timestamp,
             "cwd": ref.cwd,
+            "lastActivityAt": ref.last_activity_at,
         }
         # model/effort 可选字段:旧文件缺失时读侧 .get 默认空(向后兼容,D7)。
         if model is not None:
@@ -195,11 +198,14 @@ class JsonFileStore:
         index = self._index_for_read(path)
         if index is not None:
             return self._ref_from_index(index, session_id)
-        header, first_user, last_name, model, effort = self._scan(path)
+        header, first_user, last_name, model, effort, last_activity_at = self._scan(path)
         return SessionRef(
             id=header.get("id", session_id),
             timestamp=header.get("timestamp", ""),
             cwd=header.get("cwd", ""),
+            last_activity_at=last_activity_at
+            or header.get("lastActivityAt")
+            or header.get("timestamp", ""),
             parent_session=header.get("parentSession"),
             model=model,
             effort=effort,
@@ -218,7 +224,7 @@ class JsonFileStore:
             if ref is not None:
                 refs.append(ref)
         # 按时间升序(毫秒精度);同时间按 id 兜底,保证 continue_recent 确定性。
-        refs.sort(key=lambda r: (r.timestamp, r.id))
+        refs.sort(key=lambda r: (r.last_activity_at or r.timestamp, r.id))
         return refs
 
     def load_messages(self, session_id: str) -> list[Message]:
@@ -266,7 +272,9 @@ class JsonFileStore:
         )
 
     def append_message(self, session_id: str, message: Message) -> None:
-        self._append(session_id, _message_to_dict(message))
+        record = _message_to_dict(message)
+        record["timestamp"] = _now()
+        self._append(session_id, record)
 
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> str:
         """追加压缩记录(session-compaction):entry 生成 id / parentId /
@@ -400,10 +408,12 @@ class JsonFileStore:
         assert header is not None
         self._directory.mkdir(parents=True, exist_ok=True)
         self._private_dir()
+        created_at = _now()
         ref = SessionRef(
             id=new_session_id,
-            timestamp=_now(),
+            timestamp=created_at,
             cwd=header.get("cwd", "") or str(Path.cwd()),
+            last_activity_at=created_at,
             parent_session=session_id,
             model=header.get("model", "") or "",
             effort=header.get("effort", "") or "",
@@ -415,6 +425,7 @@ class JsonFileStore:
             "parentSession": session_id,
             "timestamp": ref.timestamp,
             "cwd": ref.cwd,
+            "lastActivityAt": ref.last_activity_at,
         }
         if header.get("model"):
             new_header["model"] = header["model"]
@@ -541,7 +552,9 @@ class JsonFileStore:
                 messages.append(_dict_to_message(entry))
         return messages, cut_found
 
-    def _scan(self, path: Path) -> tuple[dict[str, Any], str, str, str, str]:
+    def _scan(
+        self, path: Path
+    ) -> tuple[dict[str, Any], str, str, str, str, str]:
         """单遍流式扫描:header / 首条 user 消息 / 最新 meta name / 最新配置。
 
         不能提前终止——meta name 与 model_change 可能写在首条 user 消息之后
@@ -553,14 +566,20 @@ class JsonFileStore:
         last_name = ""
         model = ""
         effort = ""
+        last_activity_at = ""
         for entry in self._iter_entries(path):
             if header is None:
                 _validate_header(entry, path)
                 header = entry
                 model = entry.get("model", "") or ""
                 effort = entry.get("effort", "") or ""
-            elif entry.get("type") == "message" and not first_user:
-                if entry.get("role") == "user":
+                last_activity_at = entry.get("lastActivityAt") or entry.get(
+                    "timestamp", ""
+                )
+            elif entry.get("type") == "message":
+                if isinstance(entry.get("timestamp"), str):
+                    last_activity_at = entry["timestamp"]
+                if not first_user and entry.get("role") == "user":
                     first_user = entry.get("content", "") or ""
             elif entry.get("type") == "meta" and entry.get("key") == "name":
                 if entry.get("value") is not None:
@@ -572,4 +591,4 @@ class JsonFileStore:
                     effort = str(entry["effort"])
         if header is None:
             raise ValueError(f"会话文件缺少 header: {path}")
-        return header, first_user, last_name, model, effort
+        return header, first_user, last_name, model, effort, last_activity_at

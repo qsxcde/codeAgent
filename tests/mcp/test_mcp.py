@@ -76,14 +76,13 @@ def test_parse_mcp_config_invalid_entries(tmp_path):
 # ── 客户端(真实子进程 + SDK)─────────────────────────
 
 
-def test_client_discovers_and_calls_tools():
+def test_client_discovers_and_calls_tools(resource_tracker):
     """tools/list 发现 + call_tool 往返(进程级互操作)。"""
-    client = McpServerClient("mock", _spec())
+    client = resource_tracker(McpServerClient("mock", _spec()))
     client.start(timeout=10)
     assert {t.name for t in client.tools} == {"echo", "fail"}
     text = client.call_tool("echo", {"text": "hello"})
     assert text == "echo:hello"
-    client.close()
 
 
 def test_client_error_tool_raises():
@@ -140,7 +139,7 @@ def test_mcp_tool_error_result():
     client.close()
 
 
-def test_mcp_tool_async_cancellation_releases_call():
+async def test_mcp_tool_async_cancellation_releases_call():
     """The async adapter propagates cancellation to the server bridge."""
 
     class AsyncClient:
@@ -168,7 +167,7 @@ def test_mcp_tool_async_cancellation_releases_call():
             await task
         return client
 
-    client = asyncio.run(scenario())
+    client = await (scenario())
     assert client.cancelled is True
 
 

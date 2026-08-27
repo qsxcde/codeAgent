@@ -88,12 +88,12 @@ class _ToolModel:
         return iterator()
 
 
-def test_agent_prompt_updates_context_and_notifies_subscribers() -> None:
+async def test_agent_prompt_updates_context_and_notifies_subscribers() -> None:
     agent = Agent(AgentContext(), AgentLoopConfig(model=_Model(["hello"])))
     events = []
     unsubscribe = agent.subscribe(events.append)
 
-    asyncio.run(agent.prompt("hi"))
+    await (agent.prompt("hi"))
     unsubscribe()
 
     assert [message.content for message in agent.context.messages] == ["hi", "hello"]
@@ -101,15 +101,15 @@ def test_agent_prompt_updates_context_and_notifies_subscribers() -> None:
     assert events[-1].type == EventType.AGENT_END
 
 
-def test_agent_continue_rejects_assistant_tail() -> None:
+async def test_agent_continue_rejects_assistant_tail() -> None:
     context = AgentContext(messages=[Message(role="assistant", content="done")])
     agent = Agent(context, AgentLoopConfig(model=_Model(["retry"])))
 
     with pytest.raises(ValueError, match="assistant"):
-        asyncio.run(agent.continue_())
+        await (agent.continue_())
 
 
-def test_agent_follow_up_waits_for_active_run_and_starts_next_turn() -> None:
+async def test_agent_follow_up_waits_for_active_run_and_starts_next_turn() -> None:
     async def scenario() -> None:
         model = _GatedModel(["first", "second"])
         agent = Agent(AgentContext(), AgentLoopConfig(model=model))
@@ -128,10 +128,10 @@ def test_agent_follow_up_waits_for_active_run_and_starts_next_turn() -> None:
             "second",
         ]
 
-    asyncio.run(scenario())
+    await (scenario())
 
 
-def test_agent_steer_is_injected_after_tool_batch() -> None:
+async def test_agent_steer_is_injected_after_tool_batch() -> None:
     async def scenario() -> None:
         model = _ToolModel()
         tool = _Tool()
@@ -155,10 +155,10 @@ def test_agent_steer_is_injected_after_tool_batch() -> None:
         assert model.calls[1][-1].role == "user"
         assert model.calls[1][-1].content == "focus on the error"
 
-    asyncio.run(scenario())
+    await (scenario())
 
 
-def test_agent_abort_cancels_run_without_committing_partial_messages() -> None:
+async def test_agent_abort_cancels_run_without_committing_partial_messages() -> None:
     async def scenario() -> None:
         model = _GatedModel(["never committed"])
         agent = Agent(AgentContext(), AgentLoopConfig(model=model))
@@ -174,10 +174,10 @@ def test_agent_abort_cancels_run_without_committing_partial_messages() -> None:
         assert any(event.type == EventType.ABORTED for event in events)
         assert agent.abort() is False
 
-    asyncio.run(scenario())
+    await (scenario())
 
 
-def test_agent_steer_not_consumed_by_a_later_independent_run() -> None:
+async def test_agent_steer_not_consumed_by_a_later_independent_run() -> None:
     async def scenario() -> None:
         model = _GatedModel(["first", "second"])
         agent = Agent(AgentContext(), AgentLoopConfig(model=model))
@@ -190,4 +190,4 @@ def test_agent_steer_not_consumed_by_a_later_independent_run() -> None:
 
         assert all(message.content != "too late" for message in agent.context.messages)
 
-    asyncio.run(scenario())
+    await (scenario())

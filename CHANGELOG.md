@@ -8,7 +8,13 @@
 ### Planned
 
 - Hooks 与任务完成前的验证门禁
-- CI 驱动的构建、安装冒烟测试与发布流程（当前 CI 已覆盖测试、版本一致性、补丁格式和 OpenSpec 校验，尚未覆盖构建安装与发布）
+
+### Engineering updates
+
+- 测试按行为域拆分并集中公共契约，当前全量验证为 `944 passed`；补齐会话 `last_activity_at` 跨层契约。
+- CI 增加快速质量检查、Ubuntu/Windows/macOS 离线测试矩阵、wheel 安装冒烟和 TUI 性能 artifact。
+- 增加 pytest-cov、Ruff 正确性检查、安装后 fake provider CLI 验证和性能相对变化报告。
+- 性能和覆盖率暂不设置高强度硬门槛，等待稳定 CI 数据后再评估。
 
 ## [0.3.0] - 2026-08-22
 

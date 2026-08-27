@@ -19,11 +19,11 @@ class _AgentTool:
         return ToolResult(tool_call_id, arguments["text"], name=self.name)
 
 
-def test_runtime_executes_agent_tool_protocol_and_preserves_operation_id() -> None:
+async def test_runtime_executes_agent_tool_protocol_and_preserves_operation_id() -> None:
     tool = _AgentTool()
     call = ToolCall("c1", "echo", {"text": "hello"})
 
-    result = asyncio.run(
+    result = await (
         ToolExecutionRuntime().execute(tool, call, operation_id="op-1")
     )
 

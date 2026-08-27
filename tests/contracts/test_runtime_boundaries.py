@@ -45,7 +45,7 @@ def test_runtime_clears_confirmation_responses_when_a_run_finishes() -> None:
     assert runtime.confirm_queue.empty()
 
 
-def test_confirmation_waits_for_matching_request_id() -> None:
+async def test_confirmation_waits_for_matching_request_id() -> None:
     from codeagent.session.runtime.confirmation import ConfirmationCoordinator
 
     async def scenario() -> None:
@@ -58,7 +58,7 @@ def test_confirmation_waits_for_matching_request_id() -> None:
         coordinator.respond("wanted", False)
         assert await waiter is False
 
-    asyncio.run(scenario())
+    await (scenario())
 
 
 def test_event_mapper_preserves_tool_start_mapping() -> None:

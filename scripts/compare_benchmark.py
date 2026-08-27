@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Compare two benchmark JSON files and report relative metric changes."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any
+
+
+def _load(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("metrics"), dict):
+        raise ValueError(f"invalid benchmark payload: {path}")
+    return payload
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("current", type=Path)
+    parser.add_argument("baseline", type=Path, nargs="?")
+    parser.add_argument("--max-regression", type=float, default=0.20)
+    parser.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        help="return non-zero when a metric exceeds --max-regression",
+    )
+    return parser
+
+
+def _comparison(current: dict[str, Any], baseline: dict[str, Any], limit: float) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    current_metrics = current["metrics"]
+    baseline_metrics = baseline["metrics"]
+    for name in sorted(set(current_metrics) & set(baseline_metrics)):
+        current_summary = current_metrics[name]
+        baseline_summary = baseline_metrics[name]
+        if not isinstance(current_summary, dict) or not isinstance(baseline_summary, dict):
+            continue
+        for field in ("p50_ms", "p95_ms"):
+            old = baseline_summary.get(field)
+            new = current_summary.get(field)
+            if not isinstance(old, (int, float)) or not isinstance(new, (int, float)) or old == 0:
+                continue
+            relative_change = (new - old) / old
+            changes.append(
+                {
+                    "metric": name,
+                    "statistic": field,
+                    "baseline": old,
+                    "current": new,
+                    "relative_change": round(relative_change, 6),
+                    "regression": relative_change > limit,
+                }
+            )
+    return changes
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    current = _load(args.current)
+    if args.baseline is None:
+        result = {
+            "status": "no-baseline",
+            "warning": "no baseline supplied; report is informational",
+            "current": current,
+            "comparisons": [],
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    baseline = _load(args.baseline)
+    comparisons = _comparison(current, baseline, args.max_regression)
+    regressions = [item for item in comparisons if item["regression"]]
+    result = {
+        "status": "regression" if regressions else "passed",
+        "max_regression": args.max_regression,
+        "baseline": {"scenario": baseline.get("scenario"), "environment": baseline.get("environment")},
+        "current": {"scenario": current.get("scenario"), "environment": current.get("environment")},
+        "comparisons": comparisons,
+        "regressions": regressions,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 1 if regressions and args.fail_on_regression else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

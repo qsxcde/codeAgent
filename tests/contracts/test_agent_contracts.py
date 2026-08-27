@@ -32,7 +32,7 @@ def test_agent_context_copy_isolated_from_original_lists() -> None:
     assert context.tools == [tool]
 
 
-def test_agent_loop_config_accepts_tools_and_context_hooks() -> None:
+async def test_agent_loop_config_accepts_tools_and_context_hooks() -> None:
     async def transform(messages):
         return messages
 
@@ -51,8 +51,8 @@ def test_agent_loop_config_accepts_tools_and_context_hooks() -> None:
     )
 
     assert isinstance(config.tools[0], AgentTool)
-    assert asyncio.run(config.transform_context([])) == []
-    assert asyncio.run(config.before_tool_call(None, None)).action == "allow"
+    assert await (config.transform_context([])) == []
+    assert (await config.before_tool_call(None, None)).action == "allow"
 
 
 def test_context_continue_rejects_empty_or_assistant_tail() -> None:

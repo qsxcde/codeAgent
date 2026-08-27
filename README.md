@@ -4,7 +4,7 @@
 
 当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
-当前验收基线（2026-08-24）:`uv run pytest -q` 收集 **666** 项，**665 passed / 1 skipped**（Windows 当前无创建符号链接权限），无失败；`openspec validate --specs` 为 **9 passed**。CI 已覆盖测试、版本一致性、补丁格式和主规格校验。项目仍未配置覆盖率、Ruff/mypy/Black 或构建后安装冒烟门禁。
+当前验收基线（2026-08-27）：`uv run pytest -q` **944 passed**。测试已完成分层与结构迁移；CI 已配置快速质量门禁、Ubuntu/Windows/macOS 离线矩阵、构建后安装冒烟和非阻塞性能报告。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
 
 ## 项目介绍
 
@@ -28,7 +28,7 @@
 - **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可按用户配置接入 `tools/list` / `tools/call` 工具，并以 `mcp__<server>__<tool>` 命名空间化和分组预算控制提示词膨胀。
 - **Skills 技能系统**:SKILL.md 格式 + 三源发现(内建 / 个人 / 项目)+ 渐进式披露(描述入 system prompt,**正文经 `skill` 工具按需获取**);`/skills` 手动加载。
 - **用量透明**:归一并累计输入 / 输出 / 推理 / 缓存命中 token；`/status` 与 headless CLI 展示会话或本轮用量（不估算费用）。
-- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试（当前实测 666 项收集，665 passed / 1 skipped，无失败）。
+- **离线可测**:`fake` provider + `FakeClient`,无需网络与密钥即可跑通全部测试；测试分层和 CI 命令见 [`docs/testing.md`](docs/testing.md)。
 
 ## 项目环境设置
 
@@ -128,7 +128,9 @@ uv run codeagent --yes --prompt "..."        # 显式承担风险
 ### 运行测试
 
 ```bash
-uv run pytest -q        # 全量离线测试(当前实测 666 项收集,665 passed / 1 skipped,无失败;以实际运行结果为准)
+uv run pytest -q        # 全量离线测试(结果以实际运行结果为准)
+
+uv run ruff check src tests scripts  # 基础正确性静态检查
 
 # 运行 TUI 离线性能基准(结果只包含指标与环境元数据)
 uv run python scripts/benchmark_tui.py --scenario stream --blocks 100 --stream-chars 10000 --iterations 3
@@ -142,7 +144,9 @@ codeagent/
 ├── CLAUDE.md                    # Claude Code 工作指南(当前树的权威快速参考)
 ├── docs/
 │   ├── design/                  # 需求分析 / 架构设计 / 自研蓝图
-│   ├── iteration/               # v0.1 / v0.2 / v0.3 迭代记录(权威)
+│   ├── iteration/               # v0.1 / v0.2 / v0.3 / v0.4 迭代记录(权威)
+│   ├── testing.md               # 测试分层、CI、覆盖率和安装冒烟
+│   └── benchmarks/              # TUI 性能基线与优化记录
 │   └── review/                  # 审计报告
 ├── openspec/                    # OpenSpec 规格与归档变更
 │
@@ -154,7 +158,8 @@ codeagent/
     │   ├── config.py            #   全局 Settings + ~/.codeagent 模板幂等生成
     │   ├── agents.py            #   AGENTS.md 分层加载 + 基础提示词
     │   ├── skills.py            #   SKILL.md 三源加载 / 提示词构建 / 渲染块
-    │   └── tui/                 #   交互式终端(命令/补全/选择器/Markdown)
+    │   ├── composition/         #   provider、runtime、tool、session、TUI 组合工厂
+    │   └── tui/                 #   交互式终端(状态、协调器、渲染、命令、后端)
     │
     ├── ai/                      # [模型基础设施层] 模型、provider、transport、目录
     │   ├── model/               #   ChatClient / 消息 / 响应 / 工具 / 流事件契约
@@ -174,28 +179,30 @@ codeagent/
     ├── session/                 # [会话层] Agent 外壳 + 持久化/压缩/事件适配
     │   ├── session.py           #   AgentSession:run(事件分发)/ abort / steer / followup
     │   ├── manager.py           #   SessionManager:create / switch / fork / dispose
-    │   ├── store.py             #   SessionStore(JSONL 树形,id/parentId)
-    │   ├── bus.py               #   EventBus:subscribe/emit,订阅方异常隔离
-    │   └── compaction.py        #   上下文压缩(窗口摘要)
+    │   ├── persistence/         #   JSONL/MemoryStore、索引、锁、记录模型
+    │   ├── runtime/             #   运行控制、确认、事件映射、错误策略
+    │   ├── compaction/          #   上下文压缩策略与摘要
+    │   ├── events/              #   EventBus:subscribe/emit
+    │   └── navigation/          #   会话树与分支导航
     │
     ├── tools/                   # [工具层] hexagonal
     │   ├── base.py / registry.py#   AtomicTool 基类 + make_tools 工厂(8 个内建工具)
-    │   ├── security.py          #   执行前安全分类器(deny/ask/allow)
+    │   ├── security/            #   执行前安全分类器(deny/ask/allow)
     │   ├── atomic/              #   read / write / edit / bash / grep / find / ls / skill
     │   ├── mcp/                 #   MCP client / loader / adapter / budget / config
     │   └── shared/              #   FsOps 抽象 / paths / textfile / truncate / mutation_queue / ignore
     │
     └── resources/               # [资源层] 内建 skills / prompts（Skills 已启用）
 
-tests/                          # 按 src 模块镜像分包,666 项收集(665 passed / 1 skipped,无失败)
-├── conftest.py                 #   _isolate_config_dir / memory_fsops 夹具
-├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
-├── test_decoupling.py          #   分层解耦 AST 扫描(AST 强制校验)
-├── ai/ / mcp/                  #   模型层；MCP mock server / client / adapter / budget
-├── core/                       #   loop / messages / events
-├── session/                    #   session / store / manager / compaction
-├── tools/                      #   test_tools.py + test_security.py
-└── tui/                        #   view / components / commands / fuzzy / md_renderer / textual_backend
+tests/                          # 按行为域分包，944 passed（2026-08-27）
+├── conftest.py / fixtures/     #   marker、隔离环境和共享离线夹具
+├── contracts/                  #   跨实现公共契约与分层边界
+├── ai/ / core/ / mcp/          #   模型、编排和 MCP 行为
+├── app/container/              #   组合根装配与生命周期
+├── session/store/               #   JSONL、MemoryStore 和索引
+│   └── behavior/               #   运行、恢复、取消、确认、压缩和用量
+├── tools/atomic/                #   原子工具；execution/security 独立
+└── tui/view/                    #   TUI 生命周期、命令、会话、状态和扩展
 ```
 
 **分层依赖规则**:依赖单向流动,跨层 import 只允许出现在 `app/container.py` / `app/main.py`。判据:`core/` 中 grep 不到 `config / tools / ai / session` 字面量,由 `tests/test_decoupling.py` AST 扫描强制校验。详见 [`docs/design/architecture.md`](docs/design/architecture.md) §8-9。
@@ -206,7 +213,7 @@ tests/                          # 按 src 模块镜像分包,666 项收集(665 p
 
 v0.3.0 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。当前未实现且已明确移出本版本的能力包括：费用估算、Web / HTTP 事件订阅、轻量记忆、插件系统、多智能体和自动化任务；它们在出现真实需求后重新评估。
 
-工程后续优先级是补充 Hooks 与完成前验证门禁、覆盖率与静态检查、构建/安装冒烟测试和发布流程。该部分不影响 v0.3.0 的功能验收，但属于下一阶段的交付治理工作。
+工程后续优先级是补充 Hooks 与完成前验证门禁、积累跨平台性能数据并评估硬门槛、构建/安装冒烟测试和发布流程。性能基线在 CI 数据稳定前保持非阻塞。
 
 ## 参考
 

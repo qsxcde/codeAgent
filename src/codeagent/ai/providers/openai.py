@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from codeagent.ai.catalog.builtin import OPENAI_MODELS
 from codeagent.ai.catalog.spec import ModelSpec
+
+if TYPE_CHECKING:
+    from codeagent.ai.transport.openai_compat import OpenAICompatClient
 
 
 class OpenAIConfig(BaseSettings):

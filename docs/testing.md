@@ -1,0 +1,97 @@
+# 测试指南
+
+## 当前基线
+
+截至 `test-structure-coverage` 完成测试结构迁移后：
+
+- `uv run pytest -q`：**944 passed**（2026-08-27，124.09s）。测试数量变化来自测试拆分、边界契约补充和 `last_activity_at` 覆盖。
+- `test-foundation-stability` 已归档；`test-structure-coverage` 的 `last_activity_at` 产品实现与跨层测试已完成，待归档。
+- 当前全量结果由开发者在 Windows 环境复核；Ubuntu、Windows、macOS 的 CI 矩阵已配置，跨平台结果以 CI artifact 为准。
+
+测试改造应保持行为基线不变。测试数量变化时，需要说明是新增覆盖、拆分迁移还是删除过期兼容测试。
+
+## 常用命令
+
+```bash
+# 安装开发依赖
+uv sync --group dev
+
+# 收集测试，不执行
+uv run pytest --collect-only -q
+
+# 快速单元和契约测试
+uv run pytest -m "unit or contract" -q --strict-markers
+
+# 集成、端到端和平台测试
+uv run pytest -m "integration or e2e or platform or compatibility" -q --strict-markers
+
+# 排除慢速测试的默认反馈集
+uv run pytest -m "not slow" -q
+
+# 完整离线测试
+uv run pytest -q
+
+# CI 同步的正确性静态检查（只阻断语法错误、未定义名称和未使用局部变量）
+uv run ruff check src tests scripts
+
+# 生成覆盖率报告（不设置高比例硬门槛）
+uv run pytest -m "unit or contract" -q --strict-markers --cov=codeagent --cov-report=term-missing
+
+# 构建后安装冒烟
+uv build --out-dir dist
+uv venv .ci-package-smoke
+uv pip install --python .ci-package-smoke/bin/python dist/*.whl
+.ci-package-smoke/bin/python scripts/package_smoke.py
+```
+
+测试必须离线运行，不依赖真实 API key、真实 Provider 或用户的 `~/.codeagent` 数据。
+
+## Marker 约定
+
+- `unit`：单模块、无外部进程、无真实网络的行为测试。
+- `contract`：跨实现或架构边界契约，例如 Store、Provider、Tool 和导入边界。
+- `integration`：组合多个运行时模块、文件存储、MCP 或 subprocess 的测试。
+- `e2e`：从 CLI/TUI 入口验证完整用户路径的测试。
+- `platform`：依赖 Windows、Linux 或 macOS 差异的测试。
+- `security`：安全分类、拒绝、确认和文件边界测试。
+- `performance`：性能基线、内存和渲染指标测试。
+- `slow`：不适合快速反馈但仍属于常规回归的测试。
+
+一个测试可以拥有多个 marker。marker 描述测试的执行边界，不替代测试名称对行为的说明。
+
+当前分类由 `tests/conftest.py::pytest_collection_modifyitems` 统一补齐：未特别识别的新增测试默认归入 `unit`，边界、组合根、MCP、CLI 和性能测试分别升级到对应主分类；工具进程测试追加 `platform`，安全测试追加 `security`。因此新增测试不会因漏写 marker 而从分层命令中消失。
+
+共享测试资源位于 `tests/fixtures/`：
+
+- `ai.py`：离线 `FakeClient` 及构造器。
+- `filesystem.py`：`InMemoryFsOps` 和 `memory_fsops`。
+- `session.py`：默认离线工具集的 `session_factory`。
+- `resources.py`：后台任务、同步资源和异步资源的 teardown tracker。
+
+## 异步与资源清理约定
+
+- 新增异步测试使用统一的 pytest asyncio 模式，直接声明 `async def`。
+- 不使用固定 `sleep` 等待调度或排序稳定；使用显式事件、受控 clock 或确定性输入。
+- 后台任务、MCP 客户端、模型客户端和 subprocess 必须在测试结束时关闭或确认已取消。
+- 可能挂起的测试必须具备可诊断的超时保护。
+- fixture 只封装环境构造，不隐藏被验证的业务输入和断言。
+- `tests/conftest.py` 的 autouse fixture 会检查异步测试是否遗留 pending task；发现泄漏时先取消并等待，再以任务名报告失败。
+
+## CI 分层与性能报告
+
+`.github/workflows/ci.yml` 将门禁分为四类：
+
+- `quality-fast`：Ruff、unit/contract、覆盖率报告、版本一致性、补丁格式和 OpenSpec 校验。
+- `test-matrix`：Ubuntu、Windows、macOS 上执行 integration/e2e/platform/compatibility，统一使用 fake provider；失败时保留 JUnit 和跳过原因。
+- `package-smoke`：构建 wheel，在干净虚拟环境安装后检查 CLI 和内建 resources 可用。
+- `performance`：运行离线 TUI 基准并上传 JSON；性能回归目前只告警，不阻断普通 PR。
+
+性能结果可用以下命令进行相对比较。没有基线时命令返回成功并明确标注 `no-baseline`：
+
+```bash
+uv run python scripts/benchmark_tui.py --scenario stream --blocks 100 --stream-chars 10000 --iterations 3 --output artifacts/tui-benchmark.json
+uv run python scripts/compare_benchmark.py artifacts/tui-benchmark.json
+uv run python scripts/compare_benchmark.py artifacts/tui-benchmark.json baseline.json --max-regression 0.20
+```
+
+只有在至少一轮跨平台 CI 数据稳定后，才评估是否增加 `--fail-on-regression` 或固定覆盖率下限。

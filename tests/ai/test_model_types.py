@@ -34,17 +34,17 @@ def test_tool_definition_is_provider_neutral():
     assert definition.to_api_dict()["function"]["name"] == "read"
 
 
-def test_chat_model_port_converts_runtime_tools_before_model_call():
+async def test_chat_model_port_converts_runtime_tools_before_model_call():
     client = FakeClient(response="ok")
     port = ChatModelPort(client)
 
-    asyncio.run(port.generate([Message(role="user", content="读取")], [_Tool()]))
+    await (port.generate([Message(role="user", content="读取")], [_Tool()]))
 
     assert client.bound_tools == ["read"]
     assert client.call_history[0]["bound_tools"] == ["read"]
 
 
-def test_chat_model_port_agent_stream_emits_parsed_tool_calls() -> None:
+async def test_chat_model_port_agent_stream_emits_parsed_tool_calls() -> None:
     client = FakeClient(
         steps=[
             {
@@ -59,7 +59,7 @@ def test_chat_model_port_agent_stream_emits_parsed_tool_calls() -> None:
     async def collect():
         return [event async for event in port.stream_agent([Message(role="user", content="read")])]
 
-    events = asyncio.run(collect())
+    events = await (collect())
     tool = next(event for event in events if event.type == "tool_call")
 
     assert tool.tool_name == "read"
@@ -67,7 +67,7 @@ def test_chat_model_port_agent_stream_emits_parsed_tool_calls() -> None:
     assert tool.arguments == {"path": "a.py"}
 
 
-def test_chat_model_port_agent_stream_reports_invalid_tool_arguments() -> None:
+async def test_chat_model_port_agent_stream_reports_invalid_tool_arguments() -> None:
     client = FakeClient(
         steps=[{"tool_calls": [{"id": "c1", "name": "read", "args_json": "{broken"}]}]
     )
@@ -76,18 +76,18 @@ def test_chat_model_port_agent_stream_reports_invalid_tool_arguments() -> None:
     async def collect():
         return [event async for event in port.stream_agent([Message(role="user", content="read")])]
 
-    events = asyncio.run(collect())
+    events = await (collect())
     tool = next(event for event in events if event.type == "tool_call")
 
     assert tool.arguments == {}
     assert tool.argument_error
 
 
-def test_chat_model_port_injects_system_prompt_at_adapter_boundary() -> None:
+async def test_chat_model_port_injects_system_prompt_at_adapter_boundary() -> None:
     client = FakeClient(response="ok")
     port = ChatModelPort(client, system_prompt="you are concise")
 
-    asyncio.run(port.generate([Message(role="user", content="hello")]))
+    await (port.generate([Message(role="user", content="hello")]))
 
     assert client.call_history[0]["messages"][0] == {
         "role": "system",

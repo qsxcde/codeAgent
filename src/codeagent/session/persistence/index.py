@@ -55,6 +55,8 @@ class SessionIndex:
                 "id": header.get("id", path.stem),
                 "timestamp": header.get("timestamp", ""),
                 "cwd": header.get("cwd", ""),
+                "lastActivityAt": header.get("lastActivityAt")
+                or header.get("timestamp", ""),
                 "parentSession": header.get("parentSession"),
                 "model": header.get("model", "") or "",
                 "effort": header.get("effort", "") or "",
@@ -93,6 +95,8 @@ class SessionIndex:
             entry_type = entry.get("type")
             if entry_type == "message":
                 meta = index["meta"]
+                if isinstance(entry.get("timestamp"), str):
+                    index["session"]["lastActivityAt"] = entry["timestamp"]
                 content = entry.get("content", "") or ""
                 if entry.get("role") == "user" and not meta["firstUserSeen"] and content:
                     meta["firstUserSeen"] = True
@@ -138,6 +142,8 @@ class SessionIndex:
         entry_type = record.get("type")
         if entry_type == "message":
             meta = index["meta"]
+            if isinstance(record.get("timestamp"), str):
+                index["session"]["lastActivityAt"] = record["timestamp"]
             content = record.get("content", "") or ""
             if record.get("role") == "user" and not meta["firstUserSeen"] and content:
                 meta["firstUserSeen"] = True
@@ -198,7 +204,15 @@ class SessionIndex:
                 return None
             if not all(
                 key in session and isinstance(session[key], str)
-                for key in ("id", "timestamp", "cwd", "model", "effort", "title")
+                for key in (
+                    "id",
+                    "timestamp",
+                    "cwd",
+                    "lastActivityAt",
+                    "model",
+                    "effort",
+                    "title",
+                )
             ):
                 return None
             if "parentSession" not in session or not isinstance(
@@ -318,6 +332,8 @@ class SessionIndex:
             id=session.get("id", session_id),
             timestamp=session.get("timestamp", ""),
             cwd=session.get("cwd", ""),
+            last_activity_at=session.get("lastActivityAt")
+            or session.get("timestamp", ""),
             parent_session=session.get("parentSession"),
             model=session.get("model", "") or "",
             effort=session.get("effort", "") or "",

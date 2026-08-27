@@ -32,14 +32,34 @@ def test_process_request_and_result_boundary(tmp_path):
     assert result.cleanup_confirmed is True
 
 
-def test_process_runner_async_uses_same_result_contract(tmp_path):
+async def test_process_runner_async_uses_same_result_contract(tmp_path):
     try:
         executable = resolve_bash()
     except ValueError:
         pytest.skip("当前平台没有 bash")
     request = ProcessRequest(executable, "printf async", str(tmp_path), bash_env(), 5)
-    result = asyncio.run(ProcessRunner().arun(request))
+    result = await (ProcessRunner().arun(request))
     assert (result.returncode, result.stdout, result.stderr) == (0, "async", "")
+
+
+def test_process_runner_timeout_uses_portable_python_scenario(tmp_path):
+    """超时场景不依赖 Unix ``sleep`` 命令,Windows/Linux/macOS 均可复现。"""
+    try:
+        executable = resolve_bash()
+    except ValueError:
+        pytest.skip("当前平台没有 bash")
+
+    request = ProcessRequest(
+        executable=executable,
+        command='python -c "import time; time.sleep(5)"',
+        cwd=str(tmp_path),
+        env=bash_env(),
+        timeout=1,
+    )
+    result = ProcessRunner().run(request)
+
+    assert result.timed_out is True
+    assert isinstance(result.cleanup_confirmed, bool)
 
 
 def test_posix_backend_creates_new_process_session_and_kill_group():

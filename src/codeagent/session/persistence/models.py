@@ -36,6 +36,9 @@ class UsageStats:
 class SessionRef:
     """会话元数据(列表 / 切换入口用)。
 
+    - ``timestamp``:会话创建时间;
+    - ``last_activity_at``:最近一次成功追加消息的时间;空值仅用于兼容
+      外部构造的旧引用,存储后端会回退到 ``timestamp``;
     - ``model`` / ``effort``:会话创建时的模型配置(header 记录,读侧透传);
     - ``title``:派生标题(显式命名优先,否则首条用户消息截断)。
     """
@@ -47,6 +50,7 @@ class SessionRef:
     model: str = ""
     effort: str = ""
     title: str = ""
+    last_activity_at: str = ""
 
 
 @dataclass

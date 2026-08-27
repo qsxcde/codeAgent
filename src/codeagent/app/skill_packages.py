@@ -212,7 +212,7 @@ class PackageRegistry:
             return [], []
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return [], [
                 PackageDiagnostic("registry_parse_failed", f"Package 注册表解析失败: {self.path}", str(self.path))
             ]

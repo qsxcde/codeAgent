@@ -1,0 +1,1 @@
+"""TUI view behavior tests."""

@@ -2,7 +2,7 @@
 
 > 版本: v0.3(阶段 1~4 落地后校准)
 > 适用范围: 自研编排(2026-08-14 起,已弃用 langgraph/langchain)的 Code Agent 项目
-> 更新日期: 2026-08-24(校准至 v0.3.0 当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills / MCP / token 用量 / 会话树、TUI 命令体系)
+> 更新日期: 2026-08-27(校准至当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills / MCP / token 用量 / 会话树、测试分层与 CI 质量门禁)
 > 事实来源: 本文描述当前代码树;演进决策见 [self-built-orchestration-blueprint.md](./self-built-orchestration-blueprint.md)(决策与收益记录)、迭代记录 `docs/iteration/v0.1.md` / `v0.2.md` / `v0.3.md`
 
 ## 1. 背景与目标
@@ -42,7 +42,7 @@
 - `ai/` 层:模型基础设施(provider / catalog / model / transport),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);provider/model/effort 选择位于 `app/composition/model_selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
 - `core/` Agent Runtime:context / agent / loop / execution / ports / messages / events(纯内存、全异步),模块顶层零副作用。
-- `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
+- `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
 - 事件 11 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)。
 - Skills 系统(v0.3 阶段 1~4):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
@@ -50,9 +50,9 @@
 - token 用量透明(v0.3 阶段 3):usage 归一、会话级 append-only 落库、`/status` 与 headless CLI 展示输入 / 输出 / 缓存命中（不做费用估算）。
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
-- 测试基建:`tests/` 按 src 模块镜像分包 + `FakeClient`(离线假模型),`uv run pytest` **666 项收集，665 passed / 1 skipped，无失败**(2026-08-24 复核；唯一跳过项是 Windows 无符号链接权限；2026-08-21 综合审计的 12 条 CONFIRMED 缺陷已修复闭环,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5)。
+- 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **944 passed**(2026-08-27, Windows);CI 已增加 Ruff 正确性检查、覆盖率报告、三平台离线矩阵、安装包冒烟和非阻塞 TUI 性能报告。
 
-**v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前未配置覆盖率、静态检查、构建安装冒烟和发布门禁，这些属于下一阶段工程治理。
+**v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
 
 ## 4. 总体结构
 
@@ -76,14 +76,15 @@ codeagent/
 │   │   ├── config.py                 #   全局 Settings + ~/.codeagent 模板幂等生成
 │   │   ├── agents.py                 #   AGENTS.md 分层加载 + 基础提示词
 │   │   ├── skills.py                 #   SKILL.md 三源加载 / 提示词构建 / 渲染块
+│   │   ├── composition/              #   provider、runtime、tool、session、TUI 组合工厂
 │   │   └── tui/                      #   [调用层·TUI] 交互式终端 ✅ 已落地
-│   │       ├── view.py               #     TuiApp 视图逻辑(事件→渲染,只依赖 TuiBackend 端口)
-│   │       ├── components.py         #     纯渲染组件树(样式标签段,引擎无关可离线测)
+│   │       ├── view.py / runtime.py  #     TuiApp 与运行时状态
+│   │       ├── *coordinator.py       #     会话、命令、渲染和对话协调
+│   │       ├── model.py / blocks.py  #     纯状态模型与 transcript block
 │   │       ├── backend.py            #     TuiBackend 端口协议
-│   │       ├── commands.py           #     斜杠命令注册表 + 解析纯函数
-│   │       ├── fuzzy.py              #     模糊补全纯函数
-│   │       ├── md_renderer.py        #     Markdown 渲染纯函数
-│   │       ├── theme.py              #     样式标签词表
+│   │       ├── rendering.py / md_renderer.py / primitives.py
+│   │       ├── status.py / output.py / theme.py
+│   │       ├── benchmark.py / performance.py # 离线性能基准与指标
 │   │       ├── textual_backend.py    #     textual 引擎实现(当前唯一后端)
 │   │       └── main.py               #     TUI 入口(--tui 转交此处,装配在组合根)
 │   │
@@ -113,14 +114,16 @@ codeagent/
 │   ├── session/                      # [Session + Runtime]  ← Pi 核心增量 ✅ 已落地
 │   │   ├── session.py                #   AgentSession: run / subscribe / abort / steer / followup
 │   │   ├── manager.py                #   SessionManager: create / switch / fork / dispose
-│   │   ├── store.py                  #   SessionStore(JSONL 树形,id/parentId)
-│   │   ├── bus.py                    #   事件总线: subscribe/emit
-│   │   └── compaction.py             #   上下文压缩(窗口摘要,纯函数)
+│   │   ├── persistence/              #   JSONL/MemoryStore、索引、锁、记录模型
+│   │   ├── runtime/                  #   运行控制、确认、事件映射、错误策略
+│   │   ├── compaction/               #   上下文压缩策略、摘要和详情
+│   │   ├── events/                    #   事件总线
+│   │   └── navigation/               #   会话树与分支导航
 │   │
 │   ├── tools/                        # [工具层] hexagonal ✅ 已落地
 │   │   ├── base.py                   #   AtomicTool 基类(Args pydantic schema → invoke)
 │   │   ├── registry.py               #   make_tools 工厂(8 个内建工具,cwd/ops 注入)
-│   │   ├── security.py               #   执行前安全分类器(classify_bash/file/tool)
+│   │   ├── security/                  #   执行前安全分类器与 deny/ask/allow 决策
 │   │   ├── atomic/                   #   read / write / edit / bash / grep / find / ls / skill
 │   │   ├── mcp/                      #   MCP client / loader / adapter / budget / config
 │   │   └── shared/                   #   FsOps 抽象 / paths / textfile / truncate / mutation_queue / ignore
@@ -128,15 +131,15 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按 src 模块镜像分包,666 项收集(665 passed / 1 skipped,2026-08-24 复核)
-    ├── conftest.py                   # _isolate_config_dir / memory_fsops 夹具
-    ├── test_cli.py / test_config.py / test_container.py / test_agents.py / test_skills.py
-    ├── test_decoupling.py            # 分层解耦 AST 扫描(AST 强制校验)
-    ├── ai/                           # model / fake_client / model_store / providers / sse / transport
-    ├── core/                         # loop / messages / events
-    ├── session/                      # session / store / manager / compaction
-    ├── tools/                        # test_tools.py + test_security.py(单文件覆盖工具包)
-    └── tui/                          # view / components / commands / fuzzy / md_renderer / textual_backend
+└── tests/                            # 按行为域分包,944 passed(2026-08-27)
+    ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
+    ├── contracts/                    # AI、core、session、tools 边界契约
+    ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为
+    ├── app/container/                # 组合根装配与生命周期
+    ├── session/store/                 # JSONL、MemoryStore、索引和记录
+    │   └── behavior/                 # 运行、恢复、取消、确认、压缩和用量
+    ├── tools/atomic/                  # 原子工具；execution/security 保持独立
+    └── tui/view/                      # TUI 生命周期、命令、会话、状态和扩展
 ```
 
 ### 4.2 模块职责一览
@@ -353,7 +356,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
 | **v0.3 生态成型** | Skills(✅)+ MCP(✅)+ 成本透明(✅)+ 会话树 UI(✅);插件 / 轻量记忆 / Web 经评估移出(见 E5/E4/E12) | 扩展生态、体验差异、平台导航 |
 
-v0.3.0 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64)。2026-08-24 复核结果:`uv run pytest -q` **666 collected / 665 passed / 1 skipped**（无失败，跳过原因是 Windows 无符号链接权限）、`openspec validate --specs` **9 passed**、`git diff --check` 通过。CI 已覆盖这些质量检查，但尚未覆盖构建、安装冒烟、覆盖率和静态检查。
+v0.3.0 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64)。2026-08-27 复核结果:`uv run pytest -q` **944 passed**、`openspec validate --specs` **12 passed**、`git diff --check` 通过。CI 已配置快速质量、三平台离线矩阵、构建安装冒烟和非阻塞性能报告；尚未根据稳定 CI 数据启用硬阈值。
 
 ## 12. 参考
 

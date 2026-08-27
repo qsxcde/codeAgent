@@ -1,56 +1,65 @@
 """pytest 共享夹具。"""
 
+import asyncio
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
+
+pytest_plugins = (
+    "tests.fixtures.ai",
+    "tests.fixtures.filesystem",
+    "tests.fixtures.resources",
+    "tests.fixtures.session",
+    "tests.fixtures.tui",
+)
 
 
-class InMemoryFsOps:
-    """内存版 FsOps:零文件系统依赖,供注入测试(design D1 的可测性收益)。
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """给每个测试分配一个主分类，并补充必要的横切标签。
 
-    ``walk`` 以 path 为根做先序遍历,产出 ``(root Path, [dirs], [files])``,
-    与 ``LocalFsOps.walk``(os.walk 风格)一致,find/grep 注入测试可用。
+    主分类默认是 ``unit``，只有明确跨越运行时边界的测试才升级为
+    contract/integration/e2e/performance。这样新增测试不会因为忘记写
+    marker 而从分层命令中消失；平台和安全标签作为附加分类保留。
     """
+    for item in items:
+        path = item.path.as_posix().lower()
+        name = item.name.lower()
 
-    def __init__(self) -> None:
-        self.files: dict[Path, bytes] = {}
-        self.dirs: set[Path] = set()
+        if path.endswith("tests/tui/test_performance.py") or "performance" in name:
+            primary = "performance"
+            item.add_marker(pytest.mark.slow)
+        elif path.endswith("tests/test_cli.py") or path.endswith("tests/test_main_cli_usage.py"):
+            primary = "e2e"
+        elif "/tests/app/" in path or "/tests/mcp/" in path or path.endswith("tests/test_container.py"):
+            primary = "integration"
+        elif (
+            "boundar" in path
+            or "contract" in path
+            or path.endswith("tests/test_decoupling.py")
+        ):
+            primary = "contract"
+        else:
+            primary = "unit"
 
-    def read_bytes(self, path: Path) -> bytes:
-        return self.files[path]
+        item.add_marker(getattr(pytest.mark, primary))
 
-    def write_bytes(self, path: Path, data: bytes) -> None:
-        self.files[path] = data
-
-    def exists(self, path: Path) -> bool:
-        return path in self.files or path in self.dirs
-
-    def is_file(self, path: Path) -> bool:
-        return path in self.files
-
-    def is_dir(self, path: Path) -> bool:
-        return path in self.dirs
-
-    def mkdir(self, path: Path, parents: bool = True) -> None:
-        self.dirs.add(path)
-
-    def readdir(self, path: Path) -> list[str]:
-        names = {p.name for p in self.files if p.parent == path}
-        names |= {d.name for d in self.dirs if d.parent == path}
-        return sorted(names)
-
-    def walk(self, path: Path):
-        roots = [path] + sorted(d for d in self.dirs if d != path and path in d.parents)
-        for root in roots:
-            dirs = sorted(d.name for d in self.dirs if d.parent == root and d != root)
-            files = sorted(f.name for f in self.files if f.parent == root)
-            yield root, dirs, files
-
-
-@pytest.fixture
-def memory_fsops() -> InMemoryFsOps:
-    """内存版 FsOps,完全离线,供注入测试。"""
-    return InMemoryFsOps()
+        if "/tests/tools/" in path and (
+            path.endswith("test_execution.py") or path.endswith("test_tools.py")
+        ):
+            item.add_marker(pytest.mark.platform)
+        if path.endswith("tests/tools/test_security.py"):
+            item.add_marker(pytest.mark.security)
+        if any(
+            token in path
+            for token in (
+                "test_import_boundaries.py",
+                "test_ai_import_boundaries.py",
+                "test_runtime_boundaries.py",
+                "test_store_modules.py",
+            )
+        ):
+            item.add_marker(pytest.mark.compatibility)
 
 
 @pytest.fixture(autouse=True)
@@ -64,3 +73,26 @@ def _isolate_config_dir(tmp_path, monkeypatch):
     import codeagent.app.config as config_mod
 
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path / ".codeagent")
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _assert_async_tasks_are_clean() -> None:
+    """Cancel and report tasks that escape an async test."""
+    yield
+
+    current = asyncio.current_task()
+    leaked = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not current and not task.done()
+    ]
+    if not leaked:
+        return
+
+    details = ", ".join(
+        task.get_name() or repr(task.get_coro()) for task in leaked
+    )
+    for task in leaked:
+        task.cancel()
+    await asyncio.gather(*leaked, return_exceptions=True)
+    pytest.fail(f"async test leaked pending task(s): {details}")

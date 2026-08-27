@@ -165,6 +165,7 @@ def test_current_surfaces_do_not_reference_removed_ai_modules() -> None:
     ]
     intentional_boundary_tests = {
         REPO_ROOT / "tests" / "ai" / "test_import_boundaries.py",
+        REPO_ROOT / "tests" / "contracts" / "test_ai_import_boundaries.py",
         REPO_ROOT / "tests" / "test_decoupling.py",
     }
     for path in paths:

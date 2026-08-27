@@ -20,10 +20,10 @@ class _LegacyTool:
         return args.text
 
 
-def test_agent_tool_adapter_exposes_schema_and_async_execute() -> None:
+async def test_agent_tool_adapter_exposes_schema_and_async_execute() -> None:
     adapter = AgentToolAdapter(_LegacyTool())
 
-    result = asyncio.run(adapter.execute("c1", {"text": "hello"}))
+    result = await (adapter.execute("c1", {"text": "hello"}))
 
     assert adapter.name == "echo"
     assert adapter.parameters["type"] == "object"

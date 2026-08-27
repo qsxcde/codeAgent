@@ -102,12 +102,12 @@ def _config(model, tool=None, **kwargs):
     return AgentLoopConfig(model=model, tools=[tool] if tool else [], **kwargs)
 
 
-def test_run_agent_loop_returns_new_messages_and_agent_events():
+async def test_run_agent_loop_returns_new_messages_and_agent_events():
     model = _Model([{"content": "hello"}])
     context = AgentContext()
     events = []
 
-    new_messages = asyncio.run(
+    new_messages = await (
         run_agent_loop(context, _config(model), "hi", emit=events.append)
     )
 
@@ -124,13 +124,13 @@ def test_run_agent_loop_returns_new_messages_and_agent_events():
     ]
 
 
-def test_run_agent_loop_continue_reuses_context_without_duplicate_prompt():
+async def test_run_agent_loop_continue_reuses_context_without_duplicate_prompt():
     model = _Model([{"content": "first"}, {"content": "second"}])
     context = AgentContext()
-    asyncio.run(run_agent_loop(context, _config(model), "hi"))
+    await (run_agent_loop(context, _config(model), "hi"))
     context.messages.extend(model.calls[0])
 
-    new_messages = asyncio.run(
+    new_messages = await (
         run_agent_loop_continue(context, _config(model), emit=lambda _: None)
     )
 
@@ -138,7 +138,7 @@ def test_run_agent_loop_continue_reuses_context_without_duplicate_prompt():
     assert sum(message.content == "hi" for message in model.calls[-1]) == 1
 
 
-def test_run_agent_loop_transform_and_before_hook_control_tools():
+async def test_run_agent_loop_transform_and_before_hook_control_tools():
     tool = _Tool()
     model = _Model(
         [
@@ -156,7 +156,7 @@ def test_run_agent_loop_transform_and_before_hook_control_tools():
         return ToolDecision.block("not allowed")
 
     context = AgentContext()
-    new_messages = asyncio.run(
+    new_messages = await (
         run_agent_loop(
             context,
             _config(model, tool, transform_context=transform, before_tool_call=before),
@@ -170,7 +170,7 @@ def test_run_agent_loop_transform_and_before_hook_control_tools():
     assert any(message.role == "tool" and "not allowed" in message.content for message in new_messages)
 
 
-def test_new_loop_sequential_mode_does_not_overlap_tools():
+async def test_new_loop_sequential_mode_does_not_overlap_tools():
     async def scenario() -> None:
         active_ref = [0, 0]
         first = _ConcurrencyTool("a", active_ref)
@@ -189,10 +189,10 @@ def test_new_loop_sequential_mode_does_not_overlap_tools():
         assert second.max_active == 1
         assert active_ref[1] == 1
 
-    asyncio.run(scenario())
+    await (scenario())
 
 
-def test_new_loop_parallel_emits_completion_order_but_backfills_call_order():
+async def test_new_loop_parallel_emits_completion_order_but_backfills_call_order():
     async def scenario() -> None:
         active_ref = [0, 0]
         first = _ConcurrencyTool("a", active_ref, delay=0.03)
@@ -218,10 +218,10 @@ def test_new_loop_parallel_emits_completion_order_but_backfills_call_order():
         assert ended == ["b", "a"]
         assert [message.content for message in tool_messages] == ["a", "b"]
 
-    asyncio.run(scenario())
+    await (scenario())
 
 
-def test_new_loop_runtime_timeout_returns_structured_timeout_result():
+async def test_new_loop_runtime_timeout_returns_structured_timeout_result():
     async def scenario() -> None:
         tool = _ConcurrencyTool("a", [0, 0], delay=0.05)
         events = []
@@ -251,4 +251,4 @@ def test_new_loop_runtime_timeout_returns_structured_timeout_result():
         assert ended.payload.status == "timed_out"
         assert result.content.startswith("[工具执行超时]")
 
-    asyncio.run(scenario())
+    await (scenario())

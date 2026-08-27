@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 
-class SessionHeaderRecord(TypedDict):
+class SessionHeaderRecord(TypedDict, total=False):
     type: str
     version: int
     id: str
     parentSession: str | None
     timestamp: str
     cwd: str
+    lastActivityAt: str
 
 
 class MessageRecord(TypedDict, total=False):
@@ -20,6 +21,7 @@ class MessageRecord(TypedDict, total=False):
     parentId: str | None
     role: str
     content: str
+    timestamp: str
     tool_calls: list[dict[str, Any]]
     tool_call_id: str
 

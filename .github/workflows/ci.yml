@@ -14,9 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Test and validate
+  quality-fast:
+    name: Fast quality gates
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
@@ -36,8 +37,20 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --locked --group dev
 
-      - name: Run test suite
-        run: uv run pytest -q
+      - name: Run correctness lint
+        run: uv run ruff check src tests scripts
+
+      - name: Create quality artifact directory
+        run: uv run python -c "from pathlib import Path; Path('artifacts').mkdir(exist_ok=True)"
+
+      - name: Run fast tests with coverage report
+        run: >-
+          uv run pytest -m "unit or contract" -q -ra --strict-markers
+          --cov=codeagent
+          --cov-report=term-missing
+          --cov-report=xml:artifacts/coverage.xml
+          --cov-report=json:artifacts/coverage.json
+          --junitxml=artifacts/quality-junit.xml
 
       - name: Check package version consistency
         run: |
@@ -64,3 +77,154 @@ jobs:
 
       - name: Validate OpenSpec specifications
         run: openspec validate --specs
+
+      - name: Upload fast quality artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-fast-artifacts
+          path: artifacts/
+          if-no-files-found: ignore
+
+  test-matrix:
+    name: Offline tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.1"
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --locked --group dev
+
+      - name: Create test artifact directory
+        run: uv run python -c "from pathlib import Path; Path('artifacts').mkdir(exist_ok=True)"
+
+      - name: Run cross-platform offline tests
+        env:
+          LLM_PROVIDER: fake
+        run: >-
+          uv run pytest -m "integration or e2e or platform or compatibility" -q -ra --strict-markers
+          --junitxml=artifacts/test-matrix-${{ matrix.os }}.xml
+
+      - name: Upload matrix test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-matrix-${{ matrix.os }}-artifacts
+          path: artifacts/
+          if-no-files-found: ignore
+
+  package-smoke:
+    name: Build and install smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.1"
+          enable-cache: true
+
+      - name: Install build dependencies
+        run: uv sync --locked --group dev
+
+      - name: Build distributions
+        run: uv build --out-dir dist
+
+      - name: Install wheel into clean virtual environment
+        run: |
+          uv venv .ci-package-smoke
+          uv pip install --python .ci-package-smoke/bin/python dist/*.whl
+
+      - name: Run installed package smoke test
+        env:
+          LLM_PROVIDER: fake
+        run: .ci-package-smoke/bin/python scripts/package_smoke.py
+
+      - name: Upload package artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-smoke-artifacts
+          path: dist/
+          if-no-files-found: ignore
+
+  performance:
+    name: TUI performance report (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.1"
+          enable-cache: true
+
+      - name: Install benchmark dependencies
+        run: uv sync --locked --group dev
+
+      - name: Create benchmark artifact directory
+        run: mkdir -p artifacts
+
+      - name: Run deterministic TUI benchmarks
+        run: |
+          for scenario in history stream tool-output restore; do
+            uv run python scripts/benchmark_tui.py \
+              --scenario "$scenario" \
+              --blocks 100 \
+              --stream-chars 10000 \
+              --iterations 3 \
+              --output "artifacts/tui-${scenario}.json"
+          done
+
+      - name: Compare with baseline when available
+        run: |
+          if [ -f docs/benchmarks/tui-baseline.json ]; then
+            uv run python scripts/compare_benchmark.py artifacts/tui-stream.json docs/benchmarks/tui-baseline.json > artifacts/tui-benchmark-comparison.json
+          else
+            uv run python scripts/compare_benchmark.py artifacts/tui-stream.json > artifacts/tui-benchmark-comparison.json
+          fi
+
+      - name: Upload performance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-performance-artifacts
+          path: artifacts/
+          if-no-files-found: ignore

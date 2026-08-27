@@ -21,7 +21,7 @@ def test_bash_invocation_result_exposes_verification_metadata():
     assert result.output_truncated is True
 
 
-def test_tool_runtime_propagates_bash_metadata():
+async def test_tool_runtime_propagates_bash_metadata():
     class FakeTool:
         name = "bash"
 
@@ -38,7 +38,7 @@ def test_tool_runtime_propagates_bash_metadata():
                 output_truncated=True,
             )
 
-    result = asyncio.run(
+    result = await (
         ToolExecutionRuntime().execute(FakeTool(), ToolCall("c1", "bash", {}))
     )
 
@@ -48,8 +48,8 @@ def test_tool_runtime_propagates_bash_metadata():
     assert result.output_truncated is True
 
 
-def test_bash_async_result_marks_nonzero_exit_as_failed():
-    result = asyncio.run(
+async def test_bash_async_result_marks_nonzero_exit_as_failed():
+    result = await (
         BashTool().ainvoke(BashArgs(command="python -c \"import sys; sys.exit(2)\""))
     )
 

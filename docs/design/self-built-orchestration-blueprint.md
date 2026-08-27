@@ -1,7 +1,7 @@
 # 编排引擎自研决策与收益记录(第二步,已落地)
 
 > 状态: **已落地**(2026-08-14,OpenSpec change `self-built-orchestration`)——自研 ReAct 主循环 + 消息归约 + JSONL 树形会话替换 langgraph 编排,pyproject 移除 langchain-core/langgraph;三未决问题结论:平台部署非刚需、归约 spike 通过(5 场景双跑 diff)、JSONL 树形为格式结论。本文保留为决策与收益记录。
-> 更新日期: 2026-08-24(当前状态复核)
+> 更新日期: 2026-08-27(当前状态复核)
 > 关系: 本文是「自研统一封装」两阶段规划的第二阶段。第一阶段(ModelRuntime,模型层)见对应 OpenSpec change;本文描述编排层自研的范围、收益、边界。
 > 阅读说明:第 2~6 节保留 2026-08-14 实施前的方案分析与风险论证，其中的“当前”“暂缓”和 LangGraph 代码位置均是历史快照，不代表当前代码树。当前实现以 [architecture.md](./architecture.md) 和 [v0.3 迭代记录](../iteration/v0.3.md) 为准。
 
@@ -197,8 +197,8 @@ for call in msg.tool_calls:
 2. **消息归约正确性**:结论：5 场景双跑 diff 通过，当前由 `core/messages.py` 按 `tool_call_id` 归约。
 3. **会话持久化格式**:结论：采用 JSONL 树形 `SessionStore`，支持恢复、分叉、压缩和回放。
 
-## 9. 当前复核（2026-08-24）
+## 9. 当前复核（2026-08-27）
 
 - v0.3.0 功能范围已完成验收：Skills、MCP、token 用量透明、会话树 UI 均已落地。
-- `uv run pytest -q`：666 collected / 665 passed / 1 skipped（Windows 无符号链接权限；无失败）；`openspec validate --specs`：9 passed。
-- 当前剩余工程治理项：Hooks/验证门禁、覆盖率与静态检查、构建/安装冒烟及发布流程。
+- `uv run pytest -q`：**938 passed**（Windows）；`openspec validate --specs`：**12 passed**；`git diff --check` 通过。
+- 工程治理已接入 Ruff、覆盖率报告、三平台离线矩阵、构建/安装冒烟和 TUI 性能 artifact；覆盖率与性能硬阈值待稳定 CI 数据后评估。

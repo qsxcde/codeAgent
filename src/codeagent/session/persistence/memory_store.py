@@ -36,10 +36,12 @@ class MemoryStore:
     ) -> SessionRef:
         if session_id in self._sessions:
             raise ValueError(f"会话已存在: {session_id}")
+        created_at = _now()
         ref = SessionRef(
             id=session_id,
-            timestamp=_now(),
+            timestamp=created_at,
             cwd=cwd or str(Path.cwd()),
+            last_activity_at=created_at,
             parent_session=parent_session,
             model=model or "",
             effort=effort or "",
@@ -55,7 +57,7 @@ class MemoryStore:
 
     def list(self) -> list[SessionRef]:
         refs = [self._ref_with_title(sid) for sid in self._sessions]
-        refs.sort(key=lambda r: (r.timestamp, r.id))
+        refs.sort(key=lambda r: (r.last_activity_at or r.timestamp, r.id))
         return refs
 
     def load_messages(self, session_id: str) -> list[Message]:
@@ -93,6 +95,8 @@ class MemoryStore:
         if session_id not in self._sessions:
             raise ValueError(f"会话不存在: {session_id}")
         self._messages[session_id].append(message)
+        ref = self._sessions[session_id]
+        self._sessions[session_id] = replace(ref, last_activity_at=_now())
 
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> str:
         self._compactions.append((session_id, entry))
@@ -156,10 +160,12 @@ class MemoryStore:
         if messages[index].role != "user":
             raise ValueError(f"分叉点必须是 user 消息: {target_message_id}")
         base = self._sessions[session_id]
+        created_at = _now()
         ref = SessionRef(
             id=new_session_id,
-            timestamp=_now(),
+            timestamp=created_at,
             cwd=base.cwd,
+            last_activity_at=created_at,
             parent_session=session_id,
             model=base.model,
             effort=base.effort,
@@ -205,6 +211,7 @@ class MemoryStore:
             id=base.id,
             timestamp=base.timestamp,
             cwd=base.cwd,
+            last_activity_at=base.last_activity_at or base.timestamp,
             parent_session=base.parent_session,
             model=base.model,
             effort=base.effort,

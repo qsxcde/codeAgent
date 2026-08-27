@@ -34,7 +34,7 @@ def test_composer_height_counts_suggestion_lines():
     assert composer.styles.height.value == base
 
 
-def test_set_suggestions_refreshes_composer_height_in_app():
+async def test_set_suggestions_refreshes_composer_height_in_app():
     """(回归:D3)set_suggestions 接线:浮层弹出/收起同步增减 composer 高度。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -46,10 +46,10 @@ def test_set_suggestions_refreshes_composer_height_in_app():
             backend.set_suggestions([])
             assert backend._app.composer.styles.height.value == 3
 
-    asyncio.run(_run())
+    await (_run())
 
 
-def test_transcript_wheel_notifies_scroll():
+async def test_transcript_wheel_notifies_scroll():
     """滚轮上/下 → on_scroll(±3 行),事件被 stop 不冒泡(spec「滚轮滚动」)。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -65,10 +65,10 @@ def test_transcript_wheel_notifies_scroll():
             assert scrolls == [3, -3]
             assert up._stop_propagation and down._stop_propagation  # 不冒泡给其它滚动祖先
 
-    asyncio.run(_run())
+    await (_run())
 
 
-def test_page_keys_always_scroll_viewport():
+async def test_page_keys_always_scroll_viewport():
     """PageUp/PageDown 无论输入框是否聚焦均滚动视口(spec「键盘滚动」修订)。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -89,13 +89,13 @@ def test_page_keys_always_scroll_viewport():
             app.action_page_up()
             assert scrolls == [page, -page, page]
 
-    asyncio.run(_run())
+    await (_run())
 
 
 # -- 确认交互(security-permissions)-------------------------------------------
 
 
-def test_set_confirmation_shows_bar_and_activates_keys():
+async def test_set_confirmation_shows_bar_and_activates_keys():
     """set_confirmation 显示确认条并计入 composer 高度;清空后回落。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -115,10 +115,10 @@ def test_set_confirmation_shows_bar_and_activates_keys():
             assert backend._app.composer.confirmation.styles.height.value == 0
             assert backend._app.composer.styles.height.value == 3
 
-    asyncio.run(_run())
+    await (_run())
 
 
-def test_confirmation_keys_intercept_only_when_active():
+async def test_confirmation_keys_intercept_only_when_active():
     """确认激活时 y/n 被拦截(stop + 响应回调);未激活时事件不被触碰(spec「键位归属」)。"""
     from textual.events import Key
 
@@ -147,10 +147,10 @@ def test_confirmation_keys_intercept_only_when_active():
             assert y._stop_propagation and n._stop_propagation
             assert not other._stop_propagation
 
-    asyncio.run(_run())
+    await (_run())
 
 
-def test_confirmation_response_port_wired():
+async def test_confirmation_response_port_wired():
     """on_confirmation_response 接线:引擎回调转发视图处理器。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -162,13 +162,13 @@ def test_confirmation_response_port_wired():
         backend._notify_confirmation_response(False)
         assert calls == [True, False]
 
-    asyncio.run(_run())
+    await (_run())
 
 
 # -- 键位拆分(收尾补丁:Esc 仅中断 / Ctrl+C 退出)-----------------------------
 
 
-def test_escape_only_interrupts_not_quits():
+async def test_escape_only_interrupts_not_quits():
     """Esc → interrupt 回调(不触发退出)。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -183,10 +183,10 @@ def test_escape_only_interrupts_not_quits():
             app.action_interrupt()
             assert interrupts == ["i"] and quits == []
 
-    asyncio.run(_run())
+    await (_run())
 
 
-def test_ctrl_j_inserts_newline_fallback():
+async def test_ctrl_j_inserts_newline_fallback():
     """Ctrl+J 兜底换行:无 kitty 协议的终端 Shift+Enter 与 Enter 同码。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -202,10 +202,10 @@ def test_ctrl_j_inserts_newline_fallback():
             assert app.composer.input.text == "第一行\n第二行"
             assert app.composer.styles.height.value == 3 + 1  # 两行输入 + 分隔线
 
-    asyncio.run(_run())
+    await (_run())
 
 
-def test_soft_wrap_grows_composer_height():
+async def test_soft_wrap_grows_composer_height():
     """(回归)单行超长输入软换行后按渲染行增高,而非固定一行高滚动视图。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -220,10 +220,10 @@ def test_soft_wrap_grows_composer_height():
             await pilot.pause()
             assert app.composer.styles.height.value == 3
 
-    asyncio.run(_run())
+    await (_run())
 
 
-def test_ctrl_c_and_ctrl_q_quit():
+async def test_ctrl_c_and_ctrl_q_quit():
     """Ctrl+C / Ctrl+Q → quit 回调;ctrl+c 覆盖 textual 系统 help_quit 绑定。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -240,7 +240,7 @@ def test_ctrl_c_and_ctrl_q_quit():
             assert any(b.action == "quit" for b in keymap)
             assert not any(b.action == "help_quit" for b in keymap)
 
-    asyncio.run(_run())
+    await (_run())
 
 
 # -- 终端背景融合(spec「终端背景融合」)----------------------------------------
@@ -274,7 +274,7 @@ def test_no_default_background_filter():
     assert s2.color == s.color and s2.bold and s2.italic and s2.underline
 
 
-def test_on_mount_installs_background_blending():
+async def test_on_mount_installs_background_blending():
     """on_mount:过滤器置于过滤链头部,四处背景改为终端默认背景语义。"""
     from textual.color import Color
 
@@ -292,13 +292,13 @@ def test_on_mount_installs_background_blending():
             assert app.transcript.styles.background == ansi_default
             assert app.composer.input.styles.background == ansi_default
 
-    asyncio.run(_run())
+    await (_run())
 
 
 # -- 登录掩码输入(tui-login-command) ----------------------------------------
 
 
-def test_input_mask_switches_composer_components():
+async def test_input_mask_switches_composer_components():
     """(tui-login-command)set_input_mask:普通输入 ↔ 密码输入 display 互斥。"""
     from codeagent.app.tui.textual_backend import TextualBackend
     from textual.color import Color
@@ -340,10 +340,10 @@ def test_input_mask_switches_composer_components():
             # 退出掩码:普通输入提示还原,密码输入内容清空
             assert composer.input.placeholder == "输入消息..."
 
-    asyncio.run(_run())
+    await (_run())
 
 
-def test_key_input_submits_plaintext_and_clears():
+async def test_key_input_submits_plaintext_and_clears():
     """(tui-login-command)掩码提交:通知原文(非掩码字符),提交后清空。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -363,7 +363,7 @@ def test_key_input_submits_plaintext_and_clears():
             assert submits == ["sk-secret-123"]  # 提交的是原文
             assert key_input.value == ""  # 提交后清空
 
-    asyncio.run(_run())
+    await (_run())
 
 
 def test_key_input_does_not_consume_escape():
@@ -373,7 +373,7 @@ def test_key_input_does_not_consume_escape():
     assert "escape" not in [b.key for b in _KeyInput.BINDINGS]
 
 
-def test_key_input_empty_submit_ignored():
+async def test_key_input_empty_submit_ignored():
     """(tui-login-command)空白提交不触发通知(空值由视图层提示)。"""
     from codeagent.app.tui.textual_backend import TextualBackend
 
@@ -387,4 +387,4 @@ def test_key_input_empty_submit_ignored():
             key_input.action_submit()
             assert submits == []
 
-    asyncio.run(_run())
+    await (_run())

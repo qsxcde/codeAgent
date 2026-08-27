@@ -22,7 +22,35 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=6.0.0",
+    "pytest-timeout>=2.3.0",
+    "ruff>=0.8.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+timeout = 120
+timeout_method = "thread"
+markers = [
+    "unit: fast isolated behavior tests",
+    "contract: cross-implementation or architectural contract tests",
+    "integration: tests crossing multiple application components",
+    "e2e: end-to-end entrypoint or user-flow tests",
+    "platform: tests for operating-system-specific behavior",
+    "security: security policy, boundary, and rejection tests",
+    "performance: benchmark and performance regression tests",
+    "slow: tests that are intentionally slower than the fast test set",
+    "compatibility: migration-period or long-lived compatibility contract tests",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# The first CI gate deliberately starts with correctness checks. Style cleanup
+# can be introduced independently without turning the existing test suite into
+# a formatting migration.
+select = ["E9", "F821", "F841"]

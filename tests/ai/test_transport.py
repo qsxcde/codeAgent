@@ -180,7 +180,7 @@ class _FakeStreamingClient:
         return _FakeSSEResponse(self._lines)
 
 
-def _collect_stream(lines: list[str]) -> list[tuple]:
+async def _collect_stream(lines: list[str]) -> list[tuple]:
     """用 mock httpx 跑 ``OpenAICompatClient.stream``,返回 (type, text, finish_reason)。"""
     import httpx
 
@@ -191,12 +191,12 @@ def _collect_stream(lines: list[str]) -> list[tuple]:
         async def _run():
             return [(e.type, e.text, e.finish_reason) async for e in c.stream([], tools=[])]
 
-        return asyncio.run(_run())
+        return await _run()
 
 
-def test_stream_done_consecutive_without_blank_line():
+async def test_stream_done_consecutive_without_blank_line():
     """finish 帧 + `data: [DONE]` 连发(无空行):先 flush 前一帧再终止,事件不丢(回归:#2)。"""
-    events = _collect_stream(
+    events = await _collect_stream(
         [
             'data: {"choices": [{"delta": {"content": "hello"}, "finish_reason": "stop"}]}',
             "data: [DONE]",
@@ -207,9 +207,9 @@ def test_stream_done_consecutive_without_blank_line():
     assert ("finish", "", "stop") in events
 
 
-def test_stream_back_to_back_frames_without_blank_line():
+async def test_stream_back_to_back_frames_without_blank_line():
     """帧间无空行的两条完整 JSON data 行:分别解析,不拼接成非法 JSON(回归:#2)。"""
-    events = _collect_stream(
+    events = await _collect_stream(
         [
             'data: {"choices": [{"delta": {"content": "hello"}}]}',
             'data: {"choices": [{"delta": {"content": " world"}, "finish_reason": "stop"}]}',
@@ -222,9 +222,9 @@ def test_stream_back_to_back_frames_without_blank_line():
     assert ("finish", "", "stop") in events
 
 
-def test_stream_flushes_trailing_buffer_on_close():
+async def test_stream_flushes_trailing_buffer_on_close():
     """末帧无空行即断开:流结束 flush 残留 buffer,finish 不丢(回归:#2)。"""
-    events = _collect_stream(
+    events = await _collect_stream(
         [
             'data: {"choices": [{"delta": {"content": "hi"}}]}',
             'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}',
@@ -383,13 +383,13 @@ async def test_generate_stream_true_uses_streaming_request():
     assert resp.finish_reason == "stop"
 
 
-def test_client_reuses_connection_and_aclosable():
+async def test_client_reuses_connection_and_aclosable(async_resource_tracker):
     """单一 AsyncClient 复用,可显式 aclose(M6)。"""
     import asyncio
 
-    c = _client()
+    c = async_resource_tracker(_client())
     c1 = c._get_client()
     c2 = c._get_client()
     assert c1 is c2                          # 复用同一实例
-    asyncio.run(c.aclose())
+    await c.aclose()
     assert c._client is None                 # 释放后幂等

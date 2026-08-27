@@ -39,7 +39,7 @@ def test_verification_command_precedence(tmp_path: Path):
     assert configured.source == "config"
 
 
-def test_verification_runner_returns_structured_failure(tmp_path: Path):
+async def test_verification_runner_returns_structured_failure(tmp_path: Path):
     async def execute(command: str, timeout: float) -> dict:
         return {
             "command": command,
@@ -51,7 +51,7 @@ def test_verification_runner_returns_structured_failure(tmp_path: Path):
         }
 
     runner = VerificationRunner(tmp_path, execute=execute)
-    result = asyncio.run(runner.run("python -m pytest"))
+    result = await (runner.run("python -m pytest"))
 
     assert isinstance(result, VerificationResult)
     assert result.status is TaskStatus.FAILED
@@ -59,20 +59,22 @@ def test_verification_runner_returns_structured_failure(tmp_path: Path):
     assert result.output_tail == "failure tail"
 
 
-def test_verification_runner_reports_cancellation(tmp_path: Path):
+async def test_verification_runner_reports_cancellation(tmp_path: Path, task_tracker):
     gate = asyncio.Event()
+    started = asyncio.Event()
 
     async def execute(_command: str, _timeout: float) -> dict:
+        started.set()
         await gate.wait()
         return {"exit_code": 0, "status": "completed"}
 
     async def scenario():
         runner = VerificationRunner(tmp_path, execute=execute)
-        task = asyncio.create_task(runner.run("pytest"))
-        await asyncio.sleep(0)
+        task = task_tracker(asyncio.create_task(runner.run("pytest")))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
         task.cancel()
         return await task
 
-    result = asyncio.run(scenario())
+    result = await (scenario())
     assert result.status is TaskStatus.CANCELLED
     assert result.cancelled is True

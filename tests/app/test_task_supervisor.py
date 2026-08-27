@@ -38,7 +38,7 @@ class FakeRunner:
         return self.results.pop(0)
 
 
-def test_supervisor_captures_baseline_off_the_event_loop(
+async def test_supervisor_captures_baseline_off_the_event_loop(
     tmp_path: Path, monkeypatch
 ):
     main_thread = threading.get_ident()
@@ -52,13 +52,13 @@ def test_supervisor_captures_baseline_off_the_event_loop(
     monkeypatch.setattr(WorkspaceInspector, "capture", capture)
     supervisor = TaskSupervisor(FakeSession(), cwd=tmp_path)
 
-    asyncio.run(supervisor.run("explain", mode=TaskMode.CODE))
+    await (supervisor.run("explain", mode=TaskMode.CODE))
 
     assert capture_threads
     assert capture_threads[0] != main_thread
 
 
-def test_supervisor_skips_workspace_scan_for_read_only_mode(
+async def test_supervisor_skips_workspace_scan_for_read_only_mode(
     tmp_path: Path, monkeypatch
 ):
     def fail_capture(_inspector: WorkspaceInspector):
@@ -67,12 +67,12 @@ def test_supervisor_skips_workspace_scan_for_read_only_mode(
     monkeypatch.setattr(WorkspaceInspector, "capture", fail_capture)
     supervisor = TaskSupervisor(FakeSession(), cwd=tmp_path)
 
-    result = asyncio.run(supervisor.run("explain", mode=TaskMode.ASK))
+    result = await (supervisor.run("explain", mode=TaskMode.ASK))
 
     assert result.status is TaskStatus.NO_CHANGES
 
 
-def test_supervisor_does_not_verify_without_workspace_changes(tmp_path: Path):
+async def test_supervisor_does_not_verify_without_workspace_changes(tmp_path: Path):
     runner = FakeRunner([])
     supervisor = TaskSupervisor(
         FakeSession(),
@@ -81,13 +81,13 @@ def test_supervisor_does_not_verify_without_workspace_changes(tmp_path: Path):
         verify_command="python -m pytest",
     )
 
-    result = asyncio.run(supervisor.run("explain", mode=TaskMode.ASK))
+    result = await (supervisor.run("explain", mode=TaskMode.ASK))
 
     assert result.status is TaskStatus.NO_CHANGES
     assert runner.calls == []
 
 
-def test_supervisor_verifies_after_change_and_reports_result(tmp_path: Path):
+async def test_supervisor_verifies_after_change_and_reports_result(tmp_path: Path):
     target = tmp_path / "app.py"
 
     def edit(_text):
@@ -103,14 +103,14 @@ def test_supervisor_verifies_after_change_and_reports_result(tmp_path: Path):
         verify_command="python -m pytest",
     )
 
-    result = asyncio.run(supervisor.run("fix", mode=TaskMode.CODE))
+    result = await (supervisor.run("fix", mode=TaskMode.CODE))
 
     assert result.status is TaskStatus.VERIFIED
     assert result.changed_files == ("app.py",)
     assert runner.calls == ["python -m pytest"]
 
 
-def test_supervisor_repairs_once_after_verification_failure(tmp_path: Path):
+async def test_supervisor_repairs_once_after_verification_failure(tmp_path: Path):
     target = tmp_path / "app.py"
     calls = 0
 
@@ -134,14 +134,14 @@ def test_supervisor_repairs_once_after_verification_failure(tmp_path: Path):
         FakeSession(edit), cwd=tmp_path, runner=runner, verify_command="pytest"
     )
 
-    result = asyncio.run(supervisor.run("fix", mode=TaskMode.CODE))
+    result = await (supervisor.run("fix", mode=TaskMode.CODE))
 
     assert result.status is TaskStatus.VERIFIED
     assert result.repair_attempts == 1
     assert len(runner.calls) == 2
 
 
-def test_supervisor_stops_on_repeated_failure_fingerprint(tmp_path: Path):
+async def test_supervisor_stops_on_repeated_failure_fingerprint(tmp_path: Path):
     target = tmp_path / "app.py"
 
     def edit(_text):
@@ -155,14 +155,14 @@ def test_supervisor_stops_on_repeated_failure_fingerprint(tmp_path: Path):
         FakeSession(edit), cwd=tmp_path, runner=runner, verify_command="pytest", max_repairs=3
     )
 
-    result = asyncio.run(supervisor.run("fix", mode=TaskMode.CODE))
+    result = await (supervisor.run("fix", mode=TaskMode.CODE))
 
     assert result.status is TaskStatus.FAILED
     assert result.repair_attempts == 1
     assert len(runner.calls) == 2
 
 
-def test_supervisor_reports_unverified_without_command(tmp_path: Path):
+async def test_supervisor_reports_unverified_without_command(tmp_path: Path):
     target = tmp_path / "app.txt"
     supervisor = TaskSupervisor(
         FakeSession(lambda _text: target.write_text("changed", encoding="utf-8")),
@@ -170,24 +170,26 @@ def test_supervisor_reports_unverified_without_command(tmp_path: Path):
         runner=FakeRunner([]),
     )
 
-    result = asyncio.run(supervisor.run("edit", mode=TaskMode.CODE))
+    result = await (supervisor.run("edit", mode=TaskMode.CODE))
 
     assert result.status is TaskStatus.UNVERIFIED
 
 
-def test_supervisor_cancel_stops_active_agent_task(tmp_path: Path):
+async def test_supervisor_cancel_stops_active_agent_task(tmp_path: Path, task_tracker):
     gate = asyncio.Event()
+    started = asyncio.Event()
 
     class SlowSession(FakeSession):
         async def run(self, text, *, policy=None):
+            started.set()
             await gate.wait()
 
     async def scenario():
         supervisor = TaskSupervisor(SlowSession(), cwd=tmp_path)
-        task = asyncio.create_task(supervisor.run("wait", mode=TaskMode.CODE))
-        await asyncio.sleep(0)
+        task = task_tracker(asyncio.create_task(supervisor.run("wait", mode=TaskMode.CODE)))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
         supervisor.cancel()
         return await task
 
-    result = asyncio.run(scenario())
+    result = await (scenario())
     assert result.status is TaskStatus.CANCELLED

@@ -80,14 +80,15 @@ def test_frame_scheduler_coalesces_requests_and_caps_refresh_rate() -> None:
     assert scheduler.request(0.034) is True
 
 
-def test_resize_debouncer_runs_once_after_burst() -> None:
+async def test_resize_debouncer_runs_once_after_burst() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        debouncer = ResizeDebouncer(lambda: calls.append("resize"), delay=0.01)
+        debouncer = ResizeDebouncer(lambda: calls.append("resize"), delay=0.0)
         debouncer.notify()
         debouncer.notify()
         debouncer.notify()
-        await asyncio.sleep(0.03)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
         assert calls == ["resize"]
 
-    asyncio.run(scenario())
+    await (scenario())
