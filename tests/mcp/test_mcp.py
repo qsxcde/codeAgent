@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import io
 import sys
 from pathlib import Path
 
@@ -24,6 +25,19 @@ MOCK_SERVER = str(Path(__file__).parent / "mock_server.py")
 
 def _spec(name: str = "mock") -> McpServerSpec:
     return McpServerSpec(name=name, command=sys.executable, args=(MOCK_SERVER,))
+
+
+def test_mock_server_protocol_output_is_utf8(monkeypatch):
+    """stdio JSON-RPC 输出不应受 Windows 控制台 cp1252 编码影响。"""
+    from tests.mcp import mock_server
+
+    raw = io.BytesIO()
+    stdout = io.TextIOWrapper(raw, encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    mock_server._send({"description": "回显文本"})
+
+    assert raw.getvalue().decode("utf-8").endswith("\n")
 
 
 # ── 配置解析 ─────────────────────────────────────────

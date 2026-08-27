@@ -33,8 +33,10 @@ TOOLS = [
 
 
 def _send(message: dict) -> None:
-    sys.stdout.write(json.dumps(message, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    # MCP stdio 是 UTF-8 字节协议,不能依赖 Windows 控制台的 cp1252。
+    payload = (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
 
 
 def _reply(request: dict, result: dict | None = None, error: dict | None = None) -> None:

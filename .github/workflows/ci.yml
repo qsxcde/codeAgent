@@ -22,6 +22,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          # git diff --check HEAD^ 需要当前提交的父提交。
+          fetch-depth: 2
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -65,7 +68,14 @@ jobs:
           "
 
       - name: Check patch formatting
-        run: git diff --check HEAD^
+        shell: bash
+        run: |
+          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^
+          else
+            # 初始提交没有父提交时,检查工作树本身即可。
+            git diff --check HEAD
+          fi
 
       - name: Set up Node.js for OpenSpec
         uses: actions/setup-node@v6
