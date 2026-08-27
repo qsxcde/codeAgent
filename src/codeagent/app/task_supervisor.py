@@ -23,6 +23,7 @@ from codeagent.app.task_verification import (
     VerificationRunner,
     WorkspaceDiff,
     WorkspaceInspector,
+    WorkspaceSnapshot,
 )
 
 __all__ = [
@@ -126,16 +127,20 @@ class TaskSupervisor:
         self._cancelled = False
         if not isinstance(mode, TaskMode):
             mode = TaskMode(str(mode))
-        baseline = self.inspector.capture()
         self._emit(TaskEvent(TaskPhase.PLANNING, message="准备任务"))
         try:
+            baseline = await self._capture_baseline(mode)
             await self._run_agent(text, mode)
             if self._cancelled:
                 return self._terminal(TaskStatus.CANCELLED, mode, "任务已取消")
             if getattr(self.session, "last_failure", None):
                 return self._terminal(TaskStatus.FAILED, mode, "Agent 回合失败")
 
-            diff = self.inspector.compare(baseline, self.inspector.capture())
+            if baseline is None:
+                return self._terminal(TaskStatus.NO_CHANGES, mode, "只读模式无需工作区验证")
+
+            after = await asyncio.to_thread(self.inspector.capture)
+            diff = self.inspector.compare(baseline, after)
             if not diff.has_changes:
                 return self._terminal(TaskStatus.NO_CHANGES, mode, "工作区没有实际变更")
 
@@ -156,7 +161,8 @@ class TaskSupervisor:
             latest_diff = diff
             while True:
                 result = await self._verify(selected.command, selected.source, repairs + 1)
-                latest_diff = self.inspector.compare(baseline, self.inspector.capture())
+                after = await asyncio.to_thread(self.inspector.capture)
+                latest_diff = self.inspector.compare(baseline, after)
                 if result.status is TaskStatus.VERIFIED:
                     self._emit(TaskEvent(TaskPhase.COMPLETED, result=result, attempt=repairs + 1))
                     return TaskResult(
@@ -216,6 +222,14 @@ class TaskSupervisor:
         finally:
             self._active_task = None
             self._child_task = None
+
+    async def _capture_baseline(self, mode: TaskMode) -> WorkspaceSnapshot | None:
+        """Prepare the change baseline without blocking the TUI event loop."""
+        if mode in {TaskMode.ASK, TaskMode.PLAN}:
+            return None
+        # Hashing must finish before the Agent can edit, so this is deliberately
+        # awaited even though the blocking work runs in a worker thread.
+        return await asyncio.to_thread(self.inspector.capture)
 
     async def _run_agent(self, text: str, mode: TaskMode) -> None:
         self._emit(TaskEvent(TaskPhase.EDITING, message="执行 Agent 回合"))

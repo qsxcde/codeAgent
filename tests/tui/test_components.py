@@ -16,6 +16,7 @@ from codeagent.app.tui.blocks import (
 )
 from codeagent.app.tui.model import TuiModel
 from codeagent.app.tui.primitives import Span, _truncate, rich_to_plain
+from codeagent.app.tui.runtime import RuntimePhase, RuntimeSnapshot
 from codeagent.app.tui.status import FooterInfo, StatusBar
 from codeagent.app.tui.transcript import Transcript
 from codeagent.app.tui.theme import (
@@ -114,6 +115,21 @@ def test_tui_model_hydrates_persisted_history():
     assert tool.status == "done"
     assert model.running is False
     assert model.activity_visible is False
+
+
+def test_tui_model_deduplicates_optimistic_user_echo_on_session_start():
+    model = TuiModel()
+    model.append_pending_user("即时问题")
+
+    assert [block.prompt for block in model.transcript.blocks if isinstance(block, UserBlock)] == [
+        "即时问题"
+    ]
+
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="即时问题"))
+
+    assert [block.prompt for block in model.transcript.blocks if isinstance(block, UserBlock)] == [
+        "即时问题"
+    ]
 
 
 def test_tui_hides_manual_skill_markdown_but_keeps_loaded_label():
@@ -260,30 +276,35 @@ def test_error_and_cancelled_spans():
 
 
 def test_status_bar_renders_codex_session_metadata():
-    """状态栏只显示模型、思考强度和工作目录，不显示状态点或快捷键。"""
+    """会话信息位于固定左区，不显示状态点或快捷键。"""
     bar = StatusBar()
     bar.model = "gpt-5.6-terra"
     bar.effort = "high"
     bar.cwd = "/mnt/c/Windows/System32"
-    line = bar.render(60)[0]
+    line = bar.render(120)[0]
     plain = "".join(s.text for s in line)
-    assert plain == "  gpt-5.6-terra high · /mnt/c/Windows/System32"
-    assert line[1].fg == STATUS_MODEL
-    assert line[-1].fg == STATUS_PATH
+    assert _cells(plain) == 120
+    assert plain.startswith("  gpt-5.6-terra high")
+    assert plain.count("│") == 2
+    assert "空闲" in plain
+    assert "上下文 —" in plain
+    assert any(span.fg == STATUS_MODEL for span in line)
+    assert any(span.fg == STATUS_PATH for span in line)
     assert "ready" not in plain and "Esc" not in plain and "●" not in plain
 
 
 def test_status_bar_truncates_session_metadata():
-    """窄终端截断右侧路径，模型信息仍保持在左侧。"""
+    """窄终端隐藏低优先级会话信息，并保留运行区与上下文区。"""
     bar = StatusBar()
     bar.model = "gpt-5.6-terra"
     bar.effort = "high"
     bar.cwd = "/a/very/long/working/directory"
     line = bar.render(24)[0]
     plain = "".join(s.text for s in line)
-    assert len(plain) == 24
-    assert plain.startswith("  gpt-5.6-terra")
-    assert plain.endswith("…")
+    assert _cells(plain) == 24
+    assert "空闲" in plain
+    assert "上下文 —" in plain
+    assert "gpt-5.6-terra" not in plain
 
 
 def test_status_bar_truncates_cjk_metadata():
@@ -292,8 +313,8 @@ def test_status_bar_truncates_cjk_metadata():
     bar.model = "深度思考模型"
     line = bar.render(10)[0]
     plain = "".join(s.text for s in line)
-    assert plain.endswith("…")
     assert _cells(plain) <= 10
+    assert "上下文" not in plain or _cells(plain) <= 10
 
 
 def test_status_bar_renders_context_usage_on_right():
@@ -335,6 +356,146 @@ def test_status_bar_shows_task_verification_progress():
     assert "验证中" in plain
     assert "第 1/2 次" in plain
     assert "python -m pytest" in plain
+
+
+def test_status_bar_keeps_task_and_temporary_messages_in_runtime_zone():
+    bar = StatusBar()
+    bar.set_task_status("verifying", attempt=1, max_attempts=2)
+    bar.mode = "code"
+    bar.new_output_count = 2
+
+    with_task = "".join(s.text for s in bar.render(140)[0])
+
+    bar.set_task_status("verified")
+    bar.new_output_count = 0
+    without_task = "".join(s.text for s in bar.render(140)[0])
+
+    assert _status_divider_cells(with_task) == _status_divider_cells(without_task)
+    assert "验证中" in with_task
+    assert "第 1/2 次" in with_task
+    assert "新输出 2" in with_task
+    assert "模式 code" in with_task
+    assert "已验证" in without_task
+    assert _cells(with_task) == _cells(without_task) == 140
+
+
+def _status_divider_cells(plain: str) -> list[int]:
+    positions: list[int] = []
+    offset = 0
+    for char in plain:
+        if char == "│":
+            positions.append(offset)
+        offset += _cells(char)
+    return positions
+
+
+def test_status_bar_keeps_zone_anchors_when_runtime_content_changes():
+    bar = StatusBar()
+    bar.model = "model"
+    bar.effort = "high"
+    bar.cwd = "repo"
+    bar.context_tokens = 12_400
+    bar.context_window = 128_000
+
+    bar.apply_snapshot(
+        RuntimeSnapshot(
+            phase=RuntimePhase.WAITING_MODEL,
+            phase_started_at=0.0,
+            current_operation="等待模型响应",
+        ),
+        now=9.9,
+    )
+    waiting = "".join(span.text for span in bar.render(100)[0])
+
+    bar.apply_snapshot(
+        RuntimeSnapshot(
+            phase=RuntimePhase.TOOL_RUNNING,
+            phase_started_at=0.0,
+            current_operation="执行一个更长的工具操作",
+        ),
+        now=10.0,
+    )
+    running = "".join(span.text for span in bar.render(100)[0])
+
+    assert len(_status_divider_cells(waiting)) == 2
+    assert _status_divider_cells(waiting) == _status_divider_cells(running)
+    assert "09.9s" in waiting
+    assert "10.0s" in running
+    assert _cells(waiting) == _cells(running) == 100
+
+
+def test_status_bar_keeps_zone_anchors_when_context_digits_change():
+    bar = StatusBar()
+    bar.model = "model"
+    bar.context_window = 128_000
+    bar.apply_snapshot(
+        RuntimeSnapshot(
+            phase=RuntimePhase.TOOL_RUNNING,
+            phase_started_at=0.0,
+            context_tokens=9_900,
+            context_window=128_000,
+        ),
+        now=99.9,
+    )
+    before = "".join(span.text for span in bar.render(100)[0])
+
+    bar.apply_snapshot(
+        RuntimeSnapshot(
+            phase=RuntimePhase.TOOL_RUNNING,
+            phase_started_at=0.0,
+            context_tokens=100_000,
+            context_window=128_000,
+        ),
+        now=100.0,
+    )
+    after = "".join(span.text for span in bar.render(100)[0])
+
+    assert _status_divider_cells(before) == _status_divider_cells(after)
+    assert " 99.9s" in before
+    assert "100.0s" in after
+    assert "9.9k" in before
+    assert "100k" in after
+    assert _cells(before) == _cells(after) == 100
+
+
+def test_status_bar_reserves_context_zone_before_usage_is_known():
+    bar = StatusBar()
+    bar.model = "model"
+    bar.cwd = "repo"
+    without_usage = "".join(span.text for span in bar.render(100)[0])
+
+    bar.context_window = 128_000
+    with_window = "".join(span.text for span in bar.render(100)[0])
+
+    assert _status_divider_cells(without_usage) == _status_divider_cells(with_window)
+    assert with_window.endswith("上下文 — / 128k")
+    assert _cells(without_usage) == _cells(with_window) == 100
+
+
+def test_status_bar_narrow_layout_keeps_runtime_and_context_without_overflow():
+    bar = StatusBar()
+    bar.model = "very-long-model-name"
+    bar.effort = "high"
+    bar.cwd = "/a/very/long/working/directory"
+    bar.context_tokens = 12_400
+    bar.context_window = 32_000
+    bar.apply_snapshot(
+        RuntimeSnapshot(
+            phase=RuntimePhase.TOOL_RUNNING,
+            phase_started_at=0.0,
+            current_operation="执行一个非常长的验证命令和诊断操作",
+            context_tokens=12_400,
+            context_window=32_000,
+        ),
+        now=4.2,
+    )
+
+    plain = "".join(span.text for span in bar.render(40)[0])
+
+    assert _status_divider_cells(plain) == [23]
+    assert "工具执行" in plain
+    assert "32k" in plain
+    assert _cells(plain) == 40
 
 
 def test_truncate_cjk_by_cell_width():
@@ -480,7 +641,9 @@ def test_footer_info_seeds_status_bar():
     model.status.effort = info.effort
     model.status.cwd = info.cwd
     plain = "".join(s.text for s in model.status.render(60)[0])
-    assert "qwen3.8-max high · /workspace" in plain
+    assert _cells(plain) == 60
+    assert plain.startswith("  qwen3.8-m")
+    assert "│" in plain
 
 
 # -- 确认环状态(security-permissions)-----------------------------------------

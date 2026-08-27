@@ -218,6 +218,15 @@ def _make_app() -> tuple[TuiApp, StubBackend, FakeManager]:
     return app, backend, manager
 
 
+async def _wait_for_conversation(app: TuiApp) -> None:
+    """等待异步提交完成，避免测试依赖固定的事件循环轮数。"""
+    await asyncio.sleep(0)
+    task = app._conversation_task
+    if task is not None:
+        await task
+    await asyncio.sleep(0)
+
+
 def test_fake_backend_regression_contract_covers_top_level_interactions():
     """FakeBackend 合同固定输入、命令、确认、切换、滚动、恢复、取消和退出边界。
 
@@ -312,7 +321,7 @@ def test_submit_starts_run_and_renders():
         backend.resize()
         await asyncio.sleep(0)
         backend.submit("你好")
-        await asyncio.sleep(0)
+        await _wait_for_conversation(app)
 
     asyncio.run(_run())
     rendered_plain = ["".join(rich_to_plain(lines)) for lines in backend.renders]
@@ -322,6 +331,17 @@ def test_submit_starts_run_and_renders():
     # 状态栏以富样式行传递(design D5)。
     assert backend.statuses and all(isinstance(s, list) for s in backend.statuses)
     assert "ready" not in "".join(s.text for s in backend.statuses[-1])
+
+
+def test_submit_echoes_user_before_async_conversation_starts():
+    app, backend, _ = _make_app()
+
+    async def _run() -> None:
+        backend.submit("即时问题")
+        assert "› 即时问题" in "\n".join(app.model.transcript.all_lines(120))
+        await _wait_for_conversation(app)
+
+    asyncio.run(_run())
 
 
 def test_footer_rich_line_seeded_and_passed():
@@ -346,7 +366,8 @@ def test_footer_rich_line_seeded_and_passed():
     asyncio.run(_run())
     assert backend.statuses, "状态栏未渲染"
     plain = "".join(s.text for s in backend.statuses[-1])
-    assert "qwen3.8-max high · /workspace" in plain
+    assert plain.startswith("  qwen3.8-m")
+    assert "│" in plain
     # 状态栏注入模型名与工作目录(回归:此前 status.model 无注入点)
     assert app.model.status.model == "qwen3.8-max"
     assert app.model.status.cwd == "/workspace"
@@ -363,7 +384,8 @@ def test_context_usage_is_synced_to_footer_status():
     app._flush_render()
 
     plain = "".join(span.text for span in backend.statuses[-1])
-    assert plain.endswith("上下文 12.4k / 128k · 9.7%")
+    assert "12.4k/128k" in plain
+    assert "▱" in plain
     assert app.model.status.context_tokens == 12_400
     assert app.model.status.context_window == 128_000
 
@@ -755,7 +777,7 @@ def test_submit_double_slash_sends_literal():
         await asyncio.sleep(0)
         before = len(manager.current.subscribers)
         backend.submit("//hi")
-        await asyncio.sleep(0)
+        await _wait_for_conversation(app)
 
     asyncio.run(_run())
     text = _rendered_text(app, backend)

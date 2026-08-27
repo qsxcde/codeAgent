@@ -122,6 +122,7 @@ class TuiConversationCoordinator:
         if session is None:
             return
         selected_mode = mode or self._task_mode
+        self.model.append_pending_user(text)
         self._task_active = True
         self._task_supervisor = TaskSupervisor(
             session,

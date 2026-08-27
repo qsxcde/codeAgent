@@ -32,6 +32,7 @@ class TuiModel:
         self._assistant: AssistantBlock | None = None
         self._pending_tools: list[ToolCallBlock] = []
         self._pending_tools_by_id: dict[str, ToolCallBlock] = {}
+        self._pending_user_prompts: list[str] = []
         self.activity_visible = False
         self.activity_frame = 0
         self.runtime = RuntimeSnapshot()
@@ -108,6 +109,12 @@ class TuiModel:
         block.append_text(text)
         self.transcript.append(block)
 
+    def append_pending_user(self, text: str) -> None:
+        """立即显示待启动会话的用户消息，并等待启动事件去重。"""
+        content = _visible_user_content(text)
+        self.transcript.append(UserBlock(content))
+        self._pending_user_prompts.append(content)
+
     def page_output(self, delta: int, call_id: str | None = None) -> bool:
         """切换工具输出页，只改变视图游标。"""
         candidates = [
@@ -151,6 +158,7 @@ class TuiModel:
         self._assistant = None
         self._pending_tools.clear()
         self._pending_tools_by_id.clear()
+        self._pending_user_prompts.clear()
         self.activity_visible = False
         self.activity_frame = 0
 
@@ -221,7 +229,11 @@ class TuiModel:
         }
         ev_type = event.type
         if ev_type == EventType.SESSION_STARTED:
-            self.transcript.append(UserBlock(_visible_user_content(str(event.payload))))
+            content = _visible_user_content(str(event.payload))
+            if content in self._pending_user_prompts:
+                self._pending_user_prompts.remove(content)
+            else:
+                self.transcript.append(UserBlock(content))
             self._assistant = None
             self._pending_tools.clear()
             self._pending_tools_by_id.clear()

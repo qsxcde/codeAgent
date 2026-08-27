@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 
 from codeagent.app.task_modes import TaskMode
 from codeagent.app.task_supervisor import TaskSupervisor
-from codeagent.app.task_verification import TaskStatus, VerificationResult
+from codeagent.app.task_verification import (
+    TaskStatus,
+    VerificationResult,
+    WorkspaceInspector,
+)
 
 
 class FakeSession:
@@ -31,6 +36,40 @@ class FakeRunner:
     async def run(self, command, *, source="explicit", timeout=None):
         self.calls.append(command)
         return self.results.pop(0)
+
+
+def test_supervisor_captures_baseline_off_the_event_loop(
+    tmp_path: Path, monkeypatch
+):
+    main_thread = threading.get_ident()
+    capture_threads: list[int] = []
+    original_capture = WorkspaceInspector.capture
+
+    def capture(inspector: WorkspaceInspector):
+        capture_threads.append(threading.get_ident())
+        return original_capture(inspector)
+
+    monkeypatch.setattr(WorkspaceInspector, "capture", capture)
+    supervisor = TaskSupervisor(FakeSession(), cwd=tmp_path)
+
+    asyncio.run(supervisor.run("explain", mode=TaskMode.CODE))
+
+    assert capture_threads
+    assert capture_threads[0] != main_thread
+
+
+def test_supervisor_skips_workspace_scan_for_read_only_mode(
+    tmp_path: Path, monkeypatch
+):
+    def fail_capture(_inspector: WorkspaceInspector):
+        raise AssertionError("read-only mode should not capture a workspace baseline")
+
+    monkeypatch.setattr(WorkspaceInspector, "capture", fail_capture)
+    supervisor = TaskSupervisor(FakeSession(), cwd=tmp_path)
+
+    result = asyncio.run(supervisor.run("explain", mode=TaskMode.ASK))
+
+    assert result.status is TaskStatus.NO_CHANGES
 
 
 def test_supervisor_does_not_verify_without_workspace_changes(tmp_path: Path):
