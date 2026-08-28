@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import copy
 from typing import Any, AsyncIterator
 
 from codeagent.ai.model.protocols import ChatClient
@@ -23,7 +24,7 @@ class FakeClient(ChatClient):
       用于编排测试 ReAct 多轮循环(步骤用尽后回落到 ``response``);
     - 传入 ``tool_calls`` 时,本次(每轮)调用返回带工具调用的响应;
     - 可注入 ``usage``(input/output/thinking tokens),支撑 usage 相关测试;
-    - ``bind_tools`` 为无副作用占位(记录工具名,返回 self)。
+    - ``bind_tools`` 返回独立的绑定视图，不修改源 client。
     """
 
     def __init__(
@@ -68,8 +69,9 @@ class FakeClient(ChatClient):
         - 组合根(app/composition/model_factory.py)拿到 self 后经 ``ChatModelPort`` 适配,
           供自研 ReAct 循环消费。
         """
-        self._bind_tools(tools)
-        return self
+        bound = copy.copy(self)
+        bound._bind_tools(tools)
+        return bound
 
     # -- 脚本消费 ----------------------------------------------------------
 
@@ -118,7 +120,7 @@ class FakeClient(ChatClient):
     ) -> ChatResponse:
         """按脚本返回一轮响应(不联网)。"""
         if tools is not None:
-            self.bind_tools(tools)
+            self._bind_tools(tools)
         self.call_history.append(
             {"messages": [m.to_api_dict() for m in messages], "bound_tools": list(self.bound_tools)}
         )

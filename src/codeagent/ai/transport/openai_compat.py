@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import uuid
 from typing import Any, AsyncIterator
@@ -24,16 +25,15 @@ from codeagent.ai.model.types import (
     ToolCall,
     ToolDefinition,
 )
-from codeagent.ai.transport.sse import SSEParser
+from codeagent.ai.transport.streaming import OpenAICompatStreamingMixin
 
 
 #: 工具定义 → OpenAI function calling schema。
-def _tool_schema(tool: Any) -> dict[str, Any]:
-    definition = tool if isinstance(tool, ToolDefinition) else ToolDefinition.from_tool(tool)
-    return definition.to_api_dict()
+def _tool_schema(tool: ToolDefinition) -> dict[str, Any]:
+    return tool.to_api_dict()
 
 
-class OpenAICompatClient:
+class OpenAICompatClient(OpenAICompatStreamingMixin):
     """OpenAI 兼容协议的模型客户端(deepseek / openai / ollama 等)。
 
     - 直接构造 ``/chat/completions`` 请求体,``reasoning_effort`` 原样上传;
@@ -95,7 +95,7 @@ class OpenAICompatClient:
             self._timeout = httpx.Timeout(timeout)
             self._stream_timeout = self._timeout
         self._max_retries = max_retries
-        self._tools: list[Any] = []
+        self._default_tools: tuple[ToolDefinition, ...] = ()
         #: 复用的底层 HTTP 客户端(懒创建,提供 aclose 释放);连接/TLS 复用(M6)。
         self._client: httpx.AsyncClient | None = None
 
@@ -124,17 +124,11 @@ class OpenAICompatClient:
             await self._client.aclose()
             self._client = None
 
-    def _bind_tools(self, tools: list[Any]) -> None:
-        """仅记录工具(构造请求体时转成 function calling schema)。"""
-        self._tools = list(tools)
-
-    def bind_tools(self, tools: list[Any]) -> "OpenAICompatClient":
-        """记录工具并返回 self(框架无关;编排适配由组合根 ChatModelPort 负责)。
-
-        内部 ``generate``/``stream`` 走 ``_bind_tools``,避免热路径重复记录。
-        """
-        self._bind_tools(tools)
-        return self
+    def bind_tools(self, tools: list[ToolDefinition]) -> "OpenAICompatClient":
+        """Return an isolated compatibility view with immutable default tools."""
+        bound = copy.copy(self)
+        bound._default_tools = tuple(tools)
+        return bound
 
     # -- 请求构造 ----------------------------------------------------------
 
@@ -152,6 +146,7 @@ class OpenAICompatClient:
         messages: list[ChatMessage],
         *,
         stream: bool,
+        tools: list[ToolDefinition] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self._model,
@@ -167,8 +162,9 @@ class OpenAICompatClient:
         if stream:
             # 请求 usage 增量(OpenAI 兼容端点),供 SSE 解析器 usage 事件透传(M2)
             body["stream_options"] = {"include_usage": True}
-        if self._tools:
-            body["tools"] = [_tool_schema(t) for t in self._tools]
+        effective_tools = self._default_tools if tools is None else tuple(tools)
+        if effective_tools:
+            body["tools"] = [_tool_schema(t) for t in effective_tools]
             body["tool_choice"] = "auto"
         return body
 
@@ -185,16 +181,14 @@ class OpenAICompatClient:
     async def generate(
         self,
         messages: list[ChatMessage],
-        tools: list[Any] | None = None,
+        tools: list[ToolDefinition] | None = None,
         *,
         stream: bool = False,
     ) -> ChatResponse:
         """非流式:一次请求拿完整响应(含指数退避重试);stream=True 走流式并聚合(M5)。"""
         if stream:
             return await self._generate_streaming(messages, tools)
-        if tools is not None:
-            self._bind_tools(tools)
-        body = self._body(messages, stream=False)
+        body = self._body(messages, stream=False, tools=tools)
 
         client = self._get_client()
         for attempt in range(self._max_retries + 1):
@@ -233,150 +227,3 @@ class OpenAICompatClient:
             finish_reason=choice.get("finish_reason"),
             model=self._model,
         )
-
-    async def _generate_streaming(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Any] | None,
-    ) -> ChatResponse:
-        """generate(stream=True) 真实生效:走流式请求并聚合成完整 ChatResponse(M5)。"""
-        parser = SSEParser()
-        content_parts: list[str] = []
-        usage: dict[str, Any] | None = None
-        finish_reason: str | None = None
-        async for event in self.stream(messages, tools):
-            if event.type == "content":
-                content_parts.append(event.text)
-            elif event.type == "tool_call_arg":
-                fn: dict[str, Any] = {"arguments": event.arg_delta}
-                if event.tool_name:
-                    fn["name"] = event.tool_name
-                frame: dict[str, Any] = {"function": fn}
-                if event.tool_id:
-                    frame["id"] = event.tool_id
-                parser.feed(
-                    json.dumps(
-                        {
-                            "choices": [
-                                {
-                                    "delta": {
-                                        "tool_calls": [
-                                            {"index": event.tool_index or 0, **frame}
-                                        ]
-                                    }
-                                }
-                            ]
-                        }
-                    )
-                )
-            elif event.type == "usage":
-                usage = event.usage
-            elif event.type == "finish":
-                finish_reason = event.finish_reason
-        assembled = parser.assembled_tool_calls()
-        tool_calls = [
-            ToolCall(
-                id=tc.get("id") or uuid.uuid4().hex,
-                name=tc["name"],
-                arguments=tc["arguments"],
-            )
-            for tc in assembled
-        ]
-        return ChatResponse(
-            content="".join(content_parts),
-            tool_calls=tool_calls,
-            usage=usage,
-            finish_reason=finish_reason,
-            model=self._model,
-        )
-
-    async def stream(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Any] | None = None,
-    ) -> AsyncIterator[StreamEvent]:
-        """流式:SSE 解析逐帧产出事件;connect+首帧纳入指数退避重试(H6)。
-
-        - 未读 body 先 ``aread()`` 再 ``raise_for_status()``,错误细节(401/429/500
-          的具体信息)不丢失;
-        - 收到首帧内容后不再重试(避免重复消耗上游 token / 重复产出事件)。
-        """
-        if tools is not None:
-            self._bind_tools(tools)
-        body = self._body(messages, stream=True)
-
-        parser = SSEParser()
-
-        def _emit(data: str) -> list[StreamEvent]:
-            """解析一帧拼接后的 data 内容;`[DONE]` 不产出事件。"""
-            data = data.strip()
-            if not data or data == "[DONE]":
-                return []
-            return parser.feed(data)
-
-        client = self._get_client()
-        yielded = False
-        for attempt in range(self._max_retries + 1):
-            try:
-                async with client.stream(
-                    "POST",
-                    self._endpoint(),
-                    headers=self._headers(),
-                    json=body,
-                    timeout=self._stream_timeout,
-                ) as resp:
-                    # 先读 body 再 raise:错误细节不因 body 未读而丢失
-                    if not resp.is_success:
-                        await resp.aread()
-                    resp.raise_for_status()
-                    # 按 SSE 规范:同一事件的 data 行用 \n 拼接,空行表示帧结束。
-                    # 额外容忍供应商差异:帧间无空行的连续 data 行、[DONE] 独立行、
-                    # 末帧无空行即断开(连接关闭时残留 buffer 需 flush)。
-                    buffer: list[str] = []
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            # 空行 = 帧结束,拼接多行 data 后解析
-                            if line == "" and buffer:
-                                joined = "\n".join(buffer)
-                                buffer = []
-                                for event in _emit(joined):
-                                    yielded = True
-                                    yield event
-                            continue
-                        payload = line[len("data:"):].lstrip(" ")
-                        if payload == "[DONE]":
-                            # [DONE] 是独立事件边界:先 flush 前一帧再终止
-                            if buffer:
-                                joined = "\n".join(buffer)
-                                buffer = []
-                                for event in _emit(joined):
-                                    yielded = True
-                                    yield event
-                            return
-                        if buffer:
-                            # buffer 已是完整 JSON 帧 → 先 flush,再累积新帧(容忍帧间无空行)
-                            try:
-                                json.loads("\n".join(buffer))
-                            except json.JSONDecodeError:
-                                pass  # 跨行 JSON 半帧,继续累积
-                            else:
-                                joined = "\n".join(buffer)
-                                buffer = []
-                                for event in _emit(joined):
-                                    yielded = True
-                                    yield event
-                        buffer.append(payload)
-                    # 流结束(aiter_lines 耗尽)后 flush 残留 buffer(末帧无空行即断开)
-                    if buffer:
-                        joined = "\n".join(buffer)
-                        buffer = []
-                        for event in _emit(joined):
-                            yielded = True
-                            yield event
-                return
-            except Exception as exc:  # noqa: BLE001 - 重试判定
-                if yielded or not self._is_retryable(exc):
-                    raise
-                if attempt == self._max_retries:
-                    raise
-                await asyncio.sleep(min(2 ** attempt, 10.0))

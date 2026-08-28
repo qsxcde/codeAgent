@@ -52,8 +52,9 @@ def test_bind_tools_records_names():
         name = "read"
 
     client = FakeClient()
-    client.bind_tools([T()])
-    assert client.bound_tools == ["read"]
+    bound = client.bind_tools([T()])
+    assert client.bound_tools == []
+    assert bound.bound_tools == ["read"]
 
 
 async def test_offline_no_network():

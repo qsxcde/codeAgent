@@ -19,6 +19,8 @@ from codeagent.core.context_budget import (
 )
 from codeagent.core.ports import ModelResponse, StreamEvent
 
+from .tool_definitions import tool_definition_for
+
 from .model_selection import (
     _get_default_registry,
     _provider_config,
@@ -174,7 +176,7 @@ class ChatModelPort:
         if tools is None:
             return None
         return [
-            tool if isinstance(tool, ToolDefinition) else ToolDefinition.from_tool(tool)
+            tool if isinstance(tool, ToolDefinition) else tool_definition_for(tool)
             for tool in tools
         ]
 

@@ -24,7 +24,7 @@ class ModelStore:
         """
         self.path = Path(path) if path is not None else None
 
-    def load(self) -> dict:
+    def load(self) -> dict[str, dict[str, list[ModelSpec]]]:
         """返回 ``{provider: {"models": [ModelSpec], ...}}``。
 
         文件不存在、JSON 损坏或编码无法解码时返回空并告警(不阻塞上层启动);
@@ -41,14 +41,19 @@ class ModelStore:
         if not isinstance(data, dict):
             logger.warning("模型目录 %s 顶层不是对象(已跳过)", self.path)
             return {}
-        result: dict = {}
+        result: dict[str, dict[str, list[ModelSpec]]] = {}
         for provider, conf in data.items():
             if not isinstance(conf, dict):
-                continue  # 跳过形状错误的 provider 条目
-            specs = []
-            for m in conf.get("models") or []:
+                logger.warning("模型目录 %s 的 provider %r 不是对象(已跳过)", self.path, provider)
+                continue
+            specs: list[ModelSpec] = []
+            for index, m in enumerate(conf.get("models") or []):
                 if not isinstance(m, dict) or not isinstance(m.get("id"), str):
-                    continue  # 逐条跳过坏记录,而不是抛异常
+                    logger.warning(
+                        "模型目录 %s 的 provider %r 第 %d 条模型记录缺少字符串 id(已跳过)",
+                        self.path, provider, index,
+                    )
+                    continue
                 spec = _parse_record(m)
                 if spec is None:
                     continue  # 类型校验失败,跳过并已告警

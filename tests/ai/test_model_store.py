@@ -24,6 +24,25 @@ def test_string_max_tokens_rejected(tmp_path):
     assert data["deepseek"]["models"] == []  # 坏记录被跳过,不静默强制
 
 
+def test_malformed_provider_and_model_records_include_contextual_diagnostics(tmp_path, caplog):
+    s = _store(
+        tmp_path,
+        json.dumps(
+            {
+                "broken-provider": [],
+                "deepseek": {"models": [{"id": 1}, {"id": "valid"}]},
+            }
+        ).encode(),
+    )
+
+    data = s.load()
+
+    assert [model.id for model in data["deepseek"]["models"]] == ["valid"]
+    assert "broken-provider" in caplog.text
+    assert "deepseek" in caplog.text
+    assert str(s.path) in caplog.text
+
+
 def test_string_aliases_rejected(tmp_path):
     """字符串 aliases 被跳过,不因子串匹配误中其它模型(H12)。"""
     s = _store(

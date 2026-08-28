@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from codeagent.ai.transport.openai_compat import OpenAICompatClient
-from codeagent.ai.model.types import ChatMessage, ToolCall
+from codeagent.ai.model.types import ChatMessage, ToolCall, ToolDefinition
 
 
 def _client(**kwargs) -> OpenAICompatClient:
@@ -64,8 +64,16 @@ def test_body_includes_reasoning_effort_and_tools():
             def model_json_schema():
                 return {"type": "object", "properties": {"path": {"type": "string"}}}
 
-    c.bind_tools([FakeTool()])
-    body = c._body([ChatMessage(role="user", content="hi")], stream=False)
+    bound = c.bind_tools(
+        [
+            ToolDefinition(
+                name=FakeTool.name,
+                description=FakeTool.description,
+                parameters=FakeTool.args_schema.model_json_schema(),
+            )
+        ]
+    )
+    body = bound._body([ChatMessage(role="user", content="hi")], stream=False)
 
     assert body["model"] == "deepseek-v4-flash"
     assert body["reasoning_effort"] == "xhigh"  # 原样透传,不被 SDK 约束
@@ -73,6 +81,125 @@ def test_body_includes_reasoning_effort_and_tools():
     assert body["stream"] is False
     assert body["tools"][0]["function"]["name"] == "read"
     assert body["tool_choice"] == "auto"
+
+
+def test_bound_tools_returns_isolated_client_without_mutating_source():
+    c = _client()
+    tool = ToolDefinition(name="read")
+
+    bound = c.bind_tools([tool])
+
+    assert bound is not c
+    assert "tools" not in c._body([ChatMessage(role="user", content="source")], stream=False)
+    assert bound._body([ChatMessage(role="user", content="bound")], stream=False)["tools"][0]["function"]["name"] == "read"
+
+
+def test_explicit_request_tools_do_not_leak_to_following_request():
+    c = _client()
+
+    first = c._body(
+        [ChatMessage(role="user", content="first")],
+        stream=False,
+        tools=[ToolDefinition(name="read")],
+    )
+    second = c._body([ChatMessage(role="user", content="second")], stream=False)
+
+    assert first["tools"][0]["function"]["name"] == "read"
+    assert "tools" not in second
+
+
+@pytest.mark.anyio
+async def test_concurrent_requests_keep_tool_definitions_isolated():
+    """同一 client 并发请求时，每个 provider payload 只含本次 tools。"""
+    seen: list[dict] = []
+    gate = asyncio.Event()
+
+    class RecordingClient:
+        async def post(self, _url, **kwargs):
+            seen.append(kwargs["json"])
+            if len(seen) == 2:
+                gate.set()
+            await gate.wait()
+            response = MagicMock()
+            response.raise_for_status = MagicMock()
+            response.json.return_value = {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+            }
+            return response
+
+        async def aclose(self):
+            pass
+
+    client = _client()
+    client._client = RecordingClient()
+    read = ToolDefinition(name="read")
+    write = ToolDefinition(name="write")
+
+    await asyncio.gather(
+        client.generate([ChatMessage(role="user", content="read")], tools=[read]),
+        client.generate([ChatMessage(role="user", content="write")], tools=[write]),
+    )
+    await client.aclose()
+
+    by_prompt = {
+        payload["messages"][0]["content"]: [
+            item["function"]["name"] for item in payload["tools"]
+        ]
+        for payload in seen
+    }
+    assert by_prompt == {"read": ["read"], "write": ["write"]}
+
+
+@pytest.mark.anyio
+async def test_concurrent_streams_keep_tool_definitions_isolated():
+    seen: list[dict] = []
+    gate = asyncio.Event()
+
+    class StreamResponse:
+        is_success = True
+
+        def raise_for_status(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def aiter_lines(self):
+            async def lines():
+                await gate.wait()
+                yield "data: [DONE]"
+
+            return lines()
+
+    class RecordingClient:
+        def stream(self, _method, _url, **kwargs):
+            seen.append(kwargs["json"])
+            if len(seen) == 2:
+                gate.set()
+            return StreamResponse()
+
+        async def aclose(self):
+            pass
+
+    client = _client()
+    client._client = RecordingClient()
+    await asyncio.gather(
+        _collect_stream_from(client, "read", ToolDefinition(name="read")),
+        _collect_stream_from(client, "write", ToolDefinition(name="write")),
+    )
+    await client.aclose()
+    by_prompt = {
+        payload["messages"][0]["content"]: [item["function"]["name"] for item in payload["tools"]]
+        for payload in seen
+    }
+    assert by_prompt == {"read": ["read"], "write": ["write"]}
+
+
+async def _collect_stream_from(client, prompt: str, tool: ToolDefinition):
+    return [event async for event in client.stream([ChatMessage(role="user", content=prompt)], tools=[tool])]
 
 
 def test_message_to_api_dict_with_tool_calls():

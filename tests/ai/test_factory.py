@@ -52,7 +52,8 @@ def test_fake_bind_tools_records_then_runs_via_model_port():
     class FakeTool:
         name = "read"
 
-    model.bind_tools([FakeTool()])
-    assert model.bound_tools == ["read"]
+    bound = model.bind_tools([FakeTool()])
+    assert model.bound_tools == []
+    assert bound.bound_tools == ["read"]
     port = ChatModelPort(model)
     assert port.model_id == "fake-model"

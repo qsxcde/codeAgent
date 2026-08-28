@@ -73,23 +73,6 @@ class ToolDefinition:
         default_factory=lambda: {"type": "object", "properties": {}}
     )
 
-    @classmethod
-    def from_tool(cls, tool: Any) -> "ToolDefinition":
-        """从具有 ``name`` / ``description`` / ``args_schema`` 的对象转换。"""
-        name = getattr(tool, "name", "") or getattr(tool, "__name__", "")
-        description = getattr(tool, "description", "") or ""
-        args_schema = getattr(tool, "args_schema", None)
-        model_json_schema = getattr(args_schema, "model_json_schema", None)
-        parameters: dict[str, Any] = {"type": "object", "properties": {}}
-        if callable(model_json_schema):
-            try:
-                candidate = model_json_schema()
-            except Exception:  # noqa: BLE001 - 单个工具 schema 失败时降级
-                candidate = None
-            if isinstance(candidate, dict):
-                parameters = candidate
-        return cls(name=str(name), description=str(description), parameters=parameters)
-
     def to_api_dict(self) -> dict[str, Any]:
         """转成 OpenAI function calling 的工具定义。"""
         return {

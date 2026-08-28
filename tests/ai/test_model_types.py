@@ -3,7 +3,13 @@
 import asyncio
 import json
 
+import pytest
+
 from codeagent.ai.model.types import ToolDefinition
+from codeagent.app.composition.tool_definitions import (
+    ToolDefinitionConversionError,
+    tool_definition_for,
+)
 from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.composition.model_factory import ChatModelPort
 from codeagent.core.messages import Message
@@ -26,12 +32,34 @@ class _Tool:
 
 
 def test_tool_definition_is_provider_neutral():
-    definition = ToolDefinition.from_tool(_Tool())
+    definition = ToolDefinition(
+        name="read",
+        description="读取文件",
+        parameters=_Args.model_json_schema(),
+    )
 
     assert definition.name == "read"
     assert definition.description == "读取文件"
     assert definition.parameters["required"] == ["path"]
     assert definition.to_api_dict()["function"]["name"] == "read"
+
+
+def test_ai_tool_definition_does_not_adapt_concrete_tool_objects():
+    assert not hasattr(ToolDefinition, "from_tool")
+
+
+def test_composition_tool_conversion_reports_tool_and_schema_failure():
+    class BrokenArgs:
+        @classmethod
+        def model_json_schema(cls):
+            raise RuntimeError("schema unavailable")
+
+    class BrokenTool:
+        name = "broken"
+        args_schema = BrokenArgs
+
+    with pytest.raises(ToolDefinitionConversionError, match="broken.*schema unavailable"):
+        tool_definition_for(BrokenTool())
 
 
 async def test_chat_model_port_converts_runtime_tools_before_model_call():

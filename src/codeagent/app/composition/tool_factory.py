@@ -9,6 +9,8 @@ from typing import Any
 from codeagent.ai.model.types import ToolDefinition
 from codeagent.core.messages import ToolExecutionStatus, ToolResult
 
+from .tool_definitions import tool_definition_for
+
 
 class AgentToolAdapter:
     """Adapt an existing schema-based tool to the core AgentTool contract."""
@@ -17,7 +19,7 @@ class AgentToolAdapter:
         self._tool = tool
         self.name = str(getattr(tool, "name", ""))
         self.description = str(getattr(tool, "description", ""))
-        self.parameters = ToolDefinition.from_tool(tool).parameters
+        self.parameters = tool_definition_for(tool).parameters
 
     @property
     def supports_cancellation(self) -> bool:
