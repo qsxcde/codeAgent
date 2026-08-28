@@ -71,6 +71,7 @@ class AgentEvent:
     error_code: str | None = None
     retryable: bool | None = None
     cleanup_uncertain: bool | None = None
+    cleanup_status: str | None = None
     side_effect_state: str | None = None
 
     def __repr__(self) -> str:  # pragma: no cover - 仅调试展示

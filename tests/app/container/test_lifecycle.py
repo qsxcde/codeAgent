@@ -39,6 +39,89 @@ async def test_agent_runtime_close_is_idempotent():
     assert client.closed == 1
 
 
+async def test_agent_runtime_waits_for_sync_model_close():
+    from codeagent.app.container import AgentRuntime
+    from codeagent.core.ports import AgentLoopConfig
+
+    class SyncClosable:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    client = SyncClosable()
+    config = AgentLoopConfig(model=client, tools=[])
+    runtime = AgentRuntime(config, None, client, [])
+
+    await runtime.close()
+
+    assert client.closed == 1
+
+
+async def test_concurrent_agent_runtime_close_waits_for_one_shared_close():
+    from codeagent.app.container import AgentRuntime
+    from codeagent.core.ports import AgentLoopConfig
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class Closable:
+        async def aclose(self):
+            started.set()
+            await release.wait()
+
+    client = Closable()
+    config = AgentLoopConfig(model=client, tools=[])
+    runtime = AgentRuntime(config, None, client, [])
+    first = asyncio.create_task(runtime.close())
+    await started.wait()
+    second = asyncio.create_task(runtime.close())
+    await asyncio.sleep(0)
+
+    assert not second.done()
+    release.set()
+    await asyncio.gather(first, second)
+
+
+async def test_agent_runtime_closes_model_after_active_tool_is_cancelled():
+    from codeagent.app.container import AgentRuntime
+    from codeagent.core.execution import ToolExecutionRuntime
+    from codeagent.core.ports import AgentLoopConfig
+
+    started = asyncio.Event()
+    order: list[str] = []
+
+    class SlowTool:
+        async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
+            started.set()
+            await asyncio.Event().wait()
+
+    class Closable:
+        model_id = "stub"
+
+        async def aclose(self):
+            order.append("model_close")
+            assert tool_runtime.active_operations == {}
+
+    from codeagent.core.messages import ToolCall
+
+    tool_runtime = ToolExecutionRuntime()
+    tool_task = asyncio.create_task(
+        tool_runtime.execute(SlowTool(), ToolCall("c1", "slow", {}), operation_id="op-1")
+    )
+    await started.wait()
+    client = Closable()
+    config = AgentLoopConfig(model=client, tools=[], tool_runtime=tool_runtime)
+    runtime = AgentRuntime(config, None, client, [], tool_runtime)
+
+    await runtime.close()
+
+    assert order == ["model_close"]
+    with pytest.raises(asyncio.CancelledError):
+        await tool_task
+
+
 
 async def test_agent_runtime_is_removed_from_registry_after_close():
     from codeagent.app.container import AgentRuntime, runtime_for_config

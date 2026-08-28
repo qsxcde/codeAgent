@@ -114,6 +114,21 @@ class SessionStore(Protocol):
 
     def append_message(self, session_id: str, message: Message) -> None: ...
 
+    def commit_turn(
+        self,
+        session_id: str,
+        messages: list[Message],
+        usage: UsageStats,
+        *,
+        context_tokens: int | None,
+    ) -> None:
+        """Atomically append one successful turn and its usage metadata.
+
+        Backends may implement this with a native transaction or a bounded
+        append-and-restore operation.  The session layer never calls the
+        individual append methods for a backend that provides this port.
+        """
+
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> str: ...
 
     def append_model_change(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 
 from codeagent.app.skills import Skill, format_skill_invocation
@@ -409,8 +410,17 @@ class TuiCommandCoordinator:
         if self._rebuild_ports is None:
             self.model.append_info("当前环境不支持热切换(未注入端口重建器)")
             return False
+        rebuild = self._rebuild_ports_async or self._rebuild_ports
         try:
-            new_model, new_effort = self._rebuild_ports(provider, model, effort)
+            result = rebuild(provider, model, effort)
+            if inspect.isawaitable(result):
+                asyncio.get_running_loop().create_task(
+                    self._finish_async_config(result)
+                )
+                self.model.append_info("正在等待当前运行收尾并切换配置...")
+                self._schedule_render()
+                return True
+            new_model, new_effort = result
         except ValueError as exc:
             self.model.append_info(str(exc))
             return False
@@ -419,6 +429,20 @@ class TuiCommandCoordinator:
         self._refresh_skills()
         self.model.append_info("已切换配置")
         return True
+
+    async def _finish_async_config(self, result: Any) -> None:
+        """Apply an async composition-root rebuild result to the TUI state."""
+        try:
+            new_model, new_effort = await result
+        except ValueError as exc:
+            self.model.append_info(str(exc))
+            self._schedule_render()
+            return
+        self.model.status.model = new_model
+        self.model.status.effort = new_effort
+        self._refresh_skills()
+        self.model.append_info("已切换配置")
+        self._schedule_render()
 
 
 

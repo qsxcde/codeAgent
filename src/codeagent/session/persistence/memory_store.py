@@ -98,6 +98,65 @@ class MemoryStore:
         ref = self._sessions[session_id]
         self._sessions[session_id] = replace(ref, last_activity_at=_now())
 
+    def commit_turn(
+        self,
+        session_id: str,
+        messages: list[Message],
+        usage: UsageStats,
+        *,
+        context_tokens: int | None,
+    ) -> None:
+        """Append a turn with an in-memory transaction boundary.
+
+        The append methods remain the mutation seam so failure-injection
+        stores used by contract tests exercise the same behavior as callers
+        that use the public store API.  A failed append restores every field
+        touched by the turn, including the deferred-session header state.
+        """
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        if not messages:
+            return
+        original_ref = self._sessions[session_id]
+        original_messages = list(self._messages[session_id])
+        original_usage = self._usage.get(session_id, UsageStats())
+        had_meta = session_id in self._meta
+        original_meta = dict(self._meta.get(session_id, {}))
+        try:
+            for message in messages:
+                self.append_message(session_id, message)
+            if any(
+                (
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.reasoning_tokens,
+                    usage.cached_tokens,
+                )
+            ):
+                self.append_usage(
+                    session_id,
+                    {
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "reasoning_tokens": usage.reasoning_tokens,
+                        "cached_tokens": usage.cached_tokens,
+                    },
+                )
+                if context_tokens is not None:
+                    self.set_meta(session_id, "last_context_tokens", context_tokens)
+        except BaseException:
+            self._sessions[session_id] = original_ref
+            self._messages[session_id] = original_messages
+            if original_usage == UsageStats():
+                self._usage.pop(session_id, None)
+            else:
+                self._usage[session_id] = original_usage
+            if had_meta:
+                self._meta[session_id] = original_meta
+            else:
+                self._meta.pop(session_id, None)
+            raise
+
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> str:
         self._compactions.append((session_id, entry))
         return entry.id

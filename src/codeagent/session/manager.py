@@ -37,6 +37,7 @@ class SessionManager:
         effort: str = "",
         recursion_limit: int = 50,
         tool_timeout: float | None = None,
+        confirmation_timeout: float | None = None,
         summarizer: Any = None,
         context_window: int = DEFAULT_CONTEXT_WINDOW,
         runtime_closer: Callable[[], Any] | None = None,
@@ -49,11 +50,13 @@ class SessionManager:
         self._effort = effort
         self._recursion_limit = recursion_limit
         self._tool_timeout = tool_timeout
+        self._confirmation_timeout = confirmation_timeout
         #: 上下文压缩摘要端口(session-compaction;None = 压缩不可用)。
         self._summarizer = summarizer
         self._context_window = context_window
         self._runtime_closer = runtime_closer
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         #: 活动会话:session_id → AgentSession(dispose 摘除,文件保留)。
         self._sessions: dict[str, AgentSession] = {}
         self._current_id: str | None = None
@@ -81,9 +84,30 @@ class SessionManager:
             },
         )
 
+    async def create_async(self, *, parent_session: str | None = None) -> AgentSession:
+        """Wait for the current run before creating and selecting a session."""
+        await self._halt_current_and_wait()
+        session_id = str(uuid.uuid4())
+        return self._adopt(
+            session_id,
+            defer_persistence=True,
+            persistence_options={
+                "parent_session": parent_session,
+                "model": self._model,
+                "effort": self._effort,
+            },
+        )
+
     def switch(self, session_id: str) -> AgentSession:
         """切换到既有会话并恢复其历史(不存在则报错;运行中先中止)。"""
         self._halt_current()
+        if self._store is not None and self._store.get(session_id) is None:
+            raise ValueError(f"会话不存在: {session_id}")
+        return self._adopt(session_id)
+
+    async def switch_async(self, session_id: str) -> AgentSession:
+        """Wait for the current run before switching sessions."""
+        await self._halt_current_and_wait()
         if self._store is not None and self._store.get(session_id) is None:
             raise ValueError(f"会话不存在: {session_id}")
         return self._adopt(session_id)
@@ -94,6 +118,13 @@ class SessionManager:
         if not refs:
             return self.create()
         return self.switch(refs[-1].id)
+
+    async def continue_recent_async(self) -> AgentSession:
+        """Async continuation that waits for cancellation and cleanup."""
+        refs = self.list()
+        if not refs:
+            return await self.create_async()
+        return await self.switch_async(refs[-1].id)
 
     def fork(self, session_id: str, message_id: str | None = None) -> AgentSession:
         """从既有会话的 user 消息分叉新会话并切换当前(对齐 Pi createBranchedSession)。
@@ -112,6 +143,21 @@ class SessionManager:
         if message_id is None:
             message_id = self._last_user_message_id(session_id)
         self._halt_current()
+        new_id = str(uuid.uuid4())
+        self._store.fork(session_id, message_id, new_id)
+        return self._adopt(new_id, previous_session_id=session_id)
+
+    async def fork_async(
+        self, session_id: str, message_id: str | None = None
+    ) -> AgentSession:
+        """Await current-run cleanup before creating a branched session."""
+        if self._store is None:
+            raise ValueError("分叉需要持久化会话(当前无会话存储)")
+        if self._store.get(session_id) is None:
+            raise ValueError(f"会话不存在: {session_id}")
+        if message_id is None:
+            message_id = self._last_user_message_id(session_id)
+        await self._halt_current_and_wait()
         new_id = str(uuid.uuid4())
         self._store.fork(session_id, message_id, new_id)
         return self._adopt(new_id, previous_session_id=session_id)
@@ -164,6 +210,25 @@ class SessionManager:
         ):
             self._store.append_model_change(self._current_id, model=model, effort=effort)
 
+    async def replace_config_async(
+        self,
+        config: Any,
+        *,
+        model: str = "",
+        effort: str = "",
+        context_window: int | None = None,
+        policy: Any = None,
+    ) -> None:
+        """Wait for the active run before replacing shared configuration."""
+        await self._halt_current_and_wait()
+        self.replace_config(
+            config,
+            model=model,
+            effort=effort,
+            context_window=context_window,
+            policy=policy,
+        )
+
     def dispose(self, session_id: str) -> None:
         """释放会话:中止运行并从活动集合移除(文件与历史保留,可再恢复)。"""
         session = self._sessions.pop(session_id, None)
@@ -172,13 +237,38 @@ class SessionManager:
         if self._current_id == session_id:
             self._current_id = None
 
+    async def dispose_async(self, session_id: str) -> None:
+        """Wait for the session to become idle before releasing it."""
+        session = self._sessions.get(session_id)
+        if session is not None:
+            cancel_and_wait = getattr(session, "cancel_and_wait", None)
+            if callable(cancel_and_wait):
+                result = cancel_and_wait()
+                if hasattr(result, "__await__"):
+                    await result
+            else:
+                session.abort()
+        self._sessions.pop(session_id, None)
+        if self._current_id == session_id:
+            self._current_id = None
+
     async def close(self) -> None:
         """Abort active sessions and release shared model/MCP resources."""
-        if self._closed:
-            return
-        self._closed = True
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close_resources())
+        await asyncio.shield(self._close_task)
+
+    async def _close_resources(self) -> None:
+        """Run one shared manager close sequence for concurrent callers."""
         for session in self._sessions.values():
-            session.abort()
+            cancel_and_wait = getattr(session, "cancel_and_wait", None)
+            if callable(cancel_and_wait):
+                result = cancel_and_wait()
+                if hasattr(result, "__await__"):
+                    await result
+            else:
+                session.abort()
         if self._runtime_closer is not None:
             result = self._runtime_closer()
             if hasattr(result, "__await__"):
@@ -235,6 +325,24 @@ class SessionManager:
         if current is not None:
             current.abort()
 
+    async def _halt_current_and_wait(self) -> None:
+        """Stop the current session and await its complete run cleanup."""
+        current = self.current
+        if current is None:
+            return
+        cancel_and_wait = getattr(current, "cancel_and_wait", None)
+        if callable(cancel_and_wait):
+            result = cancel_and_wait()
+            if hasattr(result, "__await__"):
+                await result
+            return
+        current.abort()
+        wait_for_idle = getattr(current, "wait_for_idle", None)
+        if callable(wait_for_idle):
+            result = wait_for_idle()
+            if hasattr(result, "__await__"):
+                await result
+
     def _adopt(
         self,
         session_id: str,
@@ -255,6 +363,7 @@ class SessionManager:
             session_id=session_id,
             recursion_limit=self._recursion_limit,
             tool_timeout=self._tool_timeout,
+            confirmation_timeout=self._confirmation_timeout,
             previous_session_id=previous_session_id,
             summarizer=self._summarizer,
             context_window=self._context_window,

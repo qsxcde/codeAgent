@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 import pytest
 
@@ -160,3 +162,43 @@ async def test_runtime_timeout_is_a_structured_tool_result():
     await (run_agent_loop(AgentContext(), config, "执行", emit=events.append))
     result = next(event.payload for event in events if event.type == EventType.TOOL_EXECUTION_END)
     assert result.status == "timed_out"
+
+
+async def test_cancelled_sync_tool_publishes_uncertain_cleanup_metadata():
+    """取消线程工具只能停止等待方时,ABORTED 必须携带不确定清理诊断。"""
+    started = threading.Event()
+
+    class BlockingSyncTool:
+        name = "sync"
+        description = "sync"
+        parameters = {"type": "object"}
+        Args = dict
+
+        def invoke(self, _args):
+            started.set()
+            time.sleep(0.05)
+            return "late"
+
+    model = FakeClient(
+        steps=[
+            {"content": "", "tool_calls": [{"name": "sync", "args": {}, "id": "c1"}]},
+            {"content": "不会到达"},
+        ]
+    )
+    events: list = []
+    runtime = ToolExecutionRuntime(max_concurrency=1)
+    config = AgentLoopConfig(
+        model=ChatModelPort(model),
+        tools=[BlockingSyncTool()],
+        tool_runtime=runtime,
+    )
+    task = asyncio.create_task(run_agent_loop(AgentContext(), config, "执行", emit=events.append))
+    await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    aborted = next(event for event in events if event.type == EventType.ABORTED)
+    assert aborted.metadata["cleanup_status"] == "unsupported"
+    assert aborted.metadata["cleanup_uncertain"] is True

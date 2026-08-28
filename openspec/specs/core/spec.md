@@ -37,7 +37,7 @@ Agent Runtime SHALL 以纯内存循环执行“模型响应→工具执行→继
 
 ### Requirement: 消息归约
 
-Agent Runtime SHALL 维护有序的内存消息列表:工具结果 SHALL 按 tool_call_id 关联到对应工具调用;消息 SHALL 具备运行期唯一 id;执行失败或取消时,调用方 SHALL 能丢弃本轮新增消息而保留此前上下文。持久化父子关系、分支记录和压缩记录 SHALL 由 session 层负责,不成为 core 消息模型的应用依赖。
+Agent Runtime SHALL 维护有序的内存消息列表:工具结果 SHALL 按 tool_call_id 关联到对应工具调用;消息 SHALL 具备运行期唯一 id;每次运行 SHALL 在独立的工作消息列表中归约新增消息,只有运行成功且 session 提交边界完成后才可合并到会话历史。执行失败或取消时,调用方 SHALL 能丢弃本轮全部新增消息而保留此前上下文。持久化父子关系、分支记录和压缩记录 SHALL 由 session 层负责,不成为 core 消息模型的应用依赖。
 
 #### Scenario: 工具结果按调用归属
 
@@ -53,6 +53,11 @@ Agent Runtime SHALL 维护有序的内存消息列表:工具结果 SHALL 按 too
 
 - **WHEN** Agent Runtime 创建 user、assistant 或 tool result 消息
 - **THEN** 每条消息带有唯一 id,可供工具结果归属、事件关联和上层持久化引用
+
+#### Scenario: 提交边界隔离
+
+- **WHEN** Agent 已产生新增消息但 session 尚未完成持久化提交
+- **THEN** 新增消息不会被视为已提交历史;提交失败时可以完整丢弃,不影响此前已持久化上下文
 
 ### Requirement: 工具执行确认
 
@@ -90,7 +95,7 @@ Agent Runtime SHALL 在每个工具调用执行前提供通用的 `before_tool_c
 
 ### Requirement: 事件契约
 
-Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流和工具执行生命周期;核心事件至少包括 `agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_update`、`message_end`、`tool_execution_start`、`tool_execution_update`、`tool_execution_end`、`usage`、`error` 和 `aborted`。Session started、restore、compaction、persistence 和 confirmation 等事件 SHALL 由 session/app 层定义或适配,不再作为 core Agent 事件的职责。事件负载 SHALL 使用稳定的结构化字段,订阅方无需解析错误文本判断工具状态。
+Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流和工具执行生命周期;核心事件至少包括 `agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_update`、`message_end`、`tool_execution_start`、`tool_execution_update`、`tool_execution_end`、`usage`、`error` 和 `aborted`。每个属于一次运行的事件 SHALL 携带稳定的 `run_id`,并在 session 适配边界补充 `session_id`;事件 SHALL 能区分过程事件与唯一终态。Session started、restore、compaction、persistence 和 confirmation 等事件 SHALL 由 session/app 层定义或适配,不再作为 core Agent 事件的职责。事件负载 SHALL 使用稳定的结构化字段,订阅方无需解析错误文本判断工具状态。
 
 #### Scenario: Agent 生命周期可订阅
 
@@ -132,9 +137,14 @@ Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流�
 - **WHEN** session 层需要广播会话创建、恢复、压缩或确认状态
 - **THEN** session/app 层将 Agent 事件转换或补充为 Session 事件,core Agent Runtime 不引入持久化或 UI 生命周期
 
+#### Scenario: 运行终态唯一
+
+- **WHEN** 一个运行进入 completed、failed 或 cancelled 任一终态
+- **THEN** 该运行只发布一次终态,终态之后不再发布属于该运行的普通过程事件
+
 ### Requirement: 受控工具执行
 
-工具调用 SHALL 经统一的 AgentTool 执行协议运行,执行器 SHALL 支持可配置的并行或串行模式、运行期并发上限、超时、取消和进度更新。系统 SHALL 保持同一批工具结果向模型回填时的调用顺序;达到并发上限的调用 SHALL 等待;取消或超时 SHALL 触发工具清理并明确报告无法确认终止的降级状态。
+工具调用 SHALL 经统一的 AgentTool 执行协议运行,执行器 SHALL 支持可配置的并行或串行模式、运行期并发上限、超时、取消和进度更新。系统 SHALL 保持同一批工具结果向模型回填时的调用顺序;达到并发上限的调用 SHALL 等待;取消或超时 SHALL 触发工具清理,并明确报告清理已确认、清理失败或清理不确定的状态。对于无法抢占的同步工具,执行器 SHALL 不得把停止等待误报为工具已经终止。
 
 #### Scenario: 并发上限
 
@@ -161,9 +171,14 @@ Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流�
 - **WHEN** 同一批工具中一个调用参数错误、超时或执行失败
 - **THEN** 该调用回填独立错误结果,其它调用按执行策略继续或完成,错误不得污染其它 tool_call_id
 
+#### Scenario: 清理结果可验证
+
+- **WHEN** 工具清理接口执行成功、失败或不受支持
+- **THEN** 工具结果和执行事件分别标记对应清理状态,调用方能够区分 confirmed、failed、uncertain 和 unsupported
+
 ### Requirement: 运行干预
 
-Agent Runtime SHALL 支持 prompt、continue、abort、steer 和 follow-up 五类运行控制。steer 消息 SHALL 在当前工具批次结束后、下一次模型请求前注入;follow-up 消息 SHALL 仅在当前 Agent 判断本轮完成后启动新的 turn;continue SHALL 从已有 user 或 tool result 上下文恢复,不得重复添加 prompt。
+Agent Runtime SHALL 支持 prompt、continue、abort、steer 和 follow-up 五类运行控制。steer 消息 SHALL 在当前工具批次结束后、下一次模型请求前注入;follow-up 消息 SHALL 仅在当前 Agent 判断本轮完成后启动新的 turn;continue SHALL 从已有 user 或 tool result 上下文恢复,不得重复添加 prompt。abort SHALL 先发出取消请求,再等待模型、工具和确认等待点完成取消传播与清理;只有收尾完成后,运行才可报告为 cancelled。
 
 #### Scenario: 中断
 
@@ -189,6 +204,11 @@ Agent Runtime SHALL 支持 prompt、continue、abort、steer 和 follow-up 五�
 
 - **WHEN** 调用方提交 follow-up 或 steer 消息
 - **THEN** follow-up 在当前 Agent 完成后启动新 turn,steer 在当前工具批次结束后于下一次模型请求前注入
+
+#### Scenario: 取消时排队请求收尾
+
+- **WHEN** 运行在处理 follow-up 或等待 steer 注入时被取消
+- **THEN** 所有排队请求得到明确的取消结果或异常,不留下悬挂 Future,也不启动新的 turn
 
 ### Requirement: Agent Runtime 扩展钩子
 

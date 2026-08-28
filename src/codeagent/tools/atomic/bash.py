@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import time
 from dataclasses import dataclass
@@ -96,6 +97,11 @@ class BashTool(AtomicTool):
         "grep 无匹配(退出码 1)不视为错误;危险命令会被拒绝。"
     )
     Args = BashArgs
+
+    @property
+    def supports_cancellation(self) -> bool:
+        """POSIX process groups are verifiable; Windows tree kill is best effort."""
+        return os.name != "nt"
 
     def __init__(
         self,

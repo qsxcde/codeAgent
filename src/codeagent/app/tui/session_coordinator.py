@@ -57,15 +57,28 @@ class TuiSessionCoordinator:
             lines.extend(self._tree_lines(build_tree(refs)))
             self.model.append_info("\n".join(lines))
         elif action == "new":
+            if self._schedule_session_action(
+                "create_async", lambda session: f"已新建会话: {session.session_id}"
+            ):
+                return
             session = self._manager.create()
             self._hydrate_current_session()
             self.model.append_info(f"已新建会话: {session.session_id}")
         elif action == "recent":
             # session-resume:快速恢复最近有活动的会话(continue_recent;无会话时新建)。
+            if self._schedule_session_action(
+                "continue_recent_async",
+                lambda session: f"已恢复最近会话: {session.session_id}",
+            ):
+                return
             session = self._manager.continue_recent()
             self._hydrate_current_session()
             self.model.append_info(f"已恢复最近会话: {session.session_id}")
         else:
+            if self._schedule_session_action(
+                "switch_async", lambda session: f"已切换到会话: {session.session_id}", action
+            ):
+                return
             try:
                 session = self._manager.switch(action)
             except ValueError as exc:
@@ -83,6 +96,10 @@ class TuiSessionCoordinator:
         """
         if cmd.args:
             target = cmd.args[0]
+            if self._schedule_session_action(
+                "switch_async", lambda session: f"已切换到会话: {session.session_id}", target
+            ):
+                return
             try:
                 session = self._manager.switch(target)
             except ValueError as exc:
@@ -199,6 +216,17 @@ class TuiSessionCoordinator:
             self.model.append_info("(无当前会话)")
             return
         message_id = cmd.args[0] if cmd.args else None
+        if self._schedule_session_action(
+            "fork_async",
+            lambda forked: (
+                f"已分叉会话 {forked.session_id}: 从消息 "
+                f"{message_id or '(最近用户消息)'} 之前重新开始"
+                "(原会话保留,文件保持当前状态)"
+            ),
+            session.session_id,
+            message_id,
+        ):
+            return
         try:
             forked = self._manager.fork(session.session_id, message_id)
         except ValueError as exc:
@@ -210,6 +238,43 @@ class TuiSessionCoordinator:
             f"从消息 {message_id or '(最近用户消息)'} 之前重新开始"
             f"(原会话保留,文件保持当前状态)"
         )
+
+    def _schedule_session_action(
+        self,
+        method_name: str,
+        message: Any,
+        *args: Any,
+    ) -> bool:
+        """Use an async manager lifecycle API when the TUI owns an event loop."""
+        method = getattr(self._manager, method_name, None)
+        if not callable(method):
+            return False
+        task = getattr(self, "_session_action_task", None)
+        if task is not None and not task.done():
+            self.model.append_info("正在等待上一个会话操作完成")
+            self._schedule_render()
+            return True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+
+        async def run_action() -> None:
+            try:
+                session = await method(*args)
+            except ValueError as exc:
+                self.model.append_info(str(exc))
+            else:
+                self._hydrate_current_session()
+                self.model.append_info(message(session))
+            finally:
+                self._session_action_task = None
+                self._schedule_render()
+
+        self.model.append_info("正在等待当前运行收尾并切换会话...")
+        self._session_action_task = loop.create_task(run_action())
+        self._schedule_render()
+        return True
 
 
     def _hydrate_current_session(self) -> None:

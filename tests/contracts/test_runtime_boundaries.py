@@ -79,6 +79,49 @@ def test_event_mapper_preserves_tool_start_mapping() -> None:
     }
 
 
+def test_event_mapper_preserves_structured_runtime_correlation() -> None:
+    from codeagent.session.runtime.event_mapper import EventMapper
+
+    mapped = EventMapper.map_agent_event(
+        AgentEvent(
+            EventType.TOOL_EXECUTION_START,
+            payload={"tool_call_id": "call-1", "tool_name": "bash"},
+            metadata={"run_id": "run-1", "phase": "tool_running"},
+            run_id="run-1",
+            operation_id="op-1",
+            phase="tool_running",
+        )
+    )
+
+    assert mapped[0].run_id == "run-1"
+    assert mapped[0].operation_id == "op-1"
+    assert mapped[0].phase == "tool_running"
+    assert mapped[0].metadata["run_id"] == "run-1"
+    assert mapped[0].metadata["phase"] == "tool_running"
+
+
+def test_event_mapper_assigns_stable_tool_error_code() -> None:
+    from codeagent.core.messages import ToolExecutionStatus, ToolResult
+    from codeagent.session.runtime.event_mapper import EventMapper
+
+    mapped = EventMapper.map_agent_event(
+        AgentEvent(
+            EventType.TOOL_EXECUTION_END,
+            payload=ToolResult(
+                "call-1",
+                "拒绝",
+                error=True,
+                rejected=True,
+                status=ToolExecutionStatus.REJECTED,
+                operation_id="op-1",
+            ),
+        )
+    )
+
+    assert mapped[0].error_code == "confirmation_rejected"
+    assert mapped[0].metadata["error_code"] == "confirmation_rejected"
+
+
 def test_error_policy_preserves_plain_exception_text() -> None:
     from codeagent.session.runtime.error_policy import friendly_error
 

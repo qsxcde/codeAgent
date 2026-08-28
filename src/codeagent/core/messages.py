@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
+    "CleanupStatus",
     "Message",
     "ToolCall",
     "ToolResult",
@@ -49,6 +50,25 @@ class ToolExecutionStatus:
         TIMED_OUT,
         CANCELLED,
         CLEANUP_UNCERTAIN,
+    )
+
+
+class CleanupStatus:
+    """Stable state of cleanup after timeout or cancellation."""
+
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+    UNSUPPORTED = "unsupported"
+    ALL = (
+        NOT_REQUIRED,
+        PENDING,
+        CONFIRMED,
+        FAILED,
+        UNCERTAIN,
+        UNSUPPORTED,
     )
 
 
@@ -101,6 +121,8 @@ class ToolResult:
     status: str = ""
     operation_id: str = ""
     cleanup_confirmed: bool | None = None
+    cleanup_status: str = ""
+    cleanup_error: str | None = None
     #: 运行时输出统计，不参与 Message JSONL 持久化。
     total_bytes: int = 0
     total_lines: int = 0
@@ -114,6 +136,13 @@ class ToolResult:
     semantic_success: bool | None = None
 
     def __post_init__(self) -> None:
+        if not self.cleanup_status:
+            if self.cleanup_confirmed is False:
+                self.cleanup_status = CleanupStatus.UNCERTAIN
+            elif self.cleanup_confirmed is True:
+                self.cleanup_status = CleanupStatus.CONFIRMED
+            else:
+                self.cleanup_status = CleanupStatus.NOT_REQUIRED
         if not self.status:
             if self.rejected:
                 self.status = ToolExecutionStatus.REJECTED
@@ -143,6 +172,15 @@ class ToolResult:
             self.shown_lines = int(item_marker.group(1))
             self.total_lines = int(item_marker.group(2))
             self.truncated_by = self.truncated_by or "tool"
+
+    @property
+    def cleanup_uncertain(self) -> bool:
+        """Whether cleanup was not proven to be complete."""
+        return self.cleanup_status in {
+            CleanupStatus.FAILED,
+            CleanupStatus.UNCERTAIN,
+            CleanupStatus.UNSUPPORTED,
+        }
 
 
 @dataclass

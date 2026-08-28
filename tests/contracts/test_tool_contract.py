@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -63,3 +64,78 @@ async def test_tool_contract_cancellation_clears_active_operation():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert runtime.active_operations == {}
+
+
+async def test_sync_atomic_adapter_reports_uncertain_cleanup_on_cancellation():
+    from codeagent.app.composition.tool_factory import adapt_tools
+    from codeagent.tools.base import AtomicTool
+    from pydantic import BaseModel
+
+    class EmptyArgs(BaseModel):
+        pass
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingAtomicTool(AtomicTool):
+        name = "blocking"
+        description = "blocking"
+        Args = EmptyArgs
+
+        def _invoke(self, _args):
+            started.set()
+            release.wait()
+            return "late"
+
+    adapted = adapt_tools([BlockingAtomicTool()])[0]
+    assert adapted.supports_cancellation is False
+    runtime = ToolExecutionRuntime()
+    task = asyncio.create_task(
+        runtime.execute(adapted, ToolCall("block-1", "blocking", {}), operation_id="op-1")
+    )
+    for _ in range(100):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set(), task.exception() if task.done() else "tool did not start"
+    task.cancel()
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert runtime.cleanup_status == "unsupported"
+        assert runtime.cleanup_uncertain is True
+    finally:
+        release.set()
+
+
+async def test_atomic_adapter_preserves_structured_async_tool_result():
+    from codeagent.app.composition.tool_factory import adapt_tools
+    from codeagent.tools.atomic.bash import BashInvocationResult
+    from codeagent.tools.base import AtomicTool
+    from pydantic import BaseModel
+
+    class EmptyArgs(BaseModel):
+        pass
+
+    class StructuredAtomicTool(AtomicTool):
+        name = "structured"
+        description = "structured"
+        Args = EmptyArgs
+
+        async def ainvoke(self, _args):
+            return BashInvocationResult(
+                "cleanup uncertain",
+                status="cleanup_uncertain",
+                cleanup_confirmed=False,
+                success=False,
+            )
+
+    adapted = adapt_tools([StructuredAtomicTool()])[0]
+    result = await ToolExecutionRuntime().execute(
+        adapted, ToolCall("structured-1", "structured", {})
+    )
+
+    assert result.status == "cleanup_uncertain"
+    assert result.cleanup_confirmed is False
+    assert result.cleanup_uncertain is True

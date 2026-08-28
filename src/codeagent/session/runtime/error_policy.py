@@ -2,7 +2,79 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from codeagent.core.loop import RecursionLimitError
+from codeagent.session.runtime.state import RunPhase, RuntimeFailure
+
+
+def classify_error(
+    exc: BaseException,
+    *,
+    phase: RunPhase | str,
+    side_effect_state: str = "none",
+    cleanup_uncertain: bool = False,
+    operation_id: str | None = None,
+) -> RuntimeFailure:
+    """Map an exception to a stable, machine-readable runtime failure."""
+    phase_value = phase.value if isinstance(phase, RunPhase) else str(phase)
+    code = "runtime_error"
+    if isinstance(exc, RecursionLimitError):
+        code = "recursion_limit"
+    elif phase_value == "tool_running":
+        code = "tool_error"
+    elif phase_value == "awaiting_confirmation":
+        code = "confirmation_error"
+    elif phase_value == "persistence":
+        code = "persistence_error"
+    elif phase_value == "compaction":
+        code = "compaction_failed"
+    else:
+        try:
+            import httpx
+        except ImportError:  # pragma: no cover - httpx is a project dependency
+            httpx = None
+        if httpx is not None and isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if status in (401, 403):
+                code = "model_auth"
+            elif status == 429:
+                code = "model_rate_limit"
+            elif status == 404:
+                code = "model_protocol"
+            else:
+                code = "model_network"
+        elif httpx is not None and isinstance(exc, httpx.TimeoutException):
+            code = "model_timeout" if phase_value == RunPhase.MODEL_WAIT.value else "runtime_timeout"
+        elif httpx is not None and isinstance(exc, httpx.ConnectError):
+            code = "model_network"
+        elif isinstance(exc, asyncio.CancelledError):
+            code = "cancelled"
+        elif phase_value == RunPhase.MODEL_WAIT.value:
+            code = "model_error"
+
+    retryable = (
+        code
+        in {
+            "model_auth",
+            "model_network",
+            "model_timeout",
+            "model_rate_limit",
+            "model_error",
+        }
+        and side_effect_state == "none"
+        and not cleanup_uncertain
+    )
+    return RuntimeFailure(
+        code=code,
+        message=friendly_error(exc) if isinstance(exc, Exception) else str(exc),
+        phase=phase_value,
+        retryable=retryable,
+        side_effect_state=side_effect_state,
+        cleanup_uncertain=cleanup_uncertain,
+        operation_id=operation_id,
+        cause_type=type(exc).__name__,
+    )
 
 
 def friendly_error(exc: Exception) -> str:

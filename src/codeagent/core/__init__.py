@@ -8,14 +8,25 @@ from codeagent.core.context import AgentContext
 from codeagent.core.agent import Agent
 from codeagent.core.errors import AgentContinueError, AgentRuntimeError
 from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.execution import ToolExecutionRuntime, ToolOperation
+from codeagent.core.execution import (
+    CleanupResult,
+    OperationRegistry,
+    ToolExecutionRuntime,
+    ToolOperation,
+)
 from codeagent.core.loop import (
     DEFAULT_RECURSION_LIMIT,
     RecursionLimitError,
     run_agent_loop,
     run_agent_loop_continue,
 )
-from codeagent.core.messages import Message, ToolCall, ToolExecutionStatus, ToolResult
+from codeagent.core.messages import (
+    CleanupStatus,
+    Message,
+    ToolCall,
+    ToolExecutionStatus,
+    ToolResult,
+)
 from codeagent.core.ports import (
     AgentLoopConfig,
     AgentTool,
@@ -32,12 +43,15 @@ __all__ = [
     "AgentContinueError",
     "AgentLoopConfig",
     "AgentRuntimeError",
+    "CleanupStatus",
+    "CleanupResult",
     "AgentTool",
     "DEFAULT_RECURSION_LIMIT",
     "EventType",
     "Message",
     "ModelPort",
     "ModelResponse",
+    "OperationRegistry",
     "RecursionLimitError",
     "run_agent_loop",
     "run_agent_loop_continue",

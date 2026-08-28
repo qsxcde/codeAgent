@@ -28,6 +28,7 @@ from codeagent.app.composition.runtime_factory import (
     _LazySummarizer,
     _RUNTIMES_BY_CONFIG,
     close_runtime_for_config,
+    close_runtime_for_config_async,
     create_agent_config,
     create_agent_runtime,
     runtime_for_config,
@@ -58,6 +59,7 @@ __all__ = [
     "create_tui_app",
     "runtime_for_config",
     "close_runtime_for_config",
+    "close_runtime_for_config_async",
     "agents_sources",
     "skills_view",
 ]

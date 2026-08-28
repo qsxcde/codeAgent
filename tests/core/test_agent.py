@@ -101,6 +101,22 @@ async def test_agent_prompt_updates_context_and_notifies_subscribers() -> None:
     assert events[-1].type == EventType.AGENT_END
 
 
+async def test_agent_events_carry_the_configured_run_id() -> None:
+    agent = Agent(
+        AgentContext(),
+        AgentLoopConfig(model=_Model(["hello"])),
+        run_id="run-1",
+    )
+    events = []
+    agent.subscribe(events.append)
+
+    await agent.prompt("hi")
+
+    assert events
+    assert all(event.run_id == "run-1" for event in events)
+    assert all(event.metadata["run_id"] == "run-1" for event in events)
+
+
 async def test_agent_continue_rejects_assistant_tail() -> None:
     context = AgentContext(messages=[Message(role="assistant", content="done")])
     agent = Agent(context, AgentLoopConfig(model=_Model(["retry"])))
@@ -177,6 +193,30 @@ async def test_agent_abort_cancels_run_without_committing_partial_messages() -> 
     await (scenario())
 
 
+async def test_agent_discards_steer_messages_when_run_is_cancelled() -> None:
+    async def scenario() -> None:
+        model = _GatedModel(["first", "second"])
+        agent = Agent(AgentContext(), AgentLoopConfig(model=model))
+        running = asyncio.create_task(agent.prompt("hi"))
+        await model.started.wait()
+        agent.steer("stale after cancellation")
+        assert agent.abort() is True
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+        assert agent._config.steer_queue == []
+        model.release.set()
+        await agent.prompt("next")
+
+        assert all(
+            message.content != "stale after cancellation"
+            for message in agent.context.messages
+        )
+
+
+    await (scenario())
+
+
 async def test_agent_steer_not_consumed_by_a_later_independent_run() -> None:
     async def scenario() -> None:
         model = _GatedModel(["first", "second"])
@@ -189,5 +229,29 @@ async def test_agent_steer_not_consumed_by_a_later_independent_run() -> None:
         await agent.prompt("next")
 
         assert all(message.content != "too late" for message in agent.context.messages)
+
+    await (scenario())
+
+
+async def test_cancelled_follow_up_is_removed_without_starting_a_new_turn() -> None:
+    async def scenario() -> None:
+        model = _GatedModel(["first", "should not run"])
+        agent = Agent(AgentContext(), AgentLoopConfig(model=model))
+        running = asyncio.create_task(agent.prompt("hi"))
+        await model.started.wait()
+        follow_up = asyncio.create_task(agent.follow_up("cancelled follow-up"))
+        await asyncio.sleep(0)
+        follow_up.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await follow_up
+
+        model.release.set()
+        await running
+
+        assert len(model.calls) == 1
+        assert all(
+            message.content != "cancelled follow-up"
+            for message in agent.context.messages
+        )
 
     await (scenario())

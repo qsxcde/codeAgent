@@ -32,8 +32,9 @@ from codeagent.session.compaction import (
 )
 from codeagent.session.session_persistence import SessionPersistence
 from codeagent.session.runtime.controller import SessionRuntime
-from codeagent.session.runtime.error_policy import friendly_error
+from codeagent.session.runtime.error_policy import classify_error, friendly_error
 from codeagent.session.persistence.models import CompactionEntry, UsageStats
+from codeagent.session.runtime.state import CommitStatus, RunOutcome, RunPhase
 
 #: 摘要注入消息的前缀(模型识别"历史摘要";Pi COMPACTION_SUMMARY_PREFIX 对应物)。
 SUMMARY_PREFIX = "以下为会话历史摘要(此前内容已被压缩,无需再次执行其中操作):\n"
@@ -57,6 +58,7 @@ class AgentSession:
         session_id: str | None = None,
         recursion_limit: int = DEFAULT_RECURSION_LIMIT,
         tool_timeout: float | None = None,
+        confirmation_timeout: float | None = None,
         previous_session_id: str | None = None,
         summarizer: Any | None = None,
         context_window: int = DEFAULT_CONTEXT_WINDOW,
@@ -83,6 +85,7 @@ class AgentSession:
         #: Optional Memory/context extension; it only changes model-visible data.
         self._transform_context = transform_context
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         #: 切点预算(软目标;测试可注入小值)。
         self._compact_budget = compact_budget
         #: 最近一次 usage.input_tokens(本轮请求总输入 = 当前上下文占用)。
@@ -93,7 +96,12 @@ class AgentSession:
             defer_persistence=defer_persistence,
             persistence_options=persistence_options,
         )
-        self._runtime = SessionRuntime(self._emit, self._on_run_event)
+        self._runtime = SessionRuntime(
+            self._emit,
+            self._on_run_event,
+            session_id=self._session_id,
+            confirmation_timeout=confirmation_timeout,
+        )
         restored = self._persistence.load()
         self._history = restored.history
         self._summary: str | None = restored.summary
@@ -164,6 +172,11 @@ class AgentSession:
         failure = self._runtime.last_failure
         return dict(failure) if failure is not None else None
 
+    @property
+    def last_outcome(self) -> RunOutcome | None:
+        """Structured result of the most recently finalized run."""
+        return self._runtime.last_outcome
+
     async def retry(self) -> None:
         """仅重试确认没有工具副作用的失败轮次。"""
         failure = self._runtime.last_failure
@@ -190,12 +203,24 @@ class AgentSession:
         """
         self._runtime.abort()
 
+    async def wait_for_idle(self, timeout: float | None = None) -> bool:
+        """Wait until the current run has completed cancellation and cleanup."""
+        return await self._runtime.wait_for_idle(timeout)
+
+    async def cancel_and_wait(self, timeout: float | None = None) -> bool:
+        """Request cancellation and wait for the runtime to return to idle."""
+        return await self._runtime.cancel_and_wait(timeout)
+
     async def close(self) -> None:
         """Stop the current run and release composition-root resources."""
-        if self._closed:
-            return
-        self._closed = True
-        self.abort()
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close_resources())
+        await asyncio.shield(self._close_task)
+
+    async def _close_resources(self) -> None:
+        """Run one shared session close sequence for concurrent callers."""
+        await self.cancel_and_wait()
         if self._runtime_closer is not None:
             result = self._runtime_closer()
             if hasattr(result, "__await__"):
@@ -362,6 +387,7 @@ class AgentSession:
         if self._previous_session_id:
             # 分叉会话来源标记(session-fork):首轮事件携带父会话 id。
             metadata["previous_session_id"] = self._previous_session_id
+        metadata.setdefault("phase", self._runtime.phase.value)
         self._emit(AgentEvent(EventType.SESSION_STARTED, payload=text, metadata=metadata), run_id)
         history_for_turn = list(self._history)
         if self._summary is not None and self._summary_entry_id:
@@ -376,95 +402,234 @@ class AgentSession:
                 ),
             )
         before_ids = {m.id for m in self._history}
+        outcome: RunOutcome | None = None
         try:
-            new_messages = await self._runtime.execute(
-                self._config,
-                text,
-                history=history_for_turn,
-                recursion_limit=(
-                    recursion_limit if recursion_limit is not None else self._recursion_limit
-                ),
-                tool_timeout=self._tool_timeout,
-                policy=self._policy if policy is None else policy,
-                transform_context=self._transform_context,
+            try:
+                new_messages = await self._runtime.execute(
+                    self._config,
+                    text,
+                    history=history_for_turn,
+                    recursion_limit=(
+                        recursion_limit if recursion_limit is not None else self._recursion_limit
+                    ),
+                    tool_timeout=self._tool_timeout,
+                    policy=self._policy if policy is None else policy,
+                    transform_context=self._transform_context,
+                )
+            except asyncio.CancelledError:
+                self._rollback(before_ids)
+                self._emit(
+                    AgentEvent(
+                        EventType.RUN_CANCELLED,
+                        metadata={
+                            "phase": RunPhase.CANCELLED.value,
+                            "side_effect_state": self._runtime.side_effect_state,
+                            "cleanup_uncertain": self._runtime.cleanup_uncertain,
+                            "cleanup_status": self._runtime.cleanup_status,
+                        },
+                    ),
+                    run_id,
+                )
+                outcome = RunOutcome(
+                    run_id=run_id,
+                    phase=RunPhase.CANCELLED,
+                    commit_status=self._rollback_status(),
+                )
+                raise
+            except Exception as exc:  # 图级异常:回滚 + 错误事件
+                self._rollback(before_ids)
+                failure = classify_error(
+                    exc,
+                    phase=self._runtime.state.previous_phase or self._runtime.phase,
+                    side_effect_state=self._runtime.side_effect_state,
+                    cleanup_uncertain=self._runtime.cleanup_uncertain,
+                )
+                self._runtime.set_failure(failure)
+                self._runtime.last_failure = {
+                    **failure.as_metadata(),
+                    "prompt": text,
+                }
+                self._emit(
+                    AgentEvent(
+                        EventType.ERROR,
+                        payload=failure.message,
+                        metadata=failure.as_metadata(),
+                    ),
+                    run_id,
+                )
+                outcome = RunOutcome(
+                    run_id=run_id,
+                    phase=RunPhase.FAILED,
+                    failure=failure,
+                    commit_status=self._rollback_status(),
+                )
+                return
+
+            self._runtime.begin_finalization()
+            # 成功路径:过滤虚拟摘要消息,提交前保持 session 历史不变。
+            kept_history = [
+                *history_for_turn,
+                *new_messages,
+            ]
+            kept_history = [m for m in kept_history if not m.id.startswith(SUMMARY_ID_PREFIX)]
+            self._link_persistence_parents(new_messages)
+            if self._summary_entry_id:
+                # 压缩后首条新 user 消息的父级接回压缩记录(设计决策 4)。
+                for message in kept_history:
+                    if message.id not in before_ids and message.role == "user":
+                        message.parent_id = self._summary_entry_id
+                        break
+            new_messages = [message for message in kept_history if message.id not in before_ids]
+            try:
+                self._persistence.commit_turn(
+                    new_messages,
+                    self._runtime.turn_usage,
+                    context_tokens=self._last_input_tokens,
+                )
+                self._history = kept_history
+            except asyncio.CancelledError:
+                # commit_turn 当前为同步端口;取消主要来自运行收尾阶段。
+                self._rollback(before_ids)
+                self._emit(
+                    AgentEvent(
+                        EventType.RUN_CANCELLED,
+                        metadata={
+                            "phase": RunPhase.CANCELLED.value,
+                            "side_effect_state": self._runtime.side_effect_state,
+                            "cleanup_uncertain": self._runtime.cleanup_uncertain,
+                            "cleanup_status": self._runtime.cleanup_status,
+                        },
+                    ),
+                    run_id,
+                )
+                outcome = RunOutcome(
+                    run_id=run_id,
+                    phase=RunPhase.CANCELLED,
+                    commit_status=self._rollback_status(),
+                )
+                raise
+            except Exception as exc:
+                # A commit failure is a session failure, not an uncaught
+                # post-run exception. Keep already committed history intact.
+                failure = classify_error(
+                    exc,
+                    phase="persistence",
+                    side_effect_state=self._runtime.side_effect_state,
+                    cleanup_uncertain=self._runtime.cleanup_uncertain,
+                )
+                self._runtime.set_failure(failure)
+                self._runtime.last_failure = {
+                    **failure.as_metadata(),
+                    "prompt": text,
+                }
+                self._emit(
+                    AgentEvent(
+                        EventType.ERROR,
+                        payload=failure.message,
+                        metadata=failure.as_metadata(),
+                    ),
+                    run_id,
+                )
+                outcome = RunOutcome(
+                    run_id=run_id,
+                    phase=RunPhase.FAILED,
+                    failure=failure,
+                    commit_status=CommitStatus.PERSISTENCE_FAILED,
+                )
+                return
+            try:
+                # 阈值自动压缩(同步,turn_end 后;不阻塞本轮收尾)。
+                if self._should_auto_compact():
+                    await self.compact()
+            except asyncio.CancelledError:
+                # The turn was already committed before maintenance began.
+                # Keep that durable history; cancellation only stops the
+                # optional compaction stage and must not duplicate usage on a
+                # later retry.
+                self._emit(
+                    AgentEvent(
+                        EventType.RUN_CANCELLED,
+                        metadata={
+                            "phase": RunPhase.CANCELLED.value,
+                            "side_effect_state": self._runtime.side_effect_state,
+                            "cleanup_uncertain": self._runtime.cleanup_uncertain,
+                            "cleanup_status": self._runtime.cleanup_status,
+                        },
+                    ),
+                    run_id,
+                )
+                outcome = RunOutcome(
+                    run_id=run_id,
+                    phase=RunPhase.CANCELLED,
+                    commit_status=CommitStatus.COMMITTED,
+                )
+                raise
+            except Exception as exc:
+                failure = classify_error(
+                    exc,
+                    phase="compaction",
+                    side_effect_state=self._runtime.side_effect_state,
+                    cleanup_uncertain=self._runtime.cleanup_uncertain,
+                )
+                self._runtime.set_failure(failure)
+                self._runtime.last_failure = {
+                    **failure.as_metadata(),
+                    "prompt": text,
+                }
+                self._emit(
+                    AgentEvent(
+                        EventType.ERROR,
+                        payload=failure.message,
+                        metadata=failure.as_metadata(),
+                    ),
+                    run_id,
+                )
+                outcome = RunOutcome(
+                    run_id=run_id,
+                    phase=RunPhase.FAILED,
+                    failure=failure,
+                    commit_status=CommitStatus.COMPACTION_FAILED,
+                )
+                return
+            outcome = RunOutcome(
+                run_id=run_id,
+                phase=RunPhase.COMPLETED,
+                commit_status=CommitStatus.COMMITTED,
             )
-        except asyncio.CancelledError:
-            self._rollback(before_ids)
-            self._emit(
-                AgentEvent(
-                    EventType.RUN_CANCELLED,
-                    metadata={
-                        "side_effect_state": self._runtime.side_effect_state,
-                        "cleanup_uncertain": self._runtime.cleanup_uncertain,
-                    },
-                ),
-                run_id,
-            )
-            raise
-        except Exception as exc:  # 图级异常:回滚 + 错误事件
-            self._rollback(before_ids)
-            retryable = (
-                self._runtime.side_effect_state == "none"
-                and not self._runtime.cleanup_uncertain
-            )
-            self._runtime.last_failure = {
-                "error": self._friendly_error(exc),
-                "retryable": retryable,
-                "side_effect_state": self._runtime.side_effect_state,
-                "cleanup_uncertain": self._runtime.cleanup_uncertain,
-                "error_code": type(exc).__name__.lower(),
-                "prompt": text,
-            }
-            self._emit(
-                AgentEvent(
-                    EventType.ERROR,
-                    payload=self._friendly_error(exc),
-                    metadata={
-                        "retryable": retryable,
-                        "side_effect_state": self._runtime.side_effect_state,
-                        "cleanup_uncertain": self._runtime.cleanup_uncertain,
-                        "error_code": type(exc).__name__.lower(),
-                    },
-                ),
-                run_id,
-            )
-            return
         finally:
-            self._emit(
-                AgentEvent(
-                    EventType.TURN_END,
-                    metadata={
-                        "terminal_phase": "error"
-                        if self._runtime.last_failure
-                        else "idle",
-                    },
-                ),
-                run_id,
-            )
-            self._runtime.finish_run()
-        # 成功路径:过滤虚拟摘要消息,更新历史并持久化本轮新增消息
-        kept_history = [
-            *history_for_turn,
-            *new_messages,
-        ]
-        kept_history = [m for m in kept_history if not m.id.startswith(SUMMARY_ID_PREFIX)]
-        self._link_persistence_parents(new_messages)
-        if self._summary_entry_id:
-            # 压缩后首条新 user 消息的父级接回压缩记录(设计决策 4)。
-            for message in kept_history:
-                if message.id not in before_ids and message.role == "user":
-                    message.parent_id = self._summary_entry_id
-                    break
-        self._history = kept_history
-        new_messages = [message for message in kept_history if message.id not in before_ids]
-        self._persistence.commit_turn(
-            new_messages,
-            self._runtime.turn_usage,
-            context_tokens=self._last_input_tokens,
-        )
-        # 阈值自动压缩(同步,turn_end 后;不阻塞本轮收尾)。
-        if self._should_auto_compact():
-            await self.compact()
+            if outcome is None:
+                # Covers an unexpected BaseException after execution started;
+                # never leave candidate messages in the live session.
+                self._rollback(before_ids)
+                outcome = RunOutcome(
+                    run_id=run_id,
+                    phase=RunPhase.FAILED,
+                    commit_status=CommitStatus.ROLLED_BACK,
+                )
+            self._runtime.finish_run(outcome)
+            if not self._runtime.state.terminal_emitted:
+                self._runtime.state.terminal_emitted = True
+                failure = outcome.failure or self._runtime.last_failure
+                self._emit(
+                    AgentEvent(
+                        EventType.TURN_END,
+                        metadata={
+                            "terminal_phase": "error"
+                            if outcome.phase is RunPhase.FAILED
+                            else "idle",
+                            "phase": outcome.phase.value,
+                            "run_outcome": outcome.phase.value,
+                            "commit_status": outcome.commit_status.value,
+                            "side_effect_state": self._runtime.side_effect_state,
+                            "cleanup_status": self._runtime.cleanup_status,
+                            "cleanup_uncertain": self._runtime.cleanup_uncertain,
+                            "error_code": failure.get("error_code")
+                            if isinstance(failure, dict)
+                            else failure.code if failure is not None else None,
+                        },
+                    ),
+                    run_id,
+                )
 
     def _link_persistence_parents(self, messages: list[Message]) -> None:
         """在 session 适配边界补齐 JSONL 树关系，不污染 core Agent 消息。"""
@@ -484,6 +649,8 @@ class AgentSession:
         metadata.setdefault("session_id", self._session_id)
         if run_id is not None:
             metadata.setdefault("run_id", run_id)
+            if "sequence" not in metadata:
+                metadata["sequence"] = self._runtime.state.next_sequence()
         self._bus.emit(
             replace(
                 event,
@@ -505,6 +672,7 @@ class AgentSession:
                     if event.cleanup_uncertain is not None
                     else metadata.get("cleanup_uncertain")
                 ),
+                cleanup_status=event.cleanup_status or metadata.get("cleanup_status"),
                 side_effect_state=event.side_effect_state or metadata.get("side_effect_state"),
             )
         )
@@ -549,6 +717,14 @@ class AgentSession:
     def _rollback(self, before_ids: set[str]) -> None:
         """内存回滚:本轮新增消息从历史移除(store 未写入,无需清理)。"""
         self._history = [m for m in self._history if m.id in before_ids]
+
+    def _rollback_status(self) -> CommitStatus:
+        """Classify a non-committed run with any unresolved side effects."""
+        return (
+            CommitStatus.UNCERTAIN
+            if self._runtime.cleanup_uncertain
+            else CommitStatus.ROLLED_BACK
+        )
 
     @staticmethod
     def _friendly_error(exc: Exception) -> str:

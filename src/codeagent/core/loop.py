@@ -21,6 +21,7 @@ from codeagent.core.events import AgentEvent, EventType
 from codeagent.core.context import AgentContext
 from codeagent.core.errors import AgentContinueError, AgentRuntimeError
 from codeagent.core.messages import (
+    CleanupStatus,
     Message,
     ToolCall,
     ToolExecutionStatus,
@@ -219,6 +220,9 @@ async def _run_agent_loop(
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
 ) -> list[Message]:
     emit = emit or (lambda _event: None)
+    reset_cleanup = getattr(config.tool_runtime, "reset_cleanup_diagnostics", None)
+    if callable(reset_cleanup):
+        reset_cleanup()
     working = context.copy()
     new_messages: list[Message] = []
     if prompt is not None:
@@ -277,6 +281,9 @@ async def _run_agent_loop(
                                 "status": result.status,
                                 "error": result.error,
                                 "operation_id": result.operation_id,
+                                "cleanup_status": result.cleanup_status,
+                                "cleanup_uncertain": result.cleanup_uncertain,
+                                "cleanup_error": result.cleanup_error,
                             },
                         )
                     )
@@ -313,7 +320,17 @@ async def _run_agent_loop(
         else:
             raise RecursionLimitError()
     except asyncio.CancelledError:
-        emit(AgentEvent(EventType.ABORTED))
+        metadata: dict[str, Any] = {}
+        cleanup_status = getattr(config.tool_runtime, "cleanup_status", None)
+        if cleanup_status and cleanup_status != CleanupStatus.NOT_REQUIRED:
+            metadata["cleanup_status"] = cleanup_status
+            metadata["cleanup_uncertain"] = bool(
+                getattr(config.tool_runtime, "cleanup_uncertain", False)
+            )
+            cleanup_error = getattr(config.tool_runtime, "cleanup_error", None)
+            if cleanup_error:
+                metadata["cleanup_error"] = cleanup_error
+        emit(AgentEvent(EventType.ABORTED, metadata=metadata))
         raise
     except Exception as exc:
         emit(AgentEvent(EventType.ERROR, payload=str(exc), metadata={"error_type": type(exc).__name__}))

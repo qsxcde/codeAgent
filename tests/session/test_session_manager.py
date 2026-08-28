@@ -223,6 +223,80 @@ async def test_single_active_run_halted_on_switch():
     assert a.history == []  # 取消回滚
 
 
+async def test_manager_close_waits_for_session_run_to_finish():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class SlowModel(FakeClient):
+        async def stream(self, messages, tools=None):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+            if False:
+                yield None
+
+    manager = _manager(SlowModel(response="x"))
+    session = manager.create()
+    task = asyncio.create_task(session.run("跑"))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    await manager.close()
+
+    assert cancelled.is_set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert session._runtime.phase.value == "idle"
+
+
+async def test_async_switch_waits_for_current_run_cleanup():
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class SlowModel(FakeClient):
+        async def stream(self, messages, tools=None):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+            if False:
+                yield None
+
+    manager = _manager(SlowModel(response="x"), store=MemoryStore())
+    current = manager.create()
+    task = asyncio.create_task(current.run("跑"))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    target = await manager.create_async()
+
+    assert cancelled.is_set()
+    assert manager.current is target
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_concurrent_manager_close_waits_for_one_shared_close():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def close_runtime() -> None:
+        started.set()
+        await release.wait()
+
+    manager = _manager()
+    manager._runtime_closer = close_runtime
+    first = asyncio.create_task(manager.close())
+    await started.wait()
+    second = asyncio.create_task(manager.close())
+    await asyncio.sleep(0)
+
+    assert not second.done()
+    release.set()
+    await asyncio.gather(first, second)
+
+
 # -- session-fork change:会话分叉 --------------------------------------------
 
 

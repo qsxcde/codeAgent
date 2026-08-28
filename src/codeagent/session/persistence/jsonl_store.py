@@ -276,6 +276,65 @@ class JsonFileStore:
         record["timestamp"] = _now()
         self._append(session_id, record)
 
+    def commit_turn(
+        self,
+        session_id: str,
+        messages: list[Message],
+        usage: UsageStats,
+        *,
+        context_tokens: int | None,
+    ) -> None:
+        """Append one turn and usage with a recoverable file boundary.
+
+        JSONL remains append-only for successful writes.  During a failed
+        batch we truncate back to the original byte offset and restore the
+        derived index, so a partial message/usage pair is never observable
+        through the store API.
+        """
+        path = self._path(session_id)
+        if not path.exists():
+            raise ValueError(f"会话不存在: {session_id}")
+        if not messages:
+            return
+        index_path = self._index_path(path)
+        with _lock_for(path):
+            # The snapshot, complete append batch, and rollback share one
+            # lock. Otherwise a writer can append between the failed batch and
+            # recovery and be erased by our failure recovery.
+            original = path.read_bytes()
+            original_index = index_path.read_bytes() if index_path.exists() else None
+            try:
+                for message in messages:
+                    self.append_message(session_id, message)
+                if any(
+                    (
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        usage.reasoning_tokens,
+                        usage.cached_tokens,
+                    )
+                ):
+                    self.append_usage(
+                        session_id,
+                        {
+                            "input_tokens": usage.input_tokens,
+                            "output_tokens": usage.output_tokens,
+                            "reasoning_tokens": usage.reasoning_tokens,
+                            "cached_tokens": usage.cached_tokens,
+                        },
+                    )
+                    if context_tokens is not None:
+                        self.set_meta(session_id, "last_context_tokens", context_tokens)
+            except BaseException:
+                path.write_bytes(original)
+                self._chmod_private(path)
+                if original_index is None:
+                    self._invalidate_index(path)
+                else:
+                    index_path.write_bytes(original_index)
+                    self._chmod_private(index_path)
+                raise
+
     def append_compaction(self, session_id: str, entry: CompactionEntry) -> str:
         """追加压缩记录(session-compaction):entry 生成 id / parentId /
         firstKeptEntryId 语义落地,返回 entry id(供新消息 parent 链接回)。"""

@@ -41,9 +41,18 @@ class SessionCommitter:
         if not messages:
             return
         self._ensure_persisted()
+        native_commit = getattr(self._store, "commit_turn", None)
+        if callable(native_commit):
+            native_commit(
+                self._session_id,
+                messages,
+                usage,
+                context_tokens=context_tokens,
+            )
+            return
         for message in messages:
             self._store.append_message(self._session_id, message)
-        if usage.input_tokens or usage.output_tokens:
+        if _has_usage(usage):
             self._store.append_usage(
                 self._session_id,
                 {
@@ -59,6 +68,17 @@ class SessionCommitter:
                     "last_context_tokens",
                     context_tokens,
                 )
+
+
+def _has_usage(usage: UsageStats) -> bool:
+    return any(
+        (
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.reasoning_tokens,
+            usage.cached_tokens,
+        )
+    )
 
 
 __all__ = ["SessionCommitter"]

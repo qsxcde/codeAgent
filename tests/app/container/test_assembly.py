@@ -92,6 +92,44 @@ def test_create_tui_app_injects_rebuild_config():
     assert app._manager._config is not None
 
 
+async def test_tui_async_rebuild_waits_for_old_runtime_close():
+    from unittest.mock import patch
+
+    class ClosableClient:
+        model_id = "fake-model"
+
+        def __init__(self):
+            self.closed = 0
+
+        async def aclose(self):
+            self.closed += 1
+
+    clients: list[ClosableClient] = []
+
+    def make_client(*args, **kwargs):
+        client = ClosableClient()
+        clients.append(client)
+        return client
+
+    with patch(
+        "codeagent.app.composition.model_selection.create_llm",
+        side_effect=make_client,
+    ):
+        from codeagent.app.container import create_tui_app
+
+        app = create_tui_app(provider="fake", backend=_StubBackend())
+        _ = app._manager.tools
+        assert len(clients) == 1
+
+        model_id, effort = await app._rebuild_ports_async(
+            "fake", "fake-model:high", None
+        )
+
+    assert (model_id, effort) == ("fake-model", "high")
+    assert clients[0].closed == 1
+    assert clients[1].closed == 0
+
+
 
 def test_rebuild_config_syncs_model_context_window():
     with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:

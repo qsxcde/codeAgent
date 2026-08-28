@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+import inspect
 from typing import Any, Callable
 
 from codeagent.core.execution import ToolExecutionRuntime
@@ -33,12 +34,17 @@ class AgentRuntime:
         self.mcp_tools = list(mcp_tools)
         self.tool_runtime = tool_runtime or config.tool_runtime
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     async def close(self) -> None:
         """关闭模型和 MCP 资源，重复调用安全。"""
-        if self._closed:
-            return
-        self._closed = True
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close_resources())
+        await asyncio.shield(self._close_task)
+
+    async def _close_resources(self) -> None:
+        """Run the single shared close sequence for all concurrent callers."""
         config_id = id(self.config)
         try:
             if self.tool_runtime is not None:
@@ -51,12 +57,8 @@ class AgentRuntime:
             except ImportError:  # pragma: no cover - optional SDK boundary
                 pass
             if close_mcp is not None:
-                close_mcp(self.mcp_tools)
-            close = getattr(self.model_client, "aclose", None)
-            if callable(close):
-                result = close()
-                if hasattr(result, "__await__"):
-                    await result
+                await asyncio.to_thread(close_mcp, self.mcp_tools)
+            await _close_resource(self.model_client)
         finally:
             # The registry is only an ownership index; a closed runtime must
             # not keep a provider/model graph alive or be reused by a switch.
@@ -75,6 +77,21 @@ class AgentRuntime:
 _RUNTIMES_BY_CONFIG: dict[int, AgentRuntime] = {}
 
 
+async def _close_resource(resource: Any) -> None:
+    """Await async close or run a blocking close without blocking the loop."""
+    close = getattr(resource, "aclose", None)
+    if callable(close):
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+        return
+    close = getattr(resource, "close", None)
+    if callable(close):
+        result = await asyncio.to_thread(close)
+        if inspect.isawaitable(result):
+            await result
+
+
 def runtime_for_config(config: Any) -> AgentRuntime | None:
     """解析配置对应的资源所有者，兼容 lazy config wrapper。"""
     real = getattr(config, "_real", None)
@@ -88,6 +105,13 @@ def close_runtime_for_config(config: Any) -> None:
     runtime = runtime_for_config(config)
     if runtime is not None:
         runtime.close_sync()
+
+
+async def close_runtime_for_config_async(config: Any) -> None:
+    """Await closure of the runtime owned by a configuration."""
+    runtime = runtime_for_config(config)
+    if runtime is not None:
+        await runtime.close()
 
 
 def policy_for_config(config: Any) -> Any:

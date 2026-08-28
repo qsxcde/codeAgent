@@ -37,6 +37,11 @@ class McpTool(AtomicTool):
     """把 MCP server 的工具适配为原子工具(同步桥)。"""
 
     Args: ClassVar[type[BaseModel]] = McpArgs
+    # The SDK call crosses a server thread/process boundary.  The client
+    # cancels the bridge, but cannot universally prove every server-side
+    # descendant stopped, so the core runtime reports cancellation as
+    # cleanup-uncertain instead of claiming preemption.
+    supports_cancellation = False
 
     def __init__(
         self,

@@ -51,6 +51,7 @@ class TuiApp(
         backend: TuiBackend,
         footer: FooterInfo | None = None,
         rebuild_ports: Any = None,
+        rebuild_ports_async: Any = None,
         candidates: dict[str, Any] | None = None,
         agents_sources: list[str] | None = None,
         skills: tuple[list[Skill], list[str]] | None = None,
@@ -79,6 +80,7 @@ class TuiApp(
         self._manager = manager
         self._backend = backend
         self._rebuild_ports = rebuild_ports
+        self._rebuild_ports_async = rebuild_ports_async
         self._candidates = candidates or {}
         self._agents_sources = agents_sources or []
         self._skills = list(skills[0]) if skills else []
@@ -108,6 +110,7 @@ class TuiApp(
         self._pending_confirmation: dict[str, Any] | None = None
         self._restore_task: asyncio.Task[None] | None = None
         self._conversation_task: asyncio.Task[None] | None = None
+        self._session_action_task: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._shutdown_started = False
@@ -212,7 +215,11 @@ class TuiApp(
 
         tasks = [
             task
-            for task in (self._restore_task, self._conversation_task)
+            for task in (
+                self._restore_task,
+                self._conversation_task,
+                self._session_action_task,
+            )
             if task is not None and not task.done()
         ]
         if self._task_supervisor is not None:
@@ -238,17 +245,15 @@ class TuiApp(
         if callable(manager_close):
             result = manager_close()
             if hasattr(result, "__await__"):
-                try:
-                    await asyncio.wait_for(result, timeout=1.0)
-                except asyncio.TimeoutError:
-                    pass
+                # The manager owns model/MCP/tool resources. Its async close
+                # is the authoritative wait boundary; proceeding after a
+                # timeout would allow the TUI to exit while work still holds
+                # those resources.
+                await result
         elif self._close_runtime is not None:
             result = self._close_runtime()
             if hasattr(result, "__await__"):
-                try:
-                    await asyncio.wait_for(result, timeout=1.0)
-                except asyncio.TimeoutError:
-                    pass
+                await result
 
         self._event_buffer.flush()
         width = self._transcript_width()

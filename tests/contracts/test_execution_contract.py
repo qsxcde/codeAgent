@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
+
+import pytest
 
 from codeagent.core.execution import ToolExecutionRuntime
 from codeagent.core.messages import ToolCall, ToolExecutionStatus, ToolResult
@@ -30,4 +33,144 @@ async def test_runtime_executes_agent_tool_protocol_and_preserves_operation_id()
     assert result.content == "hello"
     assert result.operation_id == "op-1"
     assert result.status == ToolExecutionStatus.OK
+    assert result.cleanup_status == "confirmed"
     assert tool.calls[0][0:2] == ("c1", {"text": "hello"})
+
+
+async def test_runtime_reports_failed_cleanup_without_claiming_confirmation() -> None:
+    started = asyncio.Event()
+
+    class FailingCleanupTool(_AgentTool):
+        async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def cleanup(self, operation_id):
+            raise RuntimeError("cleanup failed")
+
+    runtime = ToolExecutionRuntime()
+    task = asyncio.create_task(
+        runtime.execute(
+            FailingCleanupTool(),
+            ToolCall("c1", "echo", {}),
+            timeout=0.01,
+            operation_id="op-1",
+        )
+    )
+    await started.wait()
+
+    result = await task
+
+    assert result.status == ToolExecutionStatus.TIMED_OUT
+    assert result.cleanup_confirmed is False
+    assert result.cleanup_status == "failed"
+    assert result.cleanup_uncertain is True
+
+
+async def test_runtime_treats_false_cleanup_hook_result_as_failed_cleanup() -> None:
+    started = asyncio.Event()
+
+    class FalseCleanupTool(_AgentTool):
+        async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def cleanup(self, operation_id):
+            return False
+
+    runtime = ToolExecutionRuntime()
+    task = asyncio.create_task(
+        runtime.execute(
+            FalseCleanupTool(),
+            ToolCall("c1", "echo", {}),
+            timeout=0.01,
+            operation_id="op-1",
+        )
+    )
+    await started.wait()
+    result = await task
+
+    assert result.status == ToolExecutionStatus.TIMED_OUT
+    assert result.cleanup_confirmed is False
+    assert result.cleanup_status == "failed"
+    assert result.cleanup_uncertain is True
+
+
+async def test_runtime_marks_sync_thread_timeout_as_unsupported_cleanup() -> None:
+    started = asyncio.Event()
+
+    class BlockingSyncTool:
+        name = "sync"
+        Args = dict
+
+        def invoke(self, args):
+            started.set()
+            time.sleep(0.05)
+            return "done"
+
+    runtime = ToolExecutionRuntime()
+    result_task = asyncio.create_task(
+        runtime.execute(
+            BlockingSyncTool(),
+            ToolCall("c1", "sync", {}),
+            timeout=0.001,
+            operation_id="op-1",
+        )
+    )
+    await started.wait()
+
+    result = await result_task
+
+    assert result.status == ToolExecutionStatus.CLEANUP_UNCERTAIN
+    assert result.cleanup_confirmed is False
+    assert result.cleanup_status == "unsupported"
+    assert result.cleanup_uncertain is True
+
+
+async def test_cancel_all_waits_for_async_operation_cleanup_and_is_idempotent():
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    class CancellableTool(_AgentTool):
+        async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+    runtime = ToolExecutionRuntime()
+    task = asyncio.create_task(
+        runtime.execute(CancellableTool(), ToolCall("c1", "echo", {}), operation_id="op-1")
+    )
+    await started.wait()
+
+    await runtime.cancel_all()
+    await runtime.cancel_all()
+
+    assert cleaned.is_set()
+    assert runtime.active_operations == {}
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_runtime_honors_explicit_cleanup_status_from_tool_result():
+    class ReportedUncertainTool(_AgentTool):
+        async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
+            return ToolResult(
+                tool_call_id,
+                "后台状态未知",
+                name=self.name,
+                error=True,
+                status=ToolExecutionStatus.TIMED_OUT,
+                cleanup_status="unsupported",
+            )
+
+    result = await ToolExecutionRuntime().execute(
+        ReportedUncertainTool(), ToolCall("c1", "echo", {}), operation_id="op-1"
+    )
+
+    assert result.status == ToolExecutionStatus.TIMED_OUT
+    assert result.cleanup_confirmed is False
+    assert result.cleanup_status == "unsupported"
+    assert result.cleanup_uncertain is True

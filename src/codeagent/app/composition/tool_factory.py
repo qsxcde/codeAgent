@@ -19,6 +19,17 @@ class AgentToolAdapter:
         self.description = str(getattr(tool, "description", ""))
         self.parameters = ToolDefinition.from_tool(tool).parameters
 
+    @property
+    def supports_cancellation(self) -> bool:
+        """Expose whether the wrapped tool has a genuinely async path."""
+        declared = getattr(self._tool, "supports_cancellation", None)
+        if declared is not None:
+            return bool(declared)
+        return any(
+            callable(getattr(self._tool, name, None))
+            for name in ("ainvoke", "invoke_async")
+        )
+
     def __getattr__(self, name: str) -> Any:
         """Keep legacy lifecycle/diagnostic attributes visible to hosts."""
         return getattr(self._tool, name)
@@ -51,6 +62,25 @@ class AgentToolAdapter:
                 value = await value if inspect.isawaitable(value) else value
             else:
                 value = await asyncio.to_thread(self._tool.invoke, args)
+            if isinstance(value, ToolResult):
+                return value
+            if hasattr(value, "content"):
+                status = str(getattr(value, "status", "") or "")
+                return ToolResult(
+                    tool_call_id,
+                    str(getattr(value, "content", "")),
+                    error=bool(getattr(value, "error", False))
+                    or status not in {"", ToolExecutionStatus.OK, "completed"},
+                    name=self.name,
+                    status=status,
+                    cleanup_confirmed=getattr(value, "cleanup_confirmed", None),
+                    cleanup_status=getattr(value, "cleanup_status", ""),
+                    cleanup_error=getattr(value, "cleanup_error", None),
+                    exit_code=getattr(value, "exit_code", None),
+                    duration_ms=int(getattr(value, "duration_ms", 0) or 0),
+                    output_truncated=bool(getattr(value, "output_truncated", False)),
+                    semantic_success=getattr(value, "success", None),
+                )
             return ToolResult(
                 tool_call_id,
                 str(value),

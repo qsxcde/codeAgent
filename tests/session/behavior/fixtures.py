@@ -45,13 +45,24 @@ class _StubPolicy:
 
 
 def _session_with_policy(
-    model: FakeClient, policy=None, store=None, session_id: str | None = None
+    model: FakeClient,
+    policy=None,
+    store=None,
+    session_id: str | None = None,
+    confirmation_timeout: float | None = None,
 ) -> AgentSession:
     config = AgentLoopConfig(
         model=ChatModelPort(model),
         tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
     )
-    return AgentSession(config, EventBus(), store=store, session_id=session_id, policy=policy)
+    return AgentSession(
+        config,
+        EventBus(),
+        store=store,
+        session_id=session_id,
+        policy=policy,
+        confirmation_timeout=confirmation_timeout,
+    )
 
 
 def _ask_model() -> FakeClient:

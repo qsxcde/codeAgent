@@ -19,6 +19,7 @@ def create_agent_session(
     model: str | None = None,
     recursion_limit: int | None = None,
     tool_timeout: float | None = None,
+    confirmation_timeout: float | None = None,
     approval_mode: str = "deny",
     summarizer: Any = None,
 ) -> Any:
@@ -41,6 +42,7 @@ def create_agent_session(
         session_id=session_id,
         recursion_limit=recursion_limit or 50,
         tool_timeout=tool_timeout,
+        confirmation_timeout=confirmation_timeout,
         summarizer=summarizer,
         context_window=_resolve_context_window(registry, cfg, provider, model),
         runtime_closer=runtime.close if runtime is not None else None,
@@ -58,6 +60,7 @@ def create_session_manager(
     model: str | None = None,
     recursion_limit: int | None = None,
     tool_timeout: float | None = None,
+    confirmation_timeout: float | None = None,
     approval_mode: str = "deny",
     summarizer: Any = None,
     context_window: int | None = None,
@@ -91,6 +94,7 @@ def create_session_manager(
         effort=effort,
         recursion_limit=recursion_limit or 50,
         tool_timeout=tool_timeout,
+        confirmation_timeout=confirmation_timeout,
         summarizer=summarizer,
         context_window=context_window or _resolve_context_window(
             registry, cfg, provider, model
