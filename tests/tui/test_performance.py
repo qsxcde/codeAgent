@@ -34,6 +34,7 @@ def test_benchmark_result_serializes_metrics_and_safe_metadata() -> None:
 
     payload = json.loads(result.to_json())
 
+    assert payload["schema_version"] == 1
     assert payload["scenario"] == "render-history"
     assert payload["metrics"]["model_render_ms"]["p50_ms"] == 1.0
     assert payload["counters"] == {"event_count": 4}
@@ -139,6 +140,7 @@ def test_run_benchmark_reports_render_metrics() -> None:
     assert "model_render_ms" in result.metrics
     assert result.counters["block_count"] == 3
     assert result.counters["peak_memory_bytes"] > 0
+    assert result.environment["os"]
 
 
 def test_benchmark_fixture_rendering_is_deterministic() -> None:

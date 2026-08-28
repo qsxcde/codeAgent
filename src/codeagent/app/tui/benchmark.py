@@ -118,6 +118,8 @@ def environment_metadata() -> dict[str, str]:
     """Return safe environment metadata without reading application data."""
     metadata = {
         "python": sys.version.split()[0],
+        "python_major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "os": platform.system(),
         "platform": platform.platform(),
     }
     try:

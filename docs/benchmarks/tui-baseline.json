@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "baseline_id": "linux-py312-tui-v1",
+  "commit": "58051b62ae0a799cf8d72274ca3f0ab57eff476b",
+  "environment": {
+    "os": "Linux",
+    "python_major_minor": "3.12",
+    "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "viewport": {
+      "width": 80,
+      "height": 24
+    }
+  },
+  "fixture": {
+    "history_blocks": 100,
+    "stream_chars": 10000,
+    "tool_output_bytes": 20000,
+    "iterations": 3
+  },
+  "scenarios": {
+    "history": {
+      "schema_version": 1,
+      "scenario": "history",
+      "parameters": {
+        "height": 24,
+        "history_blocks": 100,
+        "stream_chars": 10000,
+        "tool_output_bytes": 20000,
+        "width": 80
+      },
+      "iterations": 3,
+      "metrics": {
+        "backend_render_ms": {
+          "count": 3,
+          "maximum_ms": 0.001983,
+          "minimum_ms": 0.000902,
+          "p50_ms": 0.001663,
+          "p95_ms": 0.001983
+        },
+        "frame_total_ms": {
+          "count": 3,
+          "maximum_ms": 1.273666,
+          "minimum_ms": 0.784808,
+          "p50_ms": 0.80664,
+          "p95_ms": 1.273666
+        },
+        "model_render_ms": {
+          "count": 3,
+          "maximum_ms": 1.255999,
+          "minimum_ms": 0.776456,
+          "p50_ms": 0.796355,
+          "p95_ms": 1.255999
+        }
+      },
+      "counters": {
+        "peak_memory_bytes": 111339
+      },
+      "environment": {
+        "os": "Linux",
+        "python_major_minor": "3.12"
+      }
+    },
+    "restore": {
+      "schema_version": 1,
+      "scenario": "restore",
+      "parameters": {
+        "height": 24,
+        "history_blocks": 100,
+        "stream_chars": 10000,
+        "tool_output_bytes": 20000,
+        "width": 80
+      },
+      "iterations": 3,
+      "metrics": {
+        "backend_render_ms": {
+          "count": 3,
+          "maximum_ms": 0.001452,
+          "minimum_ms": 0.000861,
+          "p50_ms": 0.001221,
+          "p95_ms": 0.001452
+        },
+        "frame_total_ms": {
+          "count": 3,
+          "maximum_ms": 0.798149,
+          "minimum_ms": 0.646883,
+          "p50_ms": 0.657619,
+          "p95_ms": 0.798149
+        },
+        "model_render_ms": {
+          "count": 3,
+          "maximum_ms": 0.786381,
+          "minimum_ms": 0.639872,
+          "p50_ms": 0.649717,
+          "p95_ms": 0.786381
+        },
+        "restore_ms": {
+          "count": 3,
+          "maximum_ms": 0.119989,
+          "minimum_ms": 0.106048,
+          "p50_ms": 0.109954,
+          "p95_ms": 0.119989
+        }
+      },
+      "counters": {
+        "peak_memory_bytes": 99630
+      },
+      "environment": {
+        "os": "Linux",
+        "python_major_minor": "3.12"
+      }
+    },
+    "stream": {
+      "schema_version": 1,
+      "scenario": "stream",
+      "parameters": {
+        "height": 24,
+        "history_blocks": 100,
+        "stream_chars": 10000,
+        "tool_output_bytes": 20000,
+        "width": 80
+      },
+      "iterations": 3,
+      "metrics": {
+        "backend_render_ms": {
+          "count": 120,
+          "maximum_ms": 0.00701,
+          "minimum_ms": 0.000872,
+          "p50_ms": 0.004457,
+          "p95_ms": 0.005789
+        },
+        "event_apply_ms": {
+          "count": 120,
+          "maximum_ms": 0.083895,
+          "minimum_ms": 0.037915,
+          "p50_ms": 0.04721,
+          "p95_ms": 0.068222
+        },
+        "frame_total_ms": {
+          "count": 120,
+          "maximum_ms": 22.341818,
+          "minimum_ms": 1.236604,
+          "p50_ms": 10.997339,
+          "p95_ms": 19.571852
+        },
+        "markdown_render_ms": {
+          "count": 3,
+          "maximum_ms": 19.381133,
+          "minimum_ms": 19.151328,
+          "p50_ms": 19.298366,
+          "p95_ms": 19.381133
+        },
+        "model_render_ms": {
+          "count": 120,
+          "maximum_ms": 22.324732,
+          "minimum_ms": 1.229253,
+          "p50_ms": 10.97691,
+          "p95_ms": 19.559293
+        }
+      },
+      "counters": {
+        "peak_memory_bytes": 983658
+      },
+      "environment": {
+        "os": "Linux",
+        "python_major_minor": "3.12"
+      }
+    },
+    "tool-output": {
+      "schema_version": 1,
+      "scenario": "tool-output",
+      "parameters": {
+        "height": 24,
+        "history_blocks": 100,
+        "stream_chars": 10000,
+        "tool_output_bytes": 20000,
+        "width": 80
+      },
+      "iterations": 3,
+      "metrics": {
+        "backend_render_ms": {
+          "count": 3,
+          "maximum_ms": 0.001983,
+          "minimum_ms": 0.001002,
+          "p50_ms": 0.001883,
+          "p95_ms": 0.001983
+        },
+        "frame_total_ms": {
+          "count": 3,
+          "maximum_ms": 0.935663,
+          "minimum_ms": 0.780442,
+          "p50_ms": 0.826911,
+          "p95_ms": 0.935663
+        },
+        "model_render_ms": {
+          "count": 3,
+          "maximum_ms": 0.919008,
+          "minimum_ms": 0.771088,
+          "p50_ms": 0.814413,
+          "p95_ms": 0.919008
+        }
+      },
+      "counters": {
+        "peak_memory_bytes": 112917
+      },
+      "environment": {
+        "os": "Linux",
+        "python_major_minor": "3.12"
+      }
+    }
+  }
+}

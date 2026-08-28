@@ -4,11 +4,11 @@
 
 截至 `test-structure-coverage` 完成测试结构迁移后：
 
-- `uv run pytest -q`：**948 passed**（2026-08-28，Windows，111.34s）。测试数量变化来自测试拆分、边界契约补充和 `last_activity_at` 覆盖。
+- `uv run pytest -q`：**1000 passed**（2026-08-28，Windows，116.02s）。测试数量变化来自测试拆分、边界契约补充、`last_activity_at` 覆盖和发布/性能契约测试。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
-- 本轮 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；质量测试覆盖率为 78.90%。
-- package smoke 已产出 0.3.0 wheel/sdist；压缩包不包含 smoke 脚本 stdout，安装后的 CLI 成功与否仍以 GitHub Job 日志为准。
-- TUI 性能四场景均生成 JSON，但比较结果为 `no-baseline`；详见 [`docs/benchmarks/tui-ci-2026-08-28.md`](benchmarks/tui-ci-2026-08-28.md)。
+- 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 894 passed、覆盖率 79.05%，硬下限为 77.9%。
+- package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
+- TUI 性能四场景均生成 JSON；正式 Linux/Python 3.12 基线位于 [`docs/benchmarks/tui-baseline.json`](benchmarks/tui-baseline.json)，历史观测详见 [`docs/benchmarks/tui-ci-2026-08-28.md`](benchmarks/tui-ci-2026-08-28.md)。
 
 测试改造应保持行为基线不变。测试数量变化时，需要说明是新增覆盖、拆分迁移还是删除过期兼容测试。
 
@@ -39,11 +39,10 @@ uv run ruff check src tests scripts
 # 生成覆盖率报告（不设置高比例硬门槛）
 uv run pytest -m "unit or contract" -q --strict-markers --cov=codeagent --cov-report=term-missing
 
-# 构建后安装冒烟
-uv build --out-dir dist
-uv venv .ci-package-smoke
-uv pip install --python .ci-package-smoke/bin/python dist/*.whl
-.ci-package-smoke/bin/python scripts/package_smoke.py
+# 发布检查：构建、检查产物、干净环境安装并运行 fake provider
+uv run python scripts/release_check.py \
+  --dist-dir artifacts/dist \
+  --output artifacts/release-check.json
 ```
 
 测试必须离线运行，不依赖真实 API key、真实 Provider 或用户的 `~/.codeagent` 数据。
@@ -85,15 +84,15 @@ uv pip install --python .ci-package-smoke/bin/python dist/*.whl
 
 - `quality-fast`：Ruff、unit/contract、覆盖率报告、版本一致性、补丁格式和 OpenSpec 校验。
 - `test-matrix`：Ubuntu、Windows、macOS 上执行 integration/e2e/platform/compatibility，统一使用 fake provider；失败时保留 JUnit 和跳过原因。
-- `package-smoke`：构建 wheel，在干净虚拟环境安装后检查 CLI 和内建 resources 可用。
+- `package-smoke`：运行 release check，构建并检查 wheel/sdist，在干净虚拟环境安装后检查 CLI 和内建 resources 可用。
 - `performance`：运行离线 TUI 基准并上传 JSON；性能回归目前只告警，不阻断普通 PR。
 
-性能结果可用以下命令进行相对比较。没有基线时命令返回成功并明确标注 `no-baseline`：
+性能结果可用以下命令进行相对比较。正式基线包含四个场景；环境或输入参数不一致时会明确标注 `incomparable`：
 
 ```bash
 uv run python scripts/benchmark_tui.py --scenario stream --blocks 100 --stream-chars 10000 --iterations 3 --output artifacts/tui-benchmark.json
-uv run python scripts/compare_benchmark.py artifacts/tui-benchmark.json
-uv run python scripts/compare_benchmark.py artifacts/tui-benchmark.json baseline.json --max-regression 0.20
+uv run python scripts/compare_benchmark.py artifacts/tui-stream.json
+uv run python scripts/compare_benchmark.py artifacts/tui-stream.json docs/benchmarks/tui-baseline.json --max-regression 0.20
 ```
 
-当前 `quality-fast` 与平台矩阵之间有 25 个兼容性/平台边界测试重复执行；这不影响正确性，但需要后续决定保留边界保护还是调整 marker 分层。只有在至少一轮稳定 CI 数据并完成基线校准后，才评估是否增加 `--fail-on-regression` 或固定覆盖率下限。
+当前 `quality-fast` 与平台矩阵之间有 25 个兼容性/平台边界测试重复执行；这不影响正确性，但需要后续决定保留边界保护还是调整 marker 分层。覆盖率硬下限当前为 77.9%；性能仍使用 20% 相对回归告警，不启用 `--fail-on-regression`。

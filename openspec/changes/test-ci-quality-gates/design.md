@@ -43,6 +43,13 @@ package smoke job 在临时虚拟环境安装构建产物，验证 console scrip
 
 保存 TUI 渲染、恢复和内存指标的结构化结果；初期只对明显回归告警，待 runner 和样本稳定后再设置相对基线阈值。
 
+### 6. 阶段 0 阈值决策
+
+- 覆盖率以 2026-08-28 CI 的 78.90% 为观测基线，设置 77.9% 的保守硬下限，给测试收集和小范围重构保留 1 个百分点的波动空间。
+- 性能基线固定为 Ubuntu、Python 3.12、80x24、100 history blocks、10000 stream chars、20000 tool-output bytes 和 3 次迭代；正式基线存放于 `docs/benchmarks/tui-baseline.json`。
+- 性能比较覆盖 history、restore、stream、tool-output 四个场景，并比较 p50、p95 和 `peak_memory_bytes`；当前继续生成告警，不阻断普通 PR。
+- package smoke 是发布检查，构建、安装、资源或 fake provider CLI 任一失败都阻断对应 CI job。
+
 ## Risks / Trade-offs
 
 - [多平台 CI 成本增加] → 快速 job 保持单平台，完整矩阵只执行稳定的离线测试。

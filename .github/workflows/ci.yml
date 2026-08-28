@@ -50,6 +50,7 @@ jobs:
         run: >-
           uv run pytest -m "unit or contract" -q -ra --strict-markers
           --cov=codeagent
+          --cov-fail-under=77.9
           --cov-report=term-missing
           --cov-report=xml:artifacts/coverage.xml
           --cov-report=json:artifacts/coverage.json
@@ -164,25 +165,23 @@ jobs:
       - name: Install build dependencies
         run: uv sync --locked --group dev
 
-      - name: Build distributions
-        run: uv build --out-dir dist
+      - name: Create release artifact directory
+        run: mkdir -p artifacts
 
-      - name: Install wheel into clean virtual environment
-        run: |
-          uv venv .ci-package-smoke
-          uv pip install --python .ci-package-smoke/bin/python dist/*.whl
-
-      - name: Run installed package smoke test
+      - name: Run reproducible release check
         env:
           LLM_PROVIDER: fake
-        run: .ci-package-smoke/bin/python scripts/package_smoke.py
+        run: >-
+          uv run python scripts/release_check.py
+          --dist-dir artifacts/dist
+          --output artifacts/release-check.json
 
       - name: Upload package artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: package-smoke-artifacts
-          path: dist/
+          path: artifacts/
           if-no-files-found: ignore
 
   performance:
@@ -225,11 +224,18 @@ jobs:
 
       - name: Compare with baseline when available
         run: |
-          if [ -f docs/benchmarks/tui-baseline.json ]; then
-            uv run python scripts/compare_benchmark.py artifacts/tui-stream.json docs/benchmarks/tui-baseline.json > artifacts/tui-benchmark-comparison.json
-          else
-            uv run python scripts/compare_benchmark.py artifacts/tui-stream.json > artifacts/tui-benchmark-comparison.json
-          fi
+          for scenario in history stream tool-output restore; do
+            if [ -f docs/benchmarks/tui-baseline.json ]; then
+              uv run python scripts/compare_benchmark.py \
+                "artifacts/tui-${scenario}.json" \
+                docs/benchmarks/tui-baseline.json \
+                > "artifacts/tui-${scenario}-comparison.json"
+            else
+              uv run python scripts/compare_benchmark.py \
+                "artifacts/tui-${scenario}.json" \
+                > "artifacts/tui-${scenario}-comparison.json"
+            fi
+          done
 
       - name: Upload performance artifacts
         if: always()

@@ -71,6 +71,7 @@ class BenchmarkResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": 1,
             "scenario": self.scenario,
             "parameters": dict(self.parameters),
             "iterations": self.iterations,

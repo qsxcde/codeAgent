@@ -200,6 +200,6 @@ for call in msg.tool_calls:
 ## 9. 当前复核（2026-08-28）
 
 - v0.3.0 功能范围已完成验收：Skills、MCP、token 用量透明、会话树 UI 均已落地。
-- `uv run pytest -q`：**948 passed**（Windows）；`openspec validate --specs`：**12 passed**；`git diff --check` 通过。
+- `uv run pytest -q`：**1000 passed**（Windows）；本地质量集 894 passed、覆盖率 79.05%；`openspec validate --specs`：**12 passed**；`git diff --check` 通过。
 - 本轮 CI artifact 中 `quality-fast` 为 846 passed，Ubuntu/Windows/macOS 各 114 passed，质量测试覆盖率为 78.90%；package smoke 已生成 0.3.0 wheel/sdist。
-- TUI 性能 artifact 已生成四个场景，但比较状态为 `no-baseline`；覆盖率与性能硬阈值仍待稳定数据和正式 JSON 基线后评估。
+ - TUI 性能 artifact 已生成四个场景，并已固化 Linux/Python 3.12 正式 JSON 基线；覆盖率硬下限为 77.9%，性能暂保持非阻塞告警。

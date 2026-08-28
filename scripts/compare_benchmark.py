@@ -11,9 +11,39 @@ from typing import Any
 
 def _load(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or not isinstance(payload.get("metrics"), dict):
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid benchmark payload: {path}")
+    if not isinstance(payload.get("metrics"), dict) and not isinstance(payload.get("scenarios"), dict):
         raise ValueError(f"invalid benchmark payload: {path}")
     return payload
+
+
+def _baseline_for_scenario(current: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    scenarios = baseline.get("scenarios")
+    if scenarios is None:
+        return baseline
+    scenario = current.get("scenario")
+    selected = scenarios.get(scenario)
+    if not isinstance(selected, dict):
+        raise ValueError(f"baseline has no scenario: {scenario}")
+    return selected
+
+
+def _compatibility_reason(current: dict[str, Any], baseline: dict[str, Any]) -> str | None:
+    if current.get("schema_version", 1) != baseline.get("schema_version", 1):
+        return "schema_version differs"
+    if current.get("scenario") != baseline.get("scenario"):
+        return "scenario differs"
+    if current.get("parameters") != baseline.get("parameters"):
+        return "parameters differ"
+    current_env = current.get("environment", {})
+    baseline_env = baseline.get("environment", {})
+    for key in ("os", "python_major_minor"):
+        current_value = current_env.get(key)
+        baseline_value = baseline_env.get(key)
+        if current_value is not None and baseline_value is not None and current_value != baseline_value:
+            return f"environment.{key} differs"
+    return None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -54,6 +84,24 @@ def _comparison(current: dict[str, Any], baseline: dict[str, Any], limit: float)
                     "regression": relative_change > limit,
                 }
             )
+    current_counters = current.get("counters", {})
+    baseline_counters = baseline.get("counters", {})
+    for name in ("peak_memory_bytes",):
+        old = baseline_counters.get(name)
+        new = current_counters.get(name)
+        if not isinstance(old, (int, float)) or not isinstance(new, (int, float)) or old == 0:
+            continue
+        relative_change = (new - old) / old
+        changes.append(
+            {
+                "metric": name,
+                "statistic": "value",
+                "baseline": old,
+                "current": new,
+                "relative_change": round(relative_change, 6),
+                "regression": relative_change > limit,
+            }
+        )
     return changes
 
 
@@ -63,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.baseline is None:
         result = {
             "status": "no-baseline",
+            "scenario": current.get("scenario"),
             "warning": "no baseline supplied; report is informational",
             "current": current,
             "comparisons": [],
@@ -70,13 +119,37 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
-    baseline = _load(args.baseline)
+    baseline_document = _load(args.baseline)
+    try:
+        baseline = _baseline_for_scenario(current, baseline_document)
+    except ValueError as exc:
+        result = {
+            "status": "incomparable",
+            "scenario": current.get("scenario"),
+            "reason": str(exc),
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    reason = _compatibility_reason(current, baseline)
+    if reason is not None:
+        result = {
+            "status": "incomparable",
+            "scenario": current.get("scenario"),
+            "reason": reason,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
     comparisons = _comparison(current, baseline, args.max_regression)
     regressions = [item for item in comparisons if item["regression"]]
     result = {
         "status": "regression" if regressions else "passed",
+        "scenario": current.get("scenario"),
         "max_regression": args.max_regression,
-        "baseline": {"scenario": baseline.get("scenario"), "environment": baseline.get("environment")},
+        "baseline": {
+            "id": baseline_document.get("baseline_id"),
+            "scenario": baseline.get("scenario"),
+            "environment": baseline.get("environment"),
+        },
         "current": {"scenario": current.get("scenario"), "environment": current.get("environment")},
         "comparisons": comparisons,
         "regressions": regressions,

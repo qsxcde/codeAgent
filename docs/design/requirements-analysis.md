@@ -58,18 +58,18 @@
 | 安全确认环(FR-8.2 / NFR-S3) | 🔲 v0.2 | ✅ 已落地(`security-permissions`:ApprovalPolicy + tools/security.py 三档分类器,headless 缺省 fail closed) |
 | AGENTS.md 分层(F-16) | 🔲 v0.2 规划 | ✅ 已落地(`app/agents.py`,全局→项目→子目录分层注入) |
 | 平台部署 `langgraph.json`(F-24 / IR-10) | 📝 P2 | **永久调整**:随自研编排改写为 HTTP/事件订阅入口(F-27);**2026-08-22 定案:Web/HTTP 入口移出 v0.3(E12)**——平台向无真实消费者,价值被 CLI/TUI 事件流订阅覆盖,推迟远期按需重估 |
-| 测试基线(附录 B) | 336(2026-08-14) | **948 passed**(2026-08-28 Windows 复核；测试零网络零密钥；CI quality-fast 846 passed，三平台矩阵各 114 passed) |
+| 测试基线(附录 B) | 336(2026-08-14) | **1000 passed**(2026-08-28 Windows 复核；测试零网络零密钥；既有 CI quality-fast 846 passed，三平台矩阵各 114 passed) |
 | 解耦扫描测试(NFR-M1 / AR-4) | 已移除待恢复 | ✅ 已重写恢复(`tests/test_decoupling.py`,2026-08-14,AST 扫描 + anti-wargaming 守卫) |
 
 > 权威架构描述见 [architecture.md](./architecture.md)(v0.3);迭代与验收见 `docs/iteration/v0.2.md` / `v0.3.md`;历史审计修复结论见 `docs/iteration/v0.3.md` §6.5。
 
 ### 现阶段工程治理状态(2026-08-28)
 
-- 全量离线测试：`uv run pytest -q`，**948 passed**（2026-08-28，Windows）。
+- 全量离线测试：`uv run pytest -q`，**1000 passed**（2026-08-28，Windows）。
 - 静态检查：Ruff 已接入，首阶段阻断语法错误、未定义名称和未使用局部变量。
-- 发布前检查：CI 已配置 wheel 构建、干净虚拟环境安装、fake provider CLI 和内建 resources 冒烟；本轮已生成 0.3.0 wheel/sdist，smoke stdout 仍以 Job 日志为准。
+ - 发布前检查：CI 已配置 release check，统一验证 wheel/sdist 构建、产物内容、版本、敏感文件、干净虚拟环境安装、fake provider CLI 和内建 resources，并上传机器可读报告与完整日志。
 - 跨平台检查：CI 已配置 Ubuntu、Windows、macOS 矩阵，统一使用离线测试集；本轮三平台各 114 passed，均无 failure/error/skip。
-- 覆盖率/性能：quality-fast 覆盖率为 78.90%；TUI 已输出结构化报告但当前为 `no-baseline`，暂不设置硬阈值，待稳定 CI 数据后评估。
+ - 覆盖率/性能：quality-fast 覆盖率观测值为 78.90%，硬下限为 77.9%；TUI 正式基线为 Linux/Python 3.12 四场景 JSON，性能暂只告警。
 
 ---
 
@@ -413,7 +413,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 | F-25 | 多智能体协作 | Teams 级;事件流天然适配 |
 | F-26 | Automations 定时任务 | 后台触发 agent |
 | F-27 | Web / HTTP API | 事件流订阅暴露;**2026-08-22 从 v0.3 移出(E12),远期按需重估** |
-| F-28 | Windows 验证 | ✅ 已闭环:bash 探测链适配 + fix-bash-test-assertions 断言修复(2026-08-13)+ WSL 转发器探测修复(2026-08-14);历史 2026-08-27 Windows 复核 938 passed，当前 2026-08-28 复核 **948 passed**，CI 矩阵已覆盖三平台 |
+| F-28 | Windows 验证 | ✅ 已闭环:bash 探测链适配 + fix-bash-test-assertions 断言修复(2026-08-13)+ WSL 转发器探测修复(2026-08-14);历史 2026-08-27 Windows 复核 938 passed，当前 2026-08-28 复核 **1000 passed**，CI 矩阵已覆盖三平台 |
 
 ### 4.11 GAP 差距分析结论(合并 GAP 分析 §4)
 
@@ -576,7 +576,7 @@ class AgentSession:
 | 编号 | 指标 | 要求 | 验收口径 | 状态 |
 |---|---|---|---|---|
 | NFR-M1 | 分层解耦 | 跨层 import 仅发生在 `app/container.py` / `app/main.py` | `tests/test_decoupling.py` AST 强制校验(2026-08-14 重写,70 项断言) | ✅ |
-| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;快速质量集覆盖率报告为 78.90%,全量测试 948 passed | ⚠️(报告已接入，暂不设置硬阈值，待 CI 数据稳定后评估) |
+ | NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;最新本地质量集覆盖率 79.05%,全量测试 1000 passed | ⚠️(硬下限 77.9% 已接入，长期目标仍为 80%) |
 | NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentLoopConfig` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
@@ -598,7 +598,7 @@ class AgentSession:
 |---|---|---|---|
 | NFR-C1 | Python | ≥ 3.12 | pyproject 声明;类型注解使用 `from __future__` |
 | NFR-C2 | 终端 | 支持真彩/ANSI 的现代终端 | TUI 恢复时生效 |
-| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ bash 含 Git for Windows / WSL 探测链;Windows 本地复核 948 passed;Ubuntu/Windows/macOS CI 矩阵各 114 passed |
+| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ bash 含 Git for Windows / WSL 探测链;Windows 本地复核 1000 passed;Ubuntu/Windows/macOS CI 矩阵各 114 passed |
 | NFR-C4 | 安装 | 无系统级污染 | uv 虚拟环境隔离 |
 
 ### 6.8 可观测性(NFR-O)
@@ -724,7 +724,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 |---|---|---|---|---|---|
 | R1 | 技术 | ~~编排自研中断 langgraph 平台部署入口~~ | 中 | 高 | ✅ 已消解(2026-08-14 定案:平台部署非刚需,F-24 改写为 HTTP/事件订阅入口 F-27);**2026-08-22 Web/HTTP 入口移出 v0.3(E12),远期按需重估** |
 | R2 | 技术 | 自研消息归约(工具结果按 tool_call_id 归属)写错 → 工具链断裂 | 中 | 高 | ✅ 已消解(2026-08-14 spike 5 场景双跑 diff ALL PASS) |
-| R3 | 技术 | Windows 平台 bash 行为差异(路径显示、PIPESTATUS) | 高 | 低~中 | ✅ 已闭环;2026-08-28 Windows 全量 **948 passed**，Ubuntu/macOS 矩阵各 114 passed |
+| R3 | 技术 | Windows 平台 bash 行为差异(路径显示、PIPESTATUS) | 高 | 低~中 | ✅ 已闭环;2026-08-28 Windows 全量 **1000 passed**，Ubuntu/macOS 矩阵各 114 passed |
 | R4 | 质量 | 解耦扫描测试缺失,分层泄漏回归无法自动发现 | 中 | 中 | ✅ 已重写恢复(2026-08-14,AST 扫描 70+ 断言) |
 | R5 | 质量 | 文档与代码漂移(219 vs 304 vs 204 测试、TUI 状态、provider 数) | 已发生 | 中 | 以本文档为基线,版本更新时同步校准(附录 B 机制) |
 | R6 | 市场 | 无自研模型,受第三方 API 制约;头部放开多供应商则差异化压缩 | 中 | 中 | 强化"工程底座"定位;成本透明(F-22)对冲信任赤字 |
@@ -738,7 +738,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### 12.1 全局验收基线(每个版本发布前必须满足)
 
-1. **测试无失败**:`uv run pytest -q` 全量通过（2026-08-28 Windows 复核 **948 passed**）;核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
+1. **测试无失败**:`uv run pytest -q` 全量通过（2026-08-28 Windows 复核 **1000 passed**）;核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
 2. **解耦判据**:解耦扫描测试强制校验跨层 import 仅出现在 `app/container.py` / `app/main.py`(2026-08-14 已重写恢复);
 3. **离线可体验**:无任何 API Key 时以 `fake` provider 完整跑通"对话→工具调用→事件流"闭环;
 4. **配置隔离**:全部配置类 `extra="ignore"`,防回归测试通过;
@@ -807,7 +807,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | NFR-R1~R5 | 可靠性 | ✅ abort/steer/followup 落地;JSONL 持久化落地 | R §4.4 |
 | NFR-M1~M6 | 可维护性 | ✅ 解耦扫描测试已重写恢复(2026-08-14,70+ 断言) | R §4.5; C |
 | NFR-E1~E5 | 可扩展性 | 契约已落地;E4 事件流订阅已满足(F-27 入口 2026-08-22 移出 v0.3,E12) | R §4.6 |
-| NFR-C1~C4 | 兼容性 | ✅ Windows bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions);2026-08-28 Windows 全量回归 948 passed，Ubuntu/Windows/macOS 矩阵各 114 passed | R §4.7; C |
+| NFR-C1~C4 | 兼容性 | ✅ Windows bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions);2026-08-28 Windows 全量回归 1000 passed，Ubuntu/Windows/macOS 矩阵各 114 passed | R §4.7; C |
 | NFR-O1~O3 | 可观测性 | 11 类事件已落地 | R §4.8; C |
 
 ---
@@ -855,11 +855,11 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### B.4 2026-08-28 当前基线
 
-- 本地 Windows 全量：`uv run pytest -q` **948 passed**（111.34s）。
+ - 本地 Windows 全量：`uv run pytest -q` **1000 passed**（116.02s）。
 - GitHub CI：`quality-fast` **846 passed**；Ubuntu、Windows、macOS 矩阵各 **114 passed**，均无 failure/error/skip。
 - 快速质量集覆盖率：**78.90%**（7534/9549 statements）。
 - package smoke：已生成 `codeagent-0.3.0-py3-none-any.whl` 与 sdist；安装后 smoke 的 stdout 不在 artifact 中，最终结果以 Job 日志为准。
-- TUI 性能：history / restore / stream / tool-output 四场景均已生成 JSON；比较结果为 `no-baseline`，尚未形成性能硬门禁。
+ - TUI 性能：history / restore / stream / tool-output 四场景均已生成 JSON，并以 `docs/benchmarks/tui-baseline.json` 作为 Linux/Python 3.12 正式比较基线；当前性能仍为非阻塞告警。
 
 ---
 

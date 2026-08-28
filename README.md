@@ -4,7 +4,7 @@
 
 当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
-当前验收基线（2026-08-28）：`uv run pytest -q` **948 passed**（Windows，111.34s）。GitHub CI artifact 显示 `quality-fast` 846 项通过，Ubuntu/Windows/macOS 各 114 项通过；package smoke 已生成 0.3.0 wheel/sdist，TUI 性能报告已生成但当前仍为 `no-baseline`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
+当前验收基线（2026-08-28）：`uv run pytest -q` **1000 passed**（Windows，116.02s）。本地 CI 同步质量集为 894 passed、覆盖率 79.05%；既有 GitHub CI artifact 显示 quality-fast 846 项通过，Ubuntu/Windows/macOS 各 114 项通过。release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
 
 ## 项目介绍
 
@@ -193,7 +193,7 @@ codeagent/
     │
     └── resources/               # [资源层] 内建 skills / prompts（Skills 已启用）
 
-tests/                          # 按行为域分包，948 passed（2026-08-28）
+tests/                          # 按行为域分包，1000 passed（2026-08-28）
 ├── conftest.py / fixtures/     #   marker、隔离环境和共享离线夹具
 ├── contracts/                  #   跨实现公共契约与分层边界
 ├── ai/ / core/ / mcp/          #   模型、编排和 MCP 行为

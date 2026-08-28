@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+import argparse
 
 
 REQUIRED_RESOURCES = (
@@ -35,7 +36,14 @@ def _check_resources() -> list[str]:
     return list(REQUIRED_RESOURCES)
 
 
-def main() -> int:
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, help="Write the smoke result JSON to this path")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     resources = _check_resources()
     executable = _console_script()
     with tempfile.TemporaryDirectory(prefix="codeagent-package-smoke-") as config_dir:
@@ -63,18 +71,18 @@ def main() -> int:
         )
     if "测试回复" not in completed.stdout:
         raise RuntimeError("installed CLI did not return the fake provider response")
-    print(
-        json.dumps(
-            {
-                "status": "passed",
-                "python": sys.version.split()[0],
-                "resources": resources,
-                "cli_returncode": completed.returncode,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    payload = {
+        "schema_version": 1,
+        "status": "passed",
+        "python": sys.version.split()[0],
+        "resources": resources,
+        "cli_returncode": completed.returncode,
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)
     return 0
 
 
