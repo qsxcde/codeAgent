@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
+from codeagent.app.error_reporting import report_unexpected_error
 from codeagent.app.tui.commands import Command
 from codeagent.app.tui.model import TuiModel
 from codeagent.app.tui.runtime import phase_label
@@ -184,7 +185,7 @@ class TuiSessionCoordinator:
         except ValueError as exc:
             self.model.append_info(str(exc))
         except Exception as exc:
-            self.model.append_info(f"重试失败: {exc}")
+            self.model.append_info(report_unexpected_error("重试", exc))
         self._schedule_render()
 
     def _cmd_continue(self, cmd: Command) -> None:
@@ -198,7 +199,7 @@ class TuiSessionCoordinator:
         try:
             compacted = await session.compact()
         except Exception as exc:
-            self.model.append_info(str(exc))
+            self.model.append_info(report_unexpected_error("压缩上下文", exc))
             self._schedule_render()
             return
         if compacted:
@@ -267,7 +268,7 @@ class TuiSessionCoordinator:
             except ValueError as exc:
                 self.model.append_info(str(exc))
             except Exception as exc:
-                self.model.append_info(f"会话操作失败: {exc}")
+                self.model.append_info(report_unexpected_error("会话操作", exc))
             else:
                 self._hydrate_current_session()
                 self.model.append_info(message(session))
@@ -344,6 +345,7 @@ class TuiSessionCoordinator:
             return
         except Exception as exc:
             if self._manager.current is session and getattr(session, "session_id", None) == target_id:
+                message = report_unexpected_error("恢复会话", exc)
                 self.model.apply(
                     AgentEvent(
                         EventType.RESTORE_FINISHED,
@@ -351,11 +353,11 @@ class TuiSessionCoordinator:
                             "session_id": target_id,
                             "success": False,
                             "error_code": "restore_failed",
-                            "error_message": str(exc),
+                            "error_message": message,
                         },
                     )
                 )
-                self.model.append_info(f"恢复会话失败: {exc}")
+                self.model.append_info(message)
                 self._schedule_render()
             return
         if (

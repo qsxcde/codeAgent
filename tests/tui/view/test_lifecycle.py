@@ -87,9 +87,9 @@ async def test_unexpected_task_failure_is_rendered_instead_of_becoming_orphaned(
     await _wait_for_conversation(app)
 
     assert any(isinstance(block, ErrorBlock) for block in app.model.transcript.blocks)
-    assert "verification service unavailable" in "\n".join(
-        app.model.transcript.all_lines(120)
-    )
+    rendered = "\n".join(app.model.transcript.all_lines(120))
+    assert "任务执行失败，请查看日志。" in rendered
+    assert "verification service unavailable" not in rendered
     assert app.model.running is False
 
 

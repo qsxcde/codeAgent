@@ -3,6 +3,17 @@
 from tests.tui.view.fixtures import *  # noqa: F401,F403
 
 
+def test_status_usage_formatter_is_independent_of_command_dispatch() -> None:
+    """用量格式化可脱离命令协调器测试，避免状态展示耦合命令分派。"""
+    try:
+        from codeagent.app.tui.command_status import TuiStatusCommandCoordinator
+    except ImportError:
+        TuiStatusCommandCoordinator = None
+
+    assert TuiStatusCommandCoordinator is not None
+    assert TuiStatusCommandCoordinator._usage_line(None) == "(无)"
+
+
 async def test_footer_rich_line_seeded_and_passed():
     """装配数据(model/effort/cwd)经注入进状态栏并以富样式传给后端(design D5)。"""
     backend = StubBackend()

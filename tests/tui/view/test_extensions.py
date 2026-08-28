@@ -5,6 +5,15 @@ import threading
 from tests.tui.view.fixtures import *  # noqa: F401,F403
 
 
+def test_skill_command_coordinator_is_independent_of_general_commands():
+    try:
+        from codeagent.app.tui.command_skills import TuiSkillCommandCoordinator
+    except ImportError:
+        TuiSkillCommandCoordinator = None
+
+    assert TuiSkillCommandCoordinator is not None
+
+
 def test_skills_package_subcommand_is_forwarded_to_composition_root():
     """/skills Package 子命令由组合根执行，TUI 仅刷新并展示结果。"""
     backend = StubBackend()

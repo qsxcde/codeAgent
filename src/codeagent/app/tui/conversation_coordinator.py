@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from codeagent.app.error_reporting import report_unexpected_error
 from codeagent.app.task_modes import TaskMode
 from codeagent.app.task_supervisor import TaskEvent, TaskPhase, TaskSupervisor
 from codeagent.app.tui.commands import Command
@@ -145,7 +146,7 @@ class TuiConversationCoordinator:
                 self.model.apply(
                     AgentEvent(
                         EventType.ERROR,
-                        payload=f"任务执行失败: {exc}",
+                        payload=report_unexpected_error("任务执行", exc),
                         metadata={"error_code": "tui_task_error"},
                     )
                 )

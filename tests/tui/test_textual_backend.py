@@ -12,6 +12,19 @@ from textual.events import MouseScrollDown, MouseScrollUp
 from codeagent.app.tui.primitives import Span
 
 
+def test_textual_rich_adapter_preserves_styled_line_content():
+    """展示转换独立于 backend 生命周期，方便在不启动 Textual App 时验证。"""
+    try:
+        from codeagent.app.tui.textual_rich import rich_to_text
+    except ImportError:
+        rich_to_text = None
+
+    assert rich_to_text is not None, "富文本展示适配必须独立于 TextualBackend"
+    rendered = rich_to_text([[Span("hello", fg="accent")]])
+
+    assert rendered.plain == "hello"
+
+
 def _wheel(direction: str) -> Any:
     """构造一个滚轮事件(MouseEvent 基类构造参数较多,测试集中封装)。"""
     cls = MouseScrollDown if direction == "down" else MouseScrollUp

@@ -7,6 +7,7 @@ import inspect
 from typing import Any
 
 from codeagent.ai.model.types import ToolDefinition
+from codeagent.app.error_reporting import report_unexpected_error
 from codeagent.core.messages import ToolExecutionStatus, ToolResult
 
 from .tool_definitions import tool_definition_for
@@ -47,6 +48,7 @@ class AgentToolAdapter:
         try:
             args = self._tool.Args(**arguments)
         except Exception as exc:  # noqa: BLE001 - schema diagnostics are model-visible
+            report_unexpected_error("工具参数转换", exc)
             return ToolResult(
                 tool_call_id,
                 f"[工具参数错误] {exc}",
@@ -90,6 +92,7 @@ class AgentToolAdapter:
                 cleanup_confirmed=True,
             )
         except Exception as exc:  # noqa: BLE001 - one tool failure is isolated
+            report_unexpected_error("工具执行", exc)
             return ToolResult(
                 tool_call_id,
                 f"[工具执行出错] {exc}",

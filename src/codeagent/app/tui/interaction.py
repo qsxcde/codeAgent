@@ -1,11 +1,8 @@
-"""TUI 交互与命令输入协调器。
-
-该协调器负责补全、picker、登录输入、输入解析和命令分派；
-具体命令处理回调由 TuiApp 提供，避免协调器持有第二份业务状态。
-"""
+"""TUI 的补全、picker、登录输入与输入解析协调器。"""
 
 from __future__ import annotations
 
+from codeagent.app.tui.command_dispatch import TuiCommandDispatcher
 from codeagent.app.tui.commands import Command, Literal, UnknownCommand, default_registry, parse
 from codeagent.app.tui.fuzzy import fuzzy_rank
 from codeagent.app.tui.primitives import Span
@@ -24,7 +21,7 @@ _PICKER_HINTS = {
 }
 
 
-class TuiInteractionCoordinator:
+class TuiInteractionCoordinator(TuiCommandDispatcher):
     # -- 模糊补全 / 选择器(T-45)------------------------------------------
 
     def _suggestion_context(self, text: str) -> tuple[str, list[str]] | None:
@@ -297,44 +294,4 @@ class TuiInteractionCoordinator:
         self.model.append_info(
             f"已保存 {provider.upper()}_API_KEY 并切换到 {provider}"
         )
-        self._schedule_render()
-
-    # -- 斜杠命令分派(T-44)-----------------------------------------------
-
-    def _dispatch_command(self, cmd: Command) -> None:
-        """命令就地执行(纯 TUI 状态或经 manager 的跨层动作)。"""
-        handler = {
-            "help": self._cmd_help,
-            "ask": self._cmd_ask,
-            "plan": self._cmd_plan,
-            "code": self._cmd_code,
-            "mode": self._cmd_mode,
-            "clear": self._cmd_clear,
-            "status": self._cmd_status,
-            "tools": self._cmd_tools,
-            "sessions": self._cmd_sessions,
-            "tree": self._cmd_tree,
-            "fork": self._cmd_fork,
-            "compact": self._cmd_compact,
-            "output": self._cmd_output,
-            "retry": self._cmd_retry,
-            "continue": self._cmd_continue,
-            "skills": self._cmd_skills,
-            "mcp": self._cmd_mcp,
-            "provider": self._cmd_provider,
-            "login": self._cmd_login,
-            "model": self._cmd_model,
-            "effort": self._cmd_effort,
-            "quit": self._cmd_quit,
-        }.get(cmd.name)
-        if handler is None:  # 理论不可达:注册表与分派表同源
-            self.model.append_info(f"未知命令: /{cmd.name}")
-        else:
-            try:
-                handler(cmd)
-            except Exception as exc:
-                # Command handlers include optional integrations (Package,
-                # MCP and persistence). Keep one bad integration from
-                # escaping Textual's input callback and taking down the UI.
-                self.model.append_info(f"命令执行失败: {exc}")
         self._schedule_render()

@@ -6,7 +6,7 @@
 - `session/` 不 import ai/tools/config(纵切解耦判据);
 - `ai/`、`tools/` 不反向依赖 core/session;
 - `app/tui/` 不 import ai/tools/config;具体引擎(textual)只允许出现在
-  `textual_backend.py`(TuiBackend 端口解耦)。
+  `textual_*` 引擎适配区(TuiBackend 端口解耦)。
 
 实现:AST 解析 import 语句(注释/docstring 中的字面量不参与判定),
 按文件所在层匹配禁止前缀。测试代码可跨层 import,不在扫描范围。
@@ -24,8 +24,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: 例外文件/目录:跨层 import 全允许(组合根与入口)。
 _COMPOSITION_ROOTS = {"app/container.py", "app/main.py"}
-#: 具体引擎唯一允许出现的文件(端口适配器解耦)。
-_ENGINE_FILE = "app/tui/textual_backend.py"
+#: 具体引擎允许出现的适配区；协调和纯渲染层仍不可依赖 Textual。
+_ENGINE_MODULES = {
+    "app/tui/textual_backend.py",
+    "app/tui/textual_app.py",
+    "app/tui/textual_rich.py",
+    "app/tui/textual_widgets.py",
+}
 
 
 def _rel(path: Path) -> str:
@@ -53,7 +58,7 @@ def _forbidden_for(rel: str) -> list[str]:
         return ["codeagent.core", "codeagent.session", "codeagent.ai", "codeagent.app"]
     if rel.startswith("app/tui/"):
         forbidden = ["codeagent.ai", "codeagent.tools", "codeagent.config"]
-        if rel != _ENGINE_FILE:
+        if rel not in _ENGINE_MODULES:
             forbidden.append("textual")
         return forbidden
     if rel.startswith("app/"):
@@ -115,8 +120,8 @@ def test_scan_has_content() -> None:
     assert any(r.startswith("app/tui/") for r in rels)
 
 
-def test_textual_only_in_engine_backend() -> None:
-    """具体引擎 textual 只允许出现在 textual_backend.py(端口适配器解耦)。"""
+def test_textual_only_in_engine_adapter_zone() -> None:
+    """具体引擎 textual 只允许出现在显式引擎适配区。"""
     for path in PY_FILES:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         has_textual = any(
@@ -133,7 +138,7 @@ def test_textual_only_in_engine_backend() -> None:
             for node in ast.walk(tree)
         )
         if has_textual:
-            assert _rel(path) == _ENGINE_FILE, f"textual 出现在非引擎文件 {_rel(path)}"
+            assert _rel(path) in _ENGINE_MODULES, f"textual 出现在非引擎文件 {_rel(path)}"
 
 
 def test_composition_modules_do_not_import_container_facade() -> None:
