@@ -130,7 +130,7 @@ def test_headless_denies_sensitive_command_without_hanging(fake_provider_env, ca
     from unittest.mock import patch
 
     model = _scripted_sensitive_model()
-    with patch("codeagent.app.composition.model_selection.create_llm", return_value=model):
+    with patch("codeagent.app.composition.model.selection.create_llm", return_value=model):
         main(["--prompt", "删除数据"])
     out = capsys.readouterr().out
     assert "你: 删除数据" in out
@@ -143,7 +143,7 @@ def test_headless_yes_mode_executes_sensitive_command(fake_provider_env, capsys,
     from unittest.mock import patch
 
     model = _scripted_sensitive_model()
-    with patch("codeagent.app.composition.model_selection.create_llm", return_value=model):
+    with patch("codeagent.app.composition.model.selection.create_llm", return_value=model):
         main(["--yes", "--prompt", "删除数据"])
     out = capsys.readouterr().out
     assert "你: 删除数据" in out

@@ -56,7 +56,7 @@ class _StubBackend:
 
 
 def _config_with_mode(approval_mode: str):
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")

@@ -26,48 +26,48 @@ def _imports(path: Path) -> set[str]:
     ("module", "forbidden"),
     (
         (
-            "primitives.py",
+            "presentation/primitives.py",
             {
-                "codeagent.app.tui.blocks",
-                "codeagent.app.tui.transcript",
-                "codeagent.app.tui.status",
-                "codeagent.app.tui.model",
-                "codeagent.app.tui.view",
+                "codeagent.app.tui.presentation.blocks",
+                "codeagent.app.tui.state.transcript",
+                "codeagent.app.tui.presentation.status",
+                "codeagent.app.tui.state.model",
+                "codeagent.app.tui.application",
                 "textual",
             },
         ),
         (
-            "blocks.py",
+            "presentation/blocks/__init__.py",
             {
-                "codeagent.app.tui.transcript",
-                "codeagent.app.tui.status",
-                "codeagent.app.tui.model",
-                "codeagent.app.tui.view",
+                "codeagent.app.tui.state.transcript",
+                "codeagent.app.tui.presentation.status",
+                "codeagent.app.tui.state.model",
+                "codeagent.app.tui.application",
                 "textual",
             },
         ),
         (
-            "transcript.py",
+            "state/transcript.py",
             {
-                "codeagent.app.tui.status",
-                "codeagent.app.tui.model",
-                "codeagent.app.tui.view",
+                "codeagent.app.tui.presentation.status",
+                "codeagent.app.tui.state.model",
+                "codeagent.app.tui.application",
                 "textual",
             },
         ),
         (
-            "status.py",
+            "presentation/status.py",
             {
-                "codeagent.app.tui.blocks",
-                "codeagent.app.tui.transcript",
-                "codeagent.app.tui.model",
-                "codeagent.app.tui.view",
+                "codeagent.app.tui.presentation.blocks",
+                "codeagent.app.tui.state.transcript",
+                "codeagent.app.tui.state.model",
+                "codeagent.app.tui.application",
                 "textual",
             },
         ),
         (
-            "model.py",
-            {"codeagent.app.tui.view", "textual"},
+            "state/model.py",
+            {"codeagent.app.tui.application", "textual"},
         ),
     ),
 )
@@ -89,23 +89,13 @@ def test_tui_layer_dependencies_are_one_way(
 
 def test_markdown_and_backend_use_primitives_layer() -> None:
     """Markdown 与后端共享基础值对象，不再从组件总入口取类型。"""
-    assert "codeagent.app.tui.primitives" in _imports(TUI_ROOT / "md_renderer.py")
-    assert "codeagent.app.tui.primitives" in _imports(TUI_ROOT / "backend.py")
-    assert "codeagent.app.tui.primitives" in _imports(TUI_ROOT / "textual_backend.py")
+    assert "from .primitives import" in (TUI_ROOT / "presentation" / "md_renderer.py").read_text(encoding="utf-8")
+    assert "from ..presentation.primitives import" in (TUI_ROOT / "ports" / "backend.py").read_text(encoding="utf-8")
+    assert "from ...presentation.primitives import" in (TUI_ROOT / "adapters" / "textual" / "backend.py").read_text(encoding="utf-8")
 
 
-def test_view_is_lifecycle_facade() -> None:
-    """view 只保留装配/生命周期桥接，协调职责不回流到 TuiApp。"""
-    source = (TUI_ROOT / "view.py").read_text(encoding="utf-8")
-    for method in (
-        "_cmd_help",
-        "_suggestion_context",
-        "_run_conversation",
-        "_cmd_sessions",
-        "_hydrate_current_session",
-        "_on_task_event",
-    ):
-        assert f"def {method}" not in source
-    assert "TuiCommandCoordinator" in source
-    assert "TuiSessionCoordinator" in source
-    assert "TuiConversationCoordinator" in source
+def test_application_is_the_tui_lifecycle_root() -> None:
+    """应用壳位于规范 application 模块，旧 view 入口已删除。"""
+    source = (TUI_ROOT / "application.py").read_text(encoding="utf-8")
+    assert "class TuiApp" in source
+    assert not (TUI_ROOT / "view.py").exists()

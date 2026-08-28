@@ -76,9 +76,14 @@ def _isolate_config_dir(tmp_path, monkeypatch):
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _assert_async_tasks_are_clean() -> None:
+async def _assert_async_tasks_are_clean(request: pytest.FixtureRequest) -> None:
     """Cancel and report tasks that escape an async test."""
     yield
+
+    # AnyIO's asyncio runner owns its runner/fixture tasks and tears them down
+    # after pytest fixtures. Cancelling every task here races that teardown.
+    if request.node.get_closest_marker("anyio") is not None:
+        return
 
     current = asyncio.current_task()
     leaked = [

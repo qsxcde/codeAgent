@@ -3,13 +3,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from codeagent.app.task_verification import (
-    TaskStatus,
-    VerificationCommandResolver,
-    VerificationResult,
-    VerificationRunner,
-    WorkspaceInspector,
-)
+from codeagent.app.tasks.verification.models import TaskStatus, VerificationResult
+from codeagent.app.tasks.verification.runner import VerificationRunner
+from codeagent.app.tasks.verification.workspace import VerificationCommandResolver, WorkspaceInspector
 
 
 def test_workspace_inspector_detects_content_change(tmp_path: Path):

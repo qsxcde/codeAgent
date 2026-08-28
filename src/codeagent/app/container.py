@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from codeagent.app.composition.model_factory import (
+from codeagent.app.composition.model.factory import (
     ChatModelPort,
     LlmSummarizer,
     _resolve_context_window,
@@ -14,15 +14,15 @@ from codeagent.app.composition.model_factory import (
     _to_chat_message,
     _usage_of,
 )
-from codeagent.app.composition.policy_factory import _create_policy
-from codeagent.app.composition.prompt_builder import (
+from codeagent.app.composition.policy import _create_policy
+from codeagent.app.composition.prompts import (
     _build_system_prompt,
     _load_skills,
     _workspace,
     agents_sources,
     skills_view,
 )
-from codeagent.app.composition.runtime_factory import (
+from codeagent.app.composition.runtime.factory import (
     AgentRuntime,
     _LazyConfig,
     _LazySummarizer,
@@ -33,12 +33,12 @@ from codeagent.app.composition.runtime_factory import (
     create_agent_runtime,
     runtime_for_config,
 )
-from codeagent.app.composition.session_factory import (
+from codeagent.app.composition.session.factory import (
     create_agent_session,
     create_session_manager,
 )
-from codeagent.app.composition.tool_factory import _load_mcp_tools, create_tools
-from codeagent.app.composition.tui_factory import (
+from codeagent.app.composition.tools.factory import _load_mcp_tools, create_tools
+from codeagent.app.composition.tui.factory import (
     TuiAssembler,
     _configured_providers,
     _resolve_candidates,

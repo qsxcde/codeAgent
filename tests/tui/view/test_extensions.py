@@ -7,7 +7,7 @@ from tests.tui.view.fixtures import *  # noqa: F401,F403
 
 def test_skill_command_coordinator_is_independent_of_general_commands():
     try:
-        from codeagent.app.tui.command_skills import TuiSkillCommandCoordinator
+        from codeagent.app.tui.commands.skills import TuiSkillCommandCoordinator
     except ImportError:
         TuiSkillCommandCoordinator = None
 
@@ -188,11 +188,11 @@ def test_suggestion_window_fixed_height_and_scrolls():
     - 下移:高亮进入窗口中部后,窗口起点跟随滚动;
     - 末条:窗口底部对齐,高亮可见(不被顶出窗口)。
     """
-    from codeagent.app.tui.view import _SUGGESTION_WINDOW
+    from codeagent.app.tui.application import _SUGGESTION_WINDOW
 
     app, backend, _ = _make_app()
     # 用注册表全量命令(14 条 > 窗口 9)验证固定窗口滚动。
-    from codeagent.app.tui.commands import default_registry
+    from codeagent.app.tui.commands.parser import default_registry
 
     names = list(default_registry())
     assert len(names) > _SUGGESTION_WINDOW  # 前提:候选多于窗口
@@ -623,4 +623,3 @@ def test_mcp_command_without_servers():
     app, backend, _ = _make_app()
     backend.submit("/mcp")
     assert "MCP: (未配置 server)" in _rendered_text(app, backend)
-

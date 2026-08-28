@@ -4,13 +4,10 @@ import asyncio
 import threading
 from pathlib import Path
 
-from codeagent.app.task_modes import TaskMode
-from codeagent.app.task_supervisor import TaskSupervisor
-from codeagent.app.task_verification import (
-    TaskStatus,
-    VerificationResult,
-    WorkspaceInspector,
-)
+from codeagent.app.tasks.modes import TaskMode
+from codeagent.app.tasks.supervisor import TaskSupervisor
+from codeagent.app.tasks.verification.models import TaskStatus, VerificationResult
+from codeagent.app.tasks.verification.workspace import WorkspaceInspector
 
 
 class FakeSession:

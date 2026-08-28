@@ -6,7 +6,7 @@ from tests.tui.view.fixtures import *  # noqa: F401,F403
 def test_status_usage_formatter_is_independent_of_command_dispatch() -> None:
     """用量格式化可脱离命令协调器测试，避免状态展示耦合命令分派。"""
     try:
-        from codeagent.app.tui.command_status import TuiStatusCommandCoordinator
+        from codeagent.app.tui.commands.status import TuiStatusCommandCoordinator
     except ImportError:
         TuiStatusCommandCoordinator = None
 
@@ -184,7 +184,7 @@ def test_status_shows_skills_and_diagnostics():
 
 def test_status_shows_package_and_bootstrap_metadata():
     """/status 显示 Package 来源、revision 和 Bootstrap 状态。"""
-    from codeagent.app.skills import Skill
+    from codeagent.app.skills.models import Skill
 
     skill = Skill(
         "using-superpowers",
@@ -221,4 +221,3 @@ def test_status_without_mcp_diagnostics():
     backend.submit("/status")
     text = _rendered_text(app, backend)
     assert "MCP:" not in text
-

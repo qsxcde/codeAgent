@@ -2,8 +2,8 @@
 
 from tests.tui.view.fixtures import *  # noqa: F401,F403
 
-from codeagent.app.task_supervisor import TaskSupervisor
-from codeagent.app.tui.blocks import ErrorBlock
+from codeagent.app.tasks.supervisor import TaskSupervisor
+from codeagent.app.tui.presentation.blocks import ErrorBlock
 
 
 def test_fake_backend_regression_contract_covers_top_level_interactions():
@@ -363,4 +363,3 @@ def test_selector_empty_arg_shows_all_candidates():
     # 无空格仍是命令名补全,不进选择器。
     backend.input_changed("/model")
     assert app._suggestions == ["model"]
-

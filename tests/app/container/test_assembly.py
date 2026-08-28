@@ -7,7 +7,7 @@ from tests.app.container.fixtures import *  # noqa: F401,F403
 
 def test_create_agent_config_returns_config():
     """用 fake provider 注入,零网络装配自研端口(模型端口 + 工具)。"""
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -21,7 +21,7 @@ def test_create_agent_config_returns_config():
 
 
 def test_create_agent_config_passes_context_preflight_policy():
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
         from codeagent.app.container import create_agent_config
         from codeagent.core import ContextPreflightConfig
@@ -41,7 +41,7 @@ def test_create_agent_config_passes_context_preflight_policy():
 
 def test_create_agent_session_returns_session():
     """create_agent_session 返回可订阅的 AgentSession。"""
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -57,7 +57,7 @@ def test_create_agent_session_returns_session():
 
 def test_create_tui_app_assembles_with_stub_backend():
     """create_tui_app 装配 session + backend,不依赖 textual(design D5)。"""
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -74,7 +74,7 @@ def test_create_tui_app_assembles_with_stub_backend():
 
 def test_create_tui_app_resolves_footer_info():
     """状态栏装配数据的 model · effort 优先级:model 内联后缀 > provider 配置默认(design D5)。"""
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -92,7 +92,7 @@ def test_create_tui_app_resolves_footer_info():
 
 def test_create_tui_app_injects_rebuild_config():
     """组合根注入 rebuild 回调:/provider /model /effort 热切换链路(T-44)。"""
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
         from codeagent.session.store import MemoryStore
 
@@ -130,7 +130,7 @@ async def test_tui_async_rebuild_waits_for_old_runtime_close():
         return client
 
     with patch(
-        "codeagent.app.composition.model_selection.create_llm",
+        "codeagent.app.composition.model.selection.create_llm",
         side_effect=make_client,
     ):
         from codeagent.app.container import create_tui_app
@@ -150,7 +150,7 @@ async def test_tui_async_rebuild_waits_for_old_runtime_close():
 
 
 def test_rebuild_config_syncs_model_context_window():
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
         from codeagent.ai.catalog.registry import ModelRegistry
         from codeagent.ai.catalog.spec import ModelSpec
@@ -171,7 +171,7 @@ def test_rebuild_config_syncs_model_context_window():
 
 
 def test_create_agent_config_binds_catalog_window_to_model_budget():
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.catalog.registry import ModelRegistry
         from codeagent.ai.catalog.spec import ModelSpec
         from codeagent.ai.providers.fake import FakeClient
@@ -197,7 +197,7 @@ def test_create_agent_config_binds_catalog_window_to_model_budget():
 
 
 def test_create_agent_config_keeps_tiny_catalog_window_budget_valid():
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.catalog.registry import ModelRegistry
         from codeagent.ai.catalog.spec import ModelSpec
         from codeagent.ai.providers.fake import FakeClient
@@ -221,9 +221,9 @@ def test_create_agent_config_keeps_tiny_catalog_window_budget_valid():
 def test_create_tui_app_uses_provider_default_model_context_window():
     """TUI 初始未显式传 model 时,按 provider 默认模型读取窗口。"""
     with (
-        patch("codeagent.app.composition.model_selection.create_llm") as mock_llm,
+        patch("codeagent.app.composition.model.selection.create_llm") as mock_llm,
         patch(
-            "codeagent.app.composition.model_factory._provider_config",
+            "codeagent.app.composition.model.factory._provider_config",
             return_value=SimpleNamespace(
                 model="configured-model", reasoning_effort="high"
             ),
@@ -248,7 +248,7 @@ def test_create_tui_app_uses_provider_default_model_context_window():
 
 def test_create_agent_session_uses_model_context_window():
     """headless AgentSession 使用显式模型的上下文窗口,而非固定默认值。"""
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.catalog.registry import ModelRegistry
         from codeagent.ai.catalog.spec import ModelSpec
         from codeagent.ai.providers.fake import FakeClient
@@ -269,9 +269,9 @@ def test_create_agent_session_uses_model_context_window():
 def test_create_agent_session_uses_provider_default_context_window():
     """headless 未显式传 model 时,按 provider 默认模型读取窗口。"""
     with (
-        patch("codeagent.app.composition.model_selection.create_llm") as mock_llm,
+        patch("codeagent.app.composition.model.selection.create_llm") as mock_llm,
         patch(
-            "codeagent.app.composition.model_factory._provider_config",
+            "codeagent.app.composition.model.factory._provider_config",
             return_value=SimpleNamespace(
                 model="configured-model", reasoning_effort="high"
             ),
@@ -288,7 +288,7 @@ def test_create_agent_session_uses_provider_default_context_window():
             id="configured-model", context_window=64_000
         )
         with patch(
-            "codeagent.app.composition.model_factory._get_default_registry",
+            "codeagent.app.composition.model.factory._get_default_registry",
             return_value=registry,
         ):
             session = create_agent_session(provider="deepseek")
@@ -299,7 +299,7 @@ def test_create_agent_session_uses_provider_default_context_window():
 
 def test_create_tui_app_injects_selector_candidates():
     """选择器候选经组合根注入(T-45):provider/model/effort 各一份。"""
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -364,7 +364,7 @@ def test_policy_file_boundary_modes(tmp_path, monkeypatch):
 def test_tui_app_gets_compaction_capable_manager():
     """create_tui_app 装配 Summarizer:/compact 可经 current 会话执行。"""
     from codeagent.app.container import create_tui_app
-    from codeagent.app.tui.backend import TuiBackend
+    from codeagent.app.tui.ports.backend import TuiBackend
 
     class StubBackend(TuiBackend):
         def run(self):
@@ -421,7 +421,7 @@ def test_tui_app_gets_compaction_capable_manager():
         def stop(self):
             pass
 
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -437,7 +437,7 @@ def test_create_tui_app_injects_save_key(tmp_path, monkeypatch):
 
     env_file = tmp_path / ".codeagent" / ".env"
     monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", env_file)
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -478,7 +478,7 @@ def test_save_key_unknown_provider_raises(tmp_path, monkeypatch):
     from codeagent.app import config as app_config
 
     monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", tmp_path / ".env")
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -502,7 +502,7 @@ def test_create_tui_app_injects_configured_providers(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(app_config, "CONFIG_ENV_FILE", env_file)
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -527,7 +527,7 @@ def test_config_append_mcp_tools(tmp_path, monkeypatch):
         json.dumps({"servers": [{"name": "mock", "command": sys.executable, "args": [mock_server]}]}),
         encoding="utf-8",
     )
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")

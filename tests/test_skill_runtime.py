@@ -1,7 +1,7 @@
 """CodeAgent Skill Adapter / Bootstrap runtime tests."""
 
-from codeagent.app.skills import Skill
-from codeagent.app.skill_runtime import (
+from codeagent.app.skills.models import Skill
+from codeagent.app.skills.runtime import (
     BOOTSTRAP_TAG,
     CodeAgentAdapter,
     SkillRuntimeState,

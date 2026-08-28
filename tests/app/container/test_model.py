@@ -31,7 +31,7 @@ async def test_real_provider_runs_through_loop():
     from codeagent.core import EventType
 
     events = []
-    with patch("codeagent.app.composition.model_selection.create_llm", return_value=llm), patch(
+    with patch("codeagent.app.composition.model.selection.create_llm", return_value=llm), patch(
         "codeagent.ai.transport.openai_compat.httpx.AsyncClient",
         return_value=mock_async_client,
     ):
@@ -54,7 +54,7 @@ async def test_config_inject_system_prompt_with_agents(tmp_path, monkeypatch):
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     (CONFIG_DIR / "AGENTS.md").write_text("全局指令", encoding="utf-8")
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(response="测试回复")
@@ -88,7 +88,7 @@ async def test_system_prompt_only_once_and_hot_swap_stable(tmp_path, monkeypatch
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     (CONFIG_DIR / "AGENTS.md").write_text("全局指令", encoding="utf-8")
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(responses=["第一轮", "第二轮"])
@@ -112,8 +112,8 @@ async def test_bootstrap_is_present_once_per_model_context_for_new_and_recovered
     """Bootstrap 随每个新模型上下文出现一次，普通轮次不在历史中重复堆积。"""
     import json
 
-    from codeagent.app.skill_packages import PackageManager
-    from codeagent.app.skill_runtime import BOOTSTRAP_TAG
+    from codeagent.app.skills.packages.manager import PackageManager
+    from codeagent.app.skills.runtime import BOOTSTRAP_TAG
 
     source = tmp_path / "superpowers"
     (source / "skills" / "using-superpowers").mkdir(parents=True)
@@ -133,7 +133,7 @@ async def test_bootstrap_is_present_once_per_model_context_for_new_and_recovered
     monkeypatch.setattr("codeagent.app.config.CONFIG_DIR", home)
     monkeypatch.chdir(tmp_path)
 
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(responses=["第一轮", "第二轮"])
@@ -158,8 +158,8 @@ async def test_bootstrap_is_reinjected_after_context_compaction(tmp_path, monkey
     """压缩重建上下文后，下一轮仍带 Bootstrap 和工具映射。"""
     import json
 
-    from codeagent.app.skill_packages import PackageManager
-    from codeagent.app.skill_runtime import BOOTSTRAP_TAG
+    from codeagent.app.skills.packages.manager import PackageManager
+    from codeagent.app.skills.runtime import BOOTSTRAP_TAG
     from codeagent.core import AgentLoopConfig
     from codeagent.session import EventBus
     from codeagent.session import AgentSession
@@ -178,7 +178,7 @@ async def test_bootstrap_is_reinjected_after_context_compaction(tmp_path, monkey
     monkeypatch.setattr("codeagent.app.config.CONFIG_DIR", home)
     monkeypatch.chdir(tmp_path)
 
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(responses=["答1", "答2", "答3", "答4"])
@@ -208,7 +208,7 @@ async def test_config_inject_skills_section_and_tool(tmp_path, monkeypatch):
     (tmp_path / ".codeagent" / "skills" / "fmt" / "SKILL.md").write_text(
         "---\ndescription: 格式化。\n---\n格式化正文", encoding="utf-8"
     )
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         model = FakeClient(response="测试回复")
@@ -234,7 +234,7 @@ async def test_config_inject_skills_section_and_tool(tmp_path, monkeypatch):
 
 async def test_session_with_summarizer_can_compact():
     """注入桩 Summarizer 的会话可压缩;压缩不可用(未注入)时明确报错。"""
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -263,7 +263,7 @@ async def test_tui_app_with_store_persists_session_and_usage():
     import asyncio
 
     session = None
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(
@@ -341,4 +341,3 @@ def test_usage_of_missing_cached_defaults_zero():
     }
     assert _usage_of(None) is None
     assert _usage_of({}) is None
-

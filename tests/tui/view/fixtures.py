@@ -4,11 +4,11 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 import pytest
-from codeagent.app.tui.blocks import ToolCallBlock
-from codeagent.app.tui.commands import Command
-from codeagent.app.tui.primitives import rich_to_plain
-from codeagent.app.tui.status import FooterInfo
-from codeagent.app.tui.view import TuiApp
+from codeagent.app.tui.presentation.blocks import ToolCallBlock
+from codeagent.app.tui.commands.parser import Command
+from codeagent.app.tui.presentation.primitives import rich_to_plain
+from codeagent.app.tui.presentation.status import FooterInfo
+from codeagent.app.tui.application import TuiApp
 from codeagent.core.events import AgentEvent, EventType
 from codeagent.core.messages import Message
 from codeagent.session.store import UsageStats
@@ -249,7 +249,7 @@ def _make_login_app(
 
 
 def _sample_skills():
-    from codeagent.app.skills import Skill
+    from codeagent.app.skills.models import Skill
 
     return [
         Skill("fmt", "格式化代码。", "/skills/fmt/SKILL.md", "格式化正文"),

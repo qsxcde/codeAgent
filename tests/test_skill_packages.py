@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from codeagent.app.skill_packages import (
-    PackageManager,
+from codeagent.app.skills.packages.manager import PackageManager
+from codeagent.app.skills.packages.registry import (
     PackageRegistry,
     PackageValidationError,
     parse_package_manifest,

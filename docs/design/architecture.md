@@ -39,7 +39,7 @@
 - 入口:`pyproject.toml` 中 `codeagent = "codeagent.app.main:main"`。
 - **已完成(v0.1~v0.3 阶段 1~4)**:
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 仅存 `llm_provider`。
-- `ai/` 层:模型基础设施(provider / catalog / model / transport),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);provider/model/effort 选择位于 `app/composition/model_selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
+- `ai/` 层:模型基础设施(provider / catalog / model / transport),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);provider/model/effort 选择位于 `app/composition/model/selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
 - `core/` Agent Runtime:context / agent / loop / execution / ports / messages / events(纯内存、全异步),模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
@@ -50,7 +50,7 @@
 - token 用量透明(v0.3 阶段 3):usage 归一、会话级 append-only 落库、`/status` 与 headless CLI 展示输入 / 输出 / 缓存命中（不做费用估算）。
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
- - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1000 passed**(2026-08-28, Windows);本地质量集为 894 passed、覆盖率 79.05%，既有 CI 的 `quality-fast` 为 846 passed，Ubuntu/Windows/macOS 各 114 passed，并已接入 Ruff、release check 和四场景 TUI 性能基线。
+ - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1148 passed**(2026-08-28, macOS);本地质量集为 1037 passed，既有 CI 的 `quality-fast` 为 846 passed，Ubuntu/Windows/macOS 各 114 passed，并已接入 Ruff、release check 和四场景 TUI 性能基线。
 
 **v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
 
@@ -74,18 +74,27 @@ codeagent/
 │   │   │                             #     / create_session_manager / create_tui_app
 │   │   ├── main.py                   #   CLI 入口:--prompt / stdin / --tui
 │   │   ├── config.py                 #   全局 Settings + ~/.codeagent 模板幂等生成
-│   │   ├── agents.py                 #   AGENTS.md 分层加载 + 基础提示词
-│   │   ├── skills.py                 #   SKILL.md 三源加载 / 提示词构建 / 渲染块
-│   │   ├── composition/              #   provider、runtime、tool、session、TUI 组合工厂
+│   │   ├── context/agents.py         #   AGENTS.md 分层加载 + 基础提示词
+│   │   ├── errors/reporting.py       #   安全错误呈现与诊断记录
+│   │   ├── skills/                   #   Skill 发现、提示词、运行时与 Package 生命周期
+│   │   │   └── packages/             #   Package 清单、注册表和安装
+│   │   ├── tasks/                    #   模式、监督、结果和验证工作流
+│   │   │   └── verification/         #   工作区快照、验证命令和结果模型
+│   │   ├── composition/              #   按模型/runtime/session/tools/TUI 装配分包
+│   │   │   ├── model/                #   选择、预算、端口和模型工厂
+│   │   │   ├── runtime/              #   Agent runtime 资源所有权
+│   │   │   ├── session/              #   AgentSession / SessionManager 装配
+│   │   │   ├── tools/                #   工具适配与定义
+│   │   │   └── tui/                  #   TUI 配置与工厂
 │   │   └── tui/                      #   [调用层·TUI] 交互式终端 ✅ 已落地
-│   │       ├── view.py / runtime.py  #     TuiApp 与运行时状态
-│   │       ├── *coordinator.py       #     会话、命令、渲染和对话协调
-│   │       ├── model.py / blocks.py  #     纯状态模型与 transcript block
-│   │       ├── backend.py            #     TuiBackend 端口协议
-│   │       ├── rendering.py / md_renderer.py / primitives.py
-│   │       ├── status.py / output.py / theme.py
-│   │       ├── benchmark.py / performance.py # 离线性能基准与指标
-│   │       ├── textual_backend.py    #     textual 引擎实现(当前唯一后端)
+│   │       ├── ports/backend.py      #     Textual-free TuiBackend 端口
+│   │       ├── adapters/textual/     #     唯一具体 Textual 适配区
+│   │       ├── state/                #     TuiModel、runtime、Transcript 状态
+│   │       ├── presentation/         #     blocks、组件、文本和主题
+│   │       ├── commands/             #     解析、补全、分派和命令协调
+│   │       ├── session/              #     会话动作、对话和恢复
+│   │       ├── rendering/            #     帧调度与渲染协调
+│   │       ├── benchmark/            #     离线性能基准与指标
 │   │       └── main.py               #     TUI 入口(--tui 转交此处,装配在组合根)
 │   │
 │   ├── ai/                           # [模型基础设施层]  ← pi-ai ✅ 已落地
@@ -131,7 +140,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按行为域分包,1000 passed(2026-08-28)
+└── tests/                            # 按行为域分包,1148 passed(2026-08-28)
     ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
     ├── contracts/                    # AI、core、session、tools 边界契约
     ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为
@@ -149,14 +158,26 @@ codeagent/
 | `app/container.py` | 组合根,创建端口 / 会话 / 会话管理器 / TUI 应用 | 全项目唯一 import 所有层的地方 |
 | `app/main.py` | CLI 入口(--prompt / stdin / --tui) | 与 container 同为跨层 import 允许点 |
 | `app/config.py` | 全局配置(仅 provider 无关字段)+ 模板生成 | 只被 container / ai 读取 |
-| `app/agents.py` | AGENTS.md 分层加载 + 基础提示词 | 纯函数,可离线测 |
-| `app/skills.py` | SKILL.md 三源加载 / 提示词构建 / 渲染块 | 纯函数,可离线测;三源同名遮蔽 个人>项目>内建 |
+| `app/context/agents.py` | AGENTS.md 分层加载 + 基础提示词 | 纯函数,可离线测 |
+| `app/skills/` | SKILL.md 三源发现、提示词、运行时和 Package 生命周期 | 不持有全局服务状态;三源同名遮蔽 个人>项目>内建 |
+| `app/tasks/` | 任务模式、监督、结果和验证工作流 | 验证命令结构化执行且禁止变更型命令 |
+| `app/composition/model/` | AI 客户端端口适配、模型选择和上下文预算 | 仅组合根跨越 `ai`/`core`;规范模块为唯一模型装配入口 |
+| `app/tui/state/` | TUI 事件投影、历史恢复和 Transcript 视口布局 | 不依赖具体 Textual;后端只通过 `TuiBackend` |
+| `app/tui/session/` | 会话命令、异步动作、对话协调和快照恢复 | 恢复按成本后台化，并校验当前 session，丢弃过期结果 |
+| `app/tui/presentation/` | blocks、组件、Markdown、状态、输出和主题 | 纯终端表现层不 import Textual |
+| `app/tui/adapters/textual/` | 当前唯一 Textual 引擎实现 | 只能依赖 TUI 端口和纯表现数据 |
 | `ai/` | 模型基础设施:模型契约、provider、transport、catalog | 不 import 应用、工具、编排 |
 | `core/` | 纯内存 Agent Runtime:上下文、循环、工具执行、生命周期事件 | 不 import config / ai / tools / session |
 | `session/` | AgentSession 外壳、事件适配、持久化、分支与压缩 | 不 import ai / tools / config |
 | `tools/` | 工具层:原子工具 + 注册表 + 安全分类器 + 共享设施 | 不 import 模型、编排;`shared/` 只被 tools 内部使用 |
-| `app/tui/` | 交互式终端(视图/组件/命令/后端端口) | view 只依赖 TuiBackend 端口;禁止 import textual(具体后端除外) |
+| `app/tui/` | 交互式终端(应用壳/组件/命令/后端端口) | application 只依赖 TuiBackend 端口;禁止 import textual(具体后端除外) |
 | `resources/` | 技能 / 提示词按需加载 | v0.3 skills 已启用 |
+
+应用层生产文件由 `scripts/scale_scan.py` 统一检查：文件不超过 300 行、函数不超过 80 行。
+已迁移的根层、composition 和 TUI 平铺导入路径已删除；生产代码和测试必须使用职责子包中的规范模块，
+仅 `main.py`、`container.py`、`config.py` 与 `tui/main.py` 作为稳定入口保留。运行时资源所有权挂在
+`AgentLoopConfig._runtime_owner`，不再通过模块级可变 registry 持有。
+`tests/contracts/test_app_architecture.py` 同时检查 app 导入图无环和该所有权约束。
 
 ### 4.3 配置命名空间(重要)
 
@@ -314,7 +335,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | `session` | core(ports/loop/events/messages)、bus | ai、tools、config |
 | `app/container.py` | 全部(唯一交汇点) | — |
 | `app/main.py` | container、session、bus | core、ai、tools(直接) |
-| `app/tui/` | session、core(events)、theme | ai、tools、config;textual 仅 textual_backend |
+| `app/tui/` | session、core(events)、TUI state/presentation | ai、tools、config;textual 仅 `adapters/textual/` |
 
 ## 9. 解耦判据(泄漏检测)
 
@@ -343,9 +364,9 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | `events.py` + `bus.py` | Pi 事件驱动,替代"返回单个 AIMessage";11 类事件 |
 | `tools/security.py` + `ApprovalPolicy` | 2026-08-15 `security-permissions`:执行前安全策略,ask 确认环 + headless fail closed |
 | `tools/`(AtomicTool + FsOps) | 2026-08-13 工具层 hexagonal 重构(E8):文件系统抽象缝 + cwd 注入 + 并发写锁 |
-| `app/skills.py` + `skill` 工具 | 2026-08-19 `skills-system`:三源发现 + 渐进式披露(描述入 prompt,正文经 skill 工具按需获取) |
-| `app/agents.py` | AGENTS.md 全局→项目→子目录分层加载(2026-08-15 `agents-md-hierarchy`) |
-| `app/tui/`(view/components/backend) | TUI 恢复 MVP(2026-08-13,E9~E11)+ 命令体系 / 补全 / 选择器(2026-08-14)+ /login(2026-08-19) |
+| `app/skills/` + `skill` 工具 | 2026-08-19 `skills-system`:三源发现 + 渐进式披露(描述入 prompt,正文经 skill 工具按需获取) |
+| `app/context/agents.py` | AGENTS.md 全局→项目→子目录分层加载(2026-08-15 `agents-md-hierarchy`) |
+| `app/tui/`(state/presentation/commands/adapters) | TUI 恢复 MVP(2026-08-13,E9~E11)+ 命令体系 / 补全 / 选择器(2026-08-14)+ /login(2026-08-19) |
 | `resources/` | Pi 资源系统（v0.3 skills 已启用；插件系统移出本迭代） |
 
 ## 11. 落地路线
@@ -356,7 +377,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
 | **v0.3 生态成型** | Skills(✅)+ MCP(✅)+ 成本透明(✅)+ 会话树 UI(✅);插件 / 轻量记忆 / Web 经评估移出(见 E5/E4/E12) | 扩展生态、体验差异、平台导航 |
 
- v0.3.0 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64)。2026-08-28 复核结果:`uv run pytest -q` **1000 passed**、`openspec validate --specs` **12 passed**、`git diff --check` 通过。既有 CI artifact 中 `quality-fast` 为 846 passed，三平台矩阵各 114 passed；本地最新质量集覆盖率为 79.05%，release check 和 Linux/Python 3.12 TUI 四场景正式基线已固化，性能暂不启用硬阈值。
+ v0.3.0 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64)。2026-08-28 复核结果:`uv run pytest -q` **1148 passed**、`openspec validate --specs` **13 passed**、`git diff --check` 通过。既有 CI artifact 中 `quality-fast` 为 846 passed，三平台矩阵各 114 passed；本地最新质量集已覆盖应用包布局与旧入口删除契约，release check 和 Linux/Python 3.12 TUI 四场景正式基线已固化，性能暂不启用硬阈值。
 
 ## 12. 参考
 

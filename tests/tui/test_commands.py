@@ -1,7 +1,7 @@
 """命令注册表与解析测试(纯函数,离线):parse 三类结果、// 转义、未知命令、
 未接线命令(/undo)提示、/help 全文帮助覆盖全部注册命令。"""
 
-from codeagent.app.tui.commands import (
+from codeagent.app.tui.commands.parser import (
     Command,
     Literal,
     UnknownCommand,

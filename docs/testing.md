@@ -2,15 +2,23 @@
 
 ## 当前基线
 
-截至 `test-structure-coverage` 完成测试结构迁移后：
+截至 2026-08-28 应用层包布局变更复核后：
 
-- `uv run pytest -q`：**1000 passed**（2026-08-28，Windows，116.02s）。测试数量变化来自测试拆分、边界契约补充、`last_activity_at` 覆盖和发布/性能契约测试。
+- `uv run pytest -q`：**1148 passed**（2026-08-28，macOS，26.81s）。测试数量变化来自测试拆分、边界契约补充、`last_activity_at` 覆盖、发布/性能契约测试和应用包布局契约测试。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
-- 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 894 passed、覆盖率 79.05%，硬下限为 77.9%。
+- 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 1037 passed，硬下限为 77.9%。
 - package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
 - TUI 性能四场景均生成 JSON；正式 Linux/Python 3.12 基线位于 [`docs/benchmarks/tui-baseline.json`](benchmarks/tui-baseline.json)，历史观测详见 [`docs/benchmarks/tui-ci-2026-08-28.md`](benchmarks/tui-ci-2026-08-28.md)。
 
 测试改造应保持行为基线不变。测试数量变化时，需要说明是新增覆盖、拆分迁移还是删除过期兼容测试。
+
+## 应用层包布局
+
+`src/codeagent/app/` 的规范实现按职责归并到 `context/`、`errors/`、`skills/`、`tasks/`、`composition/` 和 `tui/` 子包；`main.py`、`container.py`、`config.py` 保留为根入口。已迁移的根层和 TUI 平铺模块已删除，生产代码和测试必须直接使用具体规范模块。
+
+本次收口会使旧平铺导入路径失效；`tests/contracts/test_app_package_layout.py` 会同时检查旧模块不存在和规范模块可导入。
+
+TUI 的具体 Textual 类型只能位于 `app/tui/adapters/textual/`；`ports/`、`state/`、`presentation/`、`commands/`、`session/` 和 `rendering/` 必须保持 Textual-free。`tests/contracts/test_app_package_layout.py`、`tests/test_decoupling.py` 和 `tests/contracts/test_tui_boundaries.py` 负责检查这些导入边界。
 
 ## 常用命令
 
@@ -36,6 +44,9 @@ uv run pytest -q
 # CI 同步的正确性静态检查（只阻断语法错误、未定义名称和未使用局部变量）
 uv run ruff check src tests scripts
 
+# 应用层生产文件/函数规模护栏
+uv run python scripts/scale_scan.py
+
 # 生成覆盖率报告（不设置高比例硬门槛）
 uv run pytest -m "unit or contract" -q --strict-markers --cov=codeagent --cov-report=term-missing
 
@@ -43,6 +54,9 @@ uv run pytest -m "unit or contract" -q --strict-markers --cov=codeagent --cov-re
 uv run python scripts/release_check.py \
   --dist-dir artifacts/dist \
   --output artifacts/release-check.json
+
+# OpenSpec 规格校验
+openspec validate --specs
 ```
 
 测试必须离线运行，不依赖真实 API key、真实 Provider 或用户的 `~/.codeagent` 数据。

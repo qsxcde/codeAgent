@@ -1,8 +1,8 @@
 """少量稳定的 TUI 语义快照,不绑定 Textual 终端布局。"""
 
-from codeagent.app.tui.blocks import ToolCallBlock
-from codeagent.app.tui.primitives import rich_to_plain
-from codeagent.app.tui.status import StatusBar
+from codeagent.app.tui.presentation.blocks import ToolCallBlock
+from codeagent.app.tui.presentation.primitives import rich_to_plain
+from codeagent.app.tui.presentation.status import StatusBar
 
 
 def test_tool_call_snapshot_keeps_compact_lifecycle_labels():

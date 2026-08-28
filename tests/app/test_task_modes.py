@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codeagent.app.task_modes import (
+from codeagent.app.tasks.modes import (
     TaskMode,
     mode_policy,
     parse_mode_input,

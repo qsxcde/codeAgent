@@ -27,7 +27,7 @@ def test_canonical_ai_imports_are_available():
         Transport,
     )
     from codeagent.ai.transport.sse import SSEParser
-    from codeagent.app.composition.model_selection import (
+    from codeagent.app.composition.model.selection import (
         create_llm,
         get_available_providers,
         split_model_pattern,

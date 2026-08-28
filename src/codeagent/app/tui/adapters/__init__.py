@@ -1,0 +1,1 @@
+"""Concrete UI adapters."""

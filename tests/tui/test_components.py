@@ -6,7 +6,7 @@
 
 import unicodedata
 
-from codeagent.app.tui.blocks import (
+from codeagent.app.tui.presentation.blocks import (
     AssistantBlock,
     ActivityBlock,
     CancelledBlock,
@@ -14,12 +14,12 @@ from codeagent.app.tui.blocks import (
     ToolCallBlock,
     UserBlock,
 )
-from codeagent.app.tui.model import TuiModel
-from codeagent.app.tui.primitives import Span, _truncate, rich_to_plain
-from codeagent.app.tui.runtime import RuntimePhase, RuntimeSnapshot
-from codeagent.app.tui.status import FooterInfo, StatusBar
-from codeagent.app.tui.transcript import Transcript
-from codeagent.app.tui.theme import (
+from codeagent.app.tui.state.model import TuiModel
+from codeagent.app.tui.presentation.primitives import Span, _truncate, rich_to_plain
+from codeagent.app.tui.state.runtime import RuntimePhase, RuntimeSnapshot
+from codeagent.app.tui.presentation.status import FooterInfo, StatusBar
+from codeagent.app.tui.state.transcript import Transcript
+from codeagent.app.tui.presentation.theme import (
     ACCENT,
     ACTIVITY,
     ASSISTANT_PROMPT,
@@ -319,7 +319,7 @@ def test_status_bar_truncates_cjk_metadata():
 
 def test_status_bar_renders_context_usage_on_right():
     """状态栏右侧显示上下文占用、窗口上限与低占用进度条。"""
-    from codeagent.app.tui.theme import ACCENT
+    from codeagent.app.tui.presentation.theme import ACCENT
 
     bar = StatusBar()
     bar.model = "deepseek-v4-flash"
@@ -620,7 +620,7 @@ def test_palette_covers_all_style_tags():
     新增样式标签必须进 theme.py 的 __all__ + PALETTE,不得在组件/渲染器里
     硬编码色值——否则后端映射缺失、标签序列断言失效。
     """
-    from codeagent.app.tui import theme
+    from codeagent.app.tui.presentation import theme
 
     tags = [getattr(theme, name) for name in theme.__all__ if name != "PALETTE"]
     for tag in tags:
@@ -651,7 +651,7 @@ def test_footer_info_seeds_status_bar():
 
 def test_tool_block_awaiting_and_rejected_states():
     """待确认/已拒绝状态渲染:等待黄色提示,拒绝红色 ✗ + Rejected 摘要。"""
-    from codeagent.app.tui.theme import ERROR, WARNING
+    from codeagent.app.tui.presentation.theme import ERROR, WARNING
 
     block = ToolCallBlock("bash", {"command": "git push"}, call_id="c1")
     block.set_awaiting()

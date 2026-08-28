@@ -1,9 +1,4 @@
-"""命令行入口:headless 模式(从 --prompt 或 stdin 读取输入,打印模型回复)。
-
-跨层接线点:事件类型字符串直接引用 core/events.EventType 的值,
-与架构约定一致(跨层 import 只允许出现在组合根 `app/container.py`、
-`app/composition/` 或入口模块)。
-"""
+"""命令行入口：headless、会话和 TUI 模式。"""
 
 from __future__ import annotations
 
@@ -14,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from codeagent.app import container
-from codeagent.app.skill_packages import PackageManager, PackageValidationError
-from codeagent.app.task_modes import ModeParseError, TaskMode, parse_mode_input
-from codeagent.app.task_supervisor import TaskResult, TaskSupervisor
+from codeagent.app.skills.packages.manager import PackageManager
+from codeagent.app.skills.packages.registry import PackageValidationError
+from codeagent.app.tasks.modes import ModeParseError, TaskMode, parse_mode_input
+from codeagent.app.tasks.supervisor import TaskResult, TaskSupervisor
 
 #: 事件类型字符串(与 core/events.EventType 常量值对齐)。
 _EV_TEXT_DELTA = "text_delta"
@@ -71,8 +67,6 @@ def main(argv: list[str] | None = None) -> int:
 
     manager = None
     if args.continue_session or args.session:
-        # 会话入口:持久化到 ~/.codeagent/sessions/;恢复或继续既有会话。
-        # 默认(无这些参数)仍是一次性 headless,不落盘(既有行为不变)。
         from codeagent.app.config import CONFIG_DIR
         from codeagent.session.persistence.jsonl_store import JsonFileStore
 
@@ -95,8 +89,6 @@ def main(argv: list[str] | None = None) -> int:
         else:
             asyncio.run(_headless_loop(session))
     finally:
-        # Normal CLI completion must release HTTP/MCP resources; atexit is only
-        # a last-resort safeguard for abnormal process termination.
         if manager is not None:
             manager.close_sync()
         else:

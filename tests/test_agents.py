@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import codeagent.app.agents as agents_module
-from codeagent.app.agents import (
+import codeagent.app.context.agents as agents_module
+from codeagent.app.context.agents import (
     AGENTS_CANDIDATES,
     build_system_prompt,
     load_agents_files,

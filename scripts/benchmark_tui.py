@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from codeagent.app.tui.benchmark import BenchmarkConfig, run_benchmark, scenarios
+from codeagent.app.tui.benchmark.benchmark import BenchmarkConfig, run_benchmark, scenarios
 
 
 def _parser() -> argparse.ArgumentParser:

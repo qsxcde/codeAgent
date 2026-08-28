@@ -5,7 +5,7 @@ import logging
 
 from pydantic import BaseModel
 
-from codeagent.app.composition.tool_factory import AgentToolAdapter
+from codeagent.app.composition.tools.factory import AgentToolAdapter
 
 
 class _Args(BaseModel):

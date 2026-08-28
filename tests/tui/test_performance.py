@@ -5,13 +5,13 @@ import subprocess
 import sys
 
 from codeagent.core.events import AgentEvent, EventType
-from codeagent.app.tui.performance import (
+from codeagent.app.tui.benchmark.performance import (
     BenchmarkResult,
     MetricSummary,
     PerformanceRecorder,
 )
-from codeagent.app.tui.model import TuiModel
-from codeagent.app.tui.benchmark import BenchmarkConfig, build_fixture, run_benchmark
+from codeagent.app.tui.state.model import TuiModel
+from codeagent.app.tui.benchmark.benchmark import BenchmarkConfig, build_fixture, run_benchmark
 
 
 def test_metric_summary_reports_nearest_rank_percentiles() -> None:

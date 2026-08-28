@@ -6,7 +6,7 @@
 - `session/` 不 import ai/tools/config(纵切解耦判据);
 - `ai/`、`tools/` 不反向依赖 core/session;
 - `app/tui/` 不 import ai/tools/config;具体引擎(textual)只允许出现在
-  `textual_*` 引擎适配区(TuiBackend 端口解耦)。
+  `tui/adapters/textual/` 引擎适配区(TuiBackend 端口解耦)。
 
 实现:AST 解析 import 语句(注释/docstring 中的字面量不参与判定),
 按文件所在层匹配禁止前缀。测试代码可跨层 import,不在扫描范围。
@@ -26,10 +26,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _COMPOSITION_ROOTS = {"app/container.py", "app/main.py"}
 #: 具体引擎允许出现的适配区；协调和纯渲染层仍不可依赖 Textual。
 _ENGINE_MODULES = {
-    "app/tui/textual_backend.py",
-    "app/tui/textual_app.py",
-    "app/tui/textual_rich.py",
-    "app/tui/textual_widgets.py",
+    "app/tui/adapters/textual/backend.py",
+    "app/tui/adapters/textual/app.py",
+    "app/tui/adapters/textual/rich.py",
+    "app/tui/adapters/textual/widgets.py",
 }
 
 

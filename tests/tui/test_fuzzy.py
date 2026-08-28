@@ -2,7 +2,7 @@
 
 import time
 
-from codeagent.app.tui.fuzzy import fuzzy_rank, match_tier
+from codeagent.app.tui.commands.fuzzy import fuzzy_rank, match_tier
 
 
 def test_exact_beats_prefix():

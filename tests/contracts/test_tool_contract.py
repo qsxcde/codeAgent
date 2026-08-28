@@ -67,7 +67,7 @@ async def test_tool_contract_cancellation_clears_active_operation():
 
 
 async def test_sync_atomic_adapter_reports_uncertain_cleanup_on_cancellation():
-    from codeagent.app.composition.tool_factory import adapt_tools
+    from codeagent.app.composition.tools.factory import adapt_tools
     from codeagent.tools.base import AtomicTool
     from pydantic import BaseModel
 
@@ -110,7 +110,7 @@ async def test_sync_atomic_adapter_reports_uncertain_cleanup_on_cancellation():
 
 
 async def test_atomic_adapter_preserves_structured_async_tool_result():
-    from codeagent.app.composition.tool_factory import adapt_tools
+    from codeagent.app.composition.tools.factory import adapt_tools
     from codeagent.tools.atomic.bash import BashInvocationResult
     from codeagent.tools.base import AtomicTool
     from pydantic import BaseModel

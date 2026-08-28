@@ -9,7 +9,7 @@ from codeagent.ai.catalog.spec import ModelSpec
 from codeagent.ai.catalog.store import ModelStore
 from codeagent.ai.catalog.builtin import BUILTIN_CATALOGS
 from codeagent.ai.catalog.registry import ModelRegistry
-from codeagent.app.composition.model_selection import (
+from codeagent.app.composition.model.selection import (
     create_llm,
     get_available_providers,
     split_model_pattern,

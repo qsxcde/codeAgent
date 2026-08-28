@@ -9,13 +9,13 @@ import asyncio
 from typing import Any
 
 from textual.events import MouseScrollDown, MouseScrollUp
-from codeagent.app.tui.primitives import Span
+from codeagent.app.tui.presentation.primitives import Span
 
 
 def test_textual_rich_adapter_preserves_styled_line_content():
     """展示转换独立于 backend 生命周期，方便在不启动 Textual App 时验证。"""
     try:
-        from codeagent.app.tui.textual_rich import rich_to_text
+        from codeagent.app.tui.adapters.textual.rich import rich_to_text
     except ImportError:
         rich_to_text = None
 
@@ -33,7 +33,7 @@ def _wheel(direction: str) -> Any:
 
 def test_composer_height_counts_suggestion_lines():
     """(回归:D3)_refresh_height 计入建议条行数,收起后回落。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     composer = TextualBackend()._app.composer
     base = 3  # 单行输入 + 上下呼吸空间
@@ -49,7 +49,7 @@ def test_composer_height_counts_suggestion_lines():
 
 async def test_set_suggestions_refreshes_composer_height_in_app():
     """(回归:D3)set_suggestions 接线:浮层弹出/收起同步增减 composer 高度。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -64,7 +64,7 @@ async def test_set_suggestions_refreshes_composer_height_in_app():
 
 async def test_transcript_wheel_notifies_scroll():
     """滚轮上/下 → on_scroll(±3 行),事件被 stop 不冒泡(spec「滚轮滚动」)。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -83,7 +83,7 @@ async def test_transcript_wheel_notifies_scroll():
 
 async def test_page_keys_always_scroll_viewport():
     """PageUp/PageDown 无论输入框是否聚焦均滚动视口(spec「键盘滚动」修订)。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -110,7 +110,7 @@ async def test_page_keys_always_scroll_viewport():
 
 async def test_set_confirmation_shows_bar_and_activates_keys():
     """set_confirmation 显示确认条并计入 composer 高度;清空后回落。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -135,7 +135,7 @@ async def test_confirmation_keys_intercept_only_when_active():
     """确认激活时 y/n 被拦截(stop + 响应回调);未激活时事件不被触碰(spec「键位归属」)。"""
     from textual.events import Key
 
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -165,7 +165,7 @@ async def test_confirmation_keys_intercept_only_when_active():
 
 async def test_confirmation_response_port_wired():
     """on_confirmation_response 接线:引擎回调转发视图处理器。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -183,7 +183,7 @@ async def test_confirmation_response_port_wired():
 
 async def test_escape_only_interrupts_not_quits():
     """Esc → interrupt 回调(不触发退出)。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -201,7 +201,7 @@ async def test_escape_only_interrupts_not_quits():
 
 async def test_ctrl_j_inserts_newline_fallback():
     """Ctrl+J 兜底换行:无 kitty 协议的终端 Shift+Enter 与 Enter 同码。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -220,7 +220,7 @@ async def test_ctrl_j_inserts_newline_fallback():
 
 async def test_soft_wrap_grows_composer_height():
     """(回归)单行超长输入软换行后按渲染行增高,而非固定一行高滚动视图。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -238,7 +238,7 @@ async def test_soft_wrap_grows_composer_height():
 
 async def test_ctrl_c_and_ctrl_q_quit():
     """Ctrl+C / Ctrl+Q → quit 回调;ctrl+c 覆盖 textual 系统 help_quit 绑定。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -265,7 +265,7 @@ def test_no_default_background_filter():
     from rich.style import Style
     from textual.color import Color
 
-    from codeagent.app.tui.textual_backend import _NoDefaultBackground, _strip_default_bg
+    from codeagent.app.tui.adapters.textual.backend import _NoDefaultBackground, _strip_default_bg
 
     filt = _NoDefaultBackground()
     bg = Color(0, 0, 0)
@@ -291,7 +291,7 @@ async def test_on_mount_installs_background_blending():
     """on_mount:过滤器置于过滤链头部,四处背景改为终端默认背景语义。"""
     from textual.color import Color
 
-    from codeagent.app.tui.textual_backend import TextualBackend, _NoDefaultBackground
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend, _NoDefaultBackground
 
     ansi_default = Color.parse("ansi_default")
 
@@ -313,7 +313,7 @@ async def test_on_mount_installs_background_blending():
 
 async def test_input_mask_switches_composer_components():
     """(tui-login-command)set_input_mask:普通输入 ↔ 密码输入 display 互斥。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
     from textual.color import Color
 
     async def _run() -> None:
@@ -358,7 +358,7 @@ async def test_input_mask_switches_composer_components():
 
 async def test_key_input_submits_plaintext_and_clears():
     """(tui-login-command)掩码提交:通知原文(非掩码字符),提交后清空。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()
@@ -381,14 +381,14 @@ async def test_key_input_submits_plaintext_and_clears():
 
 def test_key_input_does_not_consume_escape():
     """(tui-login-command)Esc 不绑定在密码输入上:冒泡到应用层由视图取消。"""
-    from codeagent.app.tui.textual_backend import _KeyInput
+    from codeagent.app.tui.adapters.textual.backend import _KeyInput
 
     assert "escape" not in [b.key for b in _KeyInput.BINDINGS]
 
 
 async def test_key_input_empty_submit_ignored():
     """(tui-login-command)空白提交不触发通知(空值由视图层提示)。"""
-    from codeagent.app.tui.textual_backend import TextualBackend
+    from codeagent.app.tui.adapters.textual.backend import TextualBackend
 
     async def _run() -> None:
         backend = TextualBackend()

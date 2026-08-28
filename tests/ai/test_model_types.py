@@ -6,12 +6,12 @@ import json
 import pytest
 
 from codeagent.ai.model.types import ToolDefinition
-from codeagent.app.composition.tool_definitions import (
+from codeagent.app.composition.tools.definitions import (
     ToolDefinitionConversionError,
     tool_definition_for,
 )
 from codeagent.ai.providers.fake import FakeClient
-from codeagent.app.composition.model_factory import ChatModelPort
+from codeagent.app.composition.model.factory import ChatModelPort
 from codeagent.core.messages import Message
 
 

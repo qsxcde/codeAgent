@@ -4,7 +4,7 @@ from tests.app.container.fixtures import *  # noqa: F401,F403
 
 
 def test_create_agent_config_injects_shared_tool_runtime():
-    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
 
         mock_llm.return_value = FakeClient(response="测试回复")
@@ -134,7 +134,7 @@ async def test_agent_runtime_is_removed_from_registry_after_close():
     client = Closable()
     config = AgentLoopConfig(model=client, tools=[])
     runtime = AgentRuntime(config, None, client, [])
-    from codeagent.app.composition.runtime_factory import _RUNTIMES_BY_CONFIG
+    from codeagent.app.composition.runtime.factory import _RUNTIMES_BY_CONFIG
 
     _RUNTIMES_BY_CONFIG[id(config)] = runtime
     await (runtime.close())
@@ -162,7 +162,7 @@ def test_rebuild_config_closes_realized_previous_runtime():
         clients.append(client)
         return client
 
-    with patch("codeagent.app.composition.model_selection.create_llm", side_effect=make_client):
+    with patch("codeagent.app.composition.model.selection.create_llm", side_effect=make_client):
         app = create_tui_app(provider="fake", backend=_StubBackend())
         # TUI 端口是 lazy 的，先访问共享工具以实现旧 runtime。
         _ = app._manager.tools

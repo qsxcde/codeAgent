@@ -7,13 +7,16 @@
 
 from pathlib import Path
 
-from codeagent.app.skills import (
+from codeagent.app.skills.prompt import (
     build_skills_prompt,
     format_skill_invocation,
     load_skills,
-    parse_skill_frontmatter,
 )
-from codeagent.app.skill_packages import PackageManager
+from codeagent.app.skills.models import (
+    parse_skill_frontmatter,
+    Skill,
+)
+from codeagent.app.skills.packages.manager import PackageManager
 from codeagent.tools.atomic import SkillTool
 
 _BLOCK_HEAD = "<skill name="
@@ -280,7 +283,7 @@ def test_superpowers_package_loads_skills_without_executing_harness_extensions(t
 
 
 def _sample_skill():
-    from codeagent.app.skills import Skill
+    from codeagent.app.skills.models import Skill
 
     return Skill(
         name="fmt",
@@ -292,7 +295,7 @@ def _sample_skill():
 
 def test_build_skills_prompt_appends_section():
     """技能段位于基础提示词之后,每技能一行(名称/描述/来源),按名称排序。"""
-    from codeagent.app.skills import Skill
+    from codeagent.app.skills.models import Skill
 
     skills = [
         Skill("zeta", "z 描述。", "/z/SKILL.md", "BODY-Z"),
