@@ -1,8 +1,8 @@
 # codeagent 需求分析文档(完整版)
 
 > 版本: v0.3.0(完整版,含 §0.1 状态勘误)
-> 更新日期: 2026-08-27(当前状态与测试/CI 门禁复核;正文中的历史需求分析数据保留为历史快照)
-> 编制口径: 以 `docs/design/` 下四份文档(需求分析报告 v0.1、架构设计、功能表 GAP 分析、编排自研蓝图)为需求来源综合而成,并对照 **2026-08-27 当前代码树**校准(校准明细见 §0.1 与附录 B)。**架构现状以 §0.1 勘误 + architecture.md(v0.3.0) 为准**。
+> 更新日期: 2026-08-28(当前状态与测试/CI 门禁复核;正文中的历史需求分析数据保留为历史快照)
+> 编制口径: 以 `docs/design/` 下四份文档(需求分析报告 v0.1、架构设计、功能表 GAP 分析、编排自研蓝图)为需求来源综合而成,并对照 **2026-08-28 当前代码树**校准(校准明细见 §0.1 与附录 B)。**架构现状以 §0.1 勘误 + architecture.md(v0.3.0) 为准**。
 > 本版本与 `requirements-analysis.md`(v0.1)的关系:本文为完整合并版,新增架构需求(AR)、数据需求(DR)、接口需求(IR)、验收标准、需求追踪矩阵等章节,并吸收功能表 GAP 分析的修订功能清单(F-01~F-28)与编排自研蓝图的演进路线。v0.1 报告已由本文完全取代并于 2026-08-13 归档删除(原文可从 git 历史提交 5b137b4 恢复)。
 
 ---
@@ -39,7 +39,7 @@
 
 ---
 
-## 0.1 状态勘误(2026-08-27,自研编排与 v0.3.0 已落地)
+## 0.1 状态勘误(2026-08-28,自研编排与 v0.3.0 已落地)
 
 > 本文档编制于 2026-08-13(彼时编排自研仍处"第二步暂缓")。2026-08-14 `self-built-orchestration` 落地后,**编排层已全面自研**；2026-08-22 v0.3.0 功能范围完成验收。本节统一勘误:后续工作以本节 + [architecture.md](./architecture.md)(v0.3.0) 为架构事实源,以 `docs/iteration/v0.1.md` ~ `v0.3.md` 为演进记录;文中竞品对比 / GAP 分析 / 决策记录里的历史提及保留原貌(历史快照),不再逐条改动。
 
@@ -58,18 +58,18 @@
 | 安全确认环(FR-8.2 / NFR-S3) | 🔲 v0.2 | ✅ 已落地(`security-permissions`:ApprovalPolicy + tools/security.py 三档分类器,headless 缺省 fail closed) |
 | AGENTS.md 分层(F-16) | 🔲 v0.2 规划 | ✅ 已落地(`app/agents.py`,全局→项目→子目录分层注入) |
 | 平台部署 `langgraph.json`(F-24 / IR-10) | 📝 P2 | **永久调整**:随自研编排改写为 HTTP/事件订阅入口(F-27);**2026-08-22 定案:Web/HTTP 入口移出 v0.3(E12)**——平台向无真实消费者,价值被 CLI/TUI 事件流订阅覆盖,推迟远期按需重估 |
-| 测试基线(附录 B) | 336(2026-08-14) | **938 passed**(2026-08-27 Windows 复核；测试零网络零密钥；跨平台矩阵已配置，结果以 CI artifact 为准) |
+| 测试基线(附录 B) | 336(2026-08-14) | **948 passed**(2026-08-28 Windows 复核；测试零网络零密钥；CI quality-fast 846 passed，三平台矩阵各 114 passed) |
 | 解耦扫描测试(NFR-M1 / AR-4) | 已移除待恢复 | ✅ 已重写恢复(`tests/test_decoupling.py`,2026-08-14,AST 扫描 + anti-wargaming 守卫) |
 
-> 权威架构描述见 [architecture.md](./architecture.md)(v0.3);迭代与验收见 `docs/iteration/v0.2.md` / `v0.3.md`;审计见 `docs/review/audit-2026-08-21.md`。
+> 权威架构描述见 [architecture.md](./architecture.md)(v0.3);迭代与验收见 `docs/iteration/v0.2.md` / `v0.3.md`;历史审计修复结论见 `docs/iteration/v0.3.md` §6.5。
 
-### 现阶段工程治理状态(2026-08-27)
+### 现阶段工程治理状态(2026-08-28)
 
-- 全量离线测试：`uv run pytest -q`，**938 passed**。
+- 全量离线测试：`uv run pytest -q`，**948 passed**（2026-08-28，Windows）。
 - 静态检查：Ruff 已接入，首阶段阻断语法错误、未定义名称和未使用局部变量。
-- 发布前检查：CI 已配置 wheel 构建、干净虚拟环境安装、fake provider CLI 和内建 resources 冒烟。
-- 跨平台检查：CI 已配置 Ubuntu、Windows、macOS 矩阵，统一使用离线测试集；本地 Windows 结果已复核，其他平台以 CI 为准。
-- 覆盖率/性能：已输出结构化报告，暂不设置高强度硬阈值，待稳定 CI 数据后评估。
+- 发布前检查：CI 已配置 wheel 构建、干净虚拟环境安装、fake provider CLI 和内建 resources 冒烟；本轮已生成 0.3.0 wheel/sdist，smoke stdout 仍以 Job 日志为准。
+- 跨平台检查：CI 已配置 Ubuntu、Windows、macOS 矩阵，统一使用离线测试集；本轮三平台各 114 passed，均无 failure/error/skip。
+- 覆盖率/性能：quality-fast 覆盖率为 78.90%；TUI 已输出结构化报告但当前为 `no-baseline`，暂不设置硬阈值，待稳定 CI 数据后评估。
 
 ---
 
@@ -110,10 +110,10 @@
 | 文档 | 说明 |
 |---|---|
 | `requirements-analysis.md`(v0.1,已归档) | 需求分析报告 v0.1(2026-08-10),内容已并入本文档;原文可从 git 历史(提交 5b137b4)恢复 |
-| [architecture.md](architecture.md) | 架构设计文档 v0.3.0(2026-08-27) |
-| [feature-gap-analysis.md](feature-gap-analysis.md) | 功能表全面分析 / 竞品对标 GAP(2026-08-10) |
-| [self-built-orchestration-blueprint.md](self-built-orchestration-blueprint.md) | 编排引擎自研决策与收益记录(第二步已落地,2026-08-27 校准) |
-| README.md / pyproject.toml / src/codeagent/ | 项目现状(2026-08-27 复核) |
+| [architecture.md](architecture.md) | 架构设计文档 v0.3.0(2026-08-28) |
+| 本文 §4.10~§4.11 | 功能表全面分析 / 竞品对标 GAP 的合并结果 |
+| [self-built-orchestration-blueprint.md](self-built-orchestration-blueprint.md) | 编排引擎自研决策与收益记录(第二步已落地,2026-08-28 校准) |
+| README.md / pyproject.toml / src/codeagent/ | 项目现状(2026-08-28 复核) |
 
 ---
 
@@ -413,7 +413,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 | F-25 | 多智能体协作 | Teams 级;事件流天然适配 |
 | F-26 | Automations 定时任务 | 后台触发 agent |
 | F-27 | Web / HTTP API | 事件流订阅暴露;**2026-08-22 从 v0.3 移出(E12),远期按需重估** |
-| F-28 | Windows 验证 | ✅ 已闭环:bash 探测链适配 + fix-bash-test-assertions 断言修复(2026-08-13)+ WSL 转发器探测修复(2026-08-14);2026-08-27 Windows 复核全量 **938 passed** |
+| F-28 | Windows 验证 | ✅ 已闭环:bash 探测链适配 + fix-bash-test-assertions 断言修复(2026-08-13)+ WSL 转发器探测修复(2026-08-14);历史 2026-08-27 Windows 复核 938 passed，当前 2026-08-28 复核 **948 passed**，CI 矩阵已覆盖三平台 |
 
 ### 4.11 GAP 差距分析结论(合并 GAP 分析 §4)
 
@@ -576,7 +576,7 @@ class AgentSession:
 | 编号 | 指标 | 要求 | 验收口径 | 状态 |
 |---|---|---|---|---|
 | NFR-M1 | 分层解耦 | 跨层 import 仅发生在 `app/container.py` / `app/main.py` | `tests/test_decoupling.py` AST 强制校验(2026-08-14 重写,70 项断言) | ✅ |
-| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;快速质量集覆盖率报告为 79%,全量测试 938 passed | ⚠️(报告已接入，暂不设置硬阈值，待 CI 数据稳定后评估) |
+| NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;快速质量集覆盖率报告为 78.90%,全量测试 948 passed | ⚠️(报告已接入，暂不设置硬阈值，待 CI 数据稳定后评估) |
 | NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentLoopConfig` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
@@ -598,7 +598,7 @@ class AgentSession:
 |---|---|---|---|
 | NFR-C1 | Python | ≥ 3.12 | pyproject 声明;类型注解使用 `from __future__` |
 | NFR-C2 | 终端 | 支持真彩/ANSI 的现代终端 | TUI 恢复时生效 |
-| NFR-C3 | 平台 | macOS / Linux 优先 | ⚠️ bash 含 Git for Windows / WSL 探测链;Windows 已复核 938 passed;Ubuntu/Windows/macOS CI 矩阵已配置，其他平台结果待 CI |
+| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ bash 含 Git for Windows / WSL 探测链;Windows 本地复核 948 passed;Ubuntu/Windows/macOS CI 矩阵各 114 passed |
 | NFR-C4 | 安装 | 无系统级污染 | uv 虚拟环境隔离 |
 
 ### 6.8 可观测性(NFR-O)
@@ -724,7 +724,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 |---|---|---|---|---|---|
 | R1 | 技术 | ~~编排自研中断 langgraph 平台部署入口~~ | 中 | 高 | ✅ 已消解(2026-08-14 定案:平台部署非刚需,F-24 改写为 HTTP/事件订阅入口 F-27);**2026-08-22 Web/HTTP 入口移出 v0.3(E12),远期按需重估** |
 | R2 | 技术 | 自研消息归约(工具结果按 tool_call_id 归属)写错 → 工具链断裂 | 中 | 高 | ✅ 已消解(2026-08-14 spike 5 场景双跑 diff ALL PASS) |
-| R3 | 技术 | Windows 平台 bash 行为差异(路径显示、PIPESTATUS) | 高 | 低~中 | ✅ 已闭环;2026-08-27 Windows 全量 **938 passed**;Ubuntu/macOS 由 CI 矩阵持续验证 |
+| R3 | 技术 | Windows 平台 bash 行为差异(路径显示、PIPESTATUS) | 高 | 低~中 | ✅ 已闭环;2026-08-28 Windows 全量 **948 passed**，Ubuntu/macOS 矩阵各 114 passed |
 | R4 | 质量 | 解耦扫描测试缺失,分层泄漏回归无法自动发现 | 中 | 中 | ✅ 已重写恢复(2026-08-14,AST 扫描 70+ 断言) |
 | R5 | 质量 | 文档与代码漂移(219 vs 304 vs 204 测试、TUI 状态、provider 数) | 已发生 | 中 | 以本文档为基线,版本更新时同步校准(附录 B 机制) |
 | R6 | 市场 | 无自研模型,受第三方 API 制约;头部放开多供应商则差异化压缩 | 中 | 中 | 强化"工程底座"定位;成本透明(F-22)对冲信任赤字 |
@@ -738,7 +738,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### 12.1 全局验收基线(每个版本发布前必须满足)
 
-1. **测试无失败**:`uv run pytest -q` 全量通过（2026-08-27 Windows 复核 **938 passed**）;核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
+1. **测试无失败**:`uv run pytest -q` 全量通过（2026-08-28 Windows 复核 **948 passed**）;核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
 2. **解耦判据**:解耦扫描测试强制校验跨层 import 仅出现在 `app/container.py` / `app/main.py`(2026-08-14 已重写恢复);
 3. **离线可体验**:无任何 API Key 时以 `fake` provider 完整跑通"对话→工具调用→事件流"闭环;
 4. **配置隔离**:全部配置类 `extra="ignore"`,防回归测试通过;
@@ -771,7 +771,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ## 附录 A:需求追踪矩阵
 
-> 出处缩写:R=requirements-analysis.md(v0.1,已归档,内容已并入本文档)、A=architecture.md、G=feature-gap-analysis.md、B=self-built-orchestration-blueprint.md、C=2026-08-13 代码实测。
+> 出处缩写:R=requirements-analysis.md(v0.1,已归档,内容已并入本文档)、A=architecture.md、G=历史 GAP 分析(内容已并入本文 §4.10~§4.11)、B=self-built-orchestration-blueprint.md、C=2026-08-13 代码实测。
 
 ### A.1 功能需求追踪
 
@@ -807,7 +807,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | NFR-R1~R5 | 可靠性 | ✅ abort/steer/followup 落地;JSONL 持久化落地 | R §4.4 |
 | NFR-M1~M6 | 可维护性 | ✅ 解耦扫描测试已重写恢复(2026-08-14,70+ 断言) | R §4.5; C |
 | NFR-E1~E5 | 可扩展性 | 契约已落地;E4 事件流订阅已满足(F-27 入口 2026-08-22 移出 v0.3,E12) | R §4.6 |
-| NFR-C1~C4 | 兼容性 | ✅ Windows bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions);2026-08-27 Windows 全量回归 938 passed，跨平台矩阵已配置 | R §4.7; C |
+| NFR-C1~C4 | 兼容性 | ✅ Windows bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions);2026-08-28 Windows 全量回归 948 passed，Ubuntu/Windows/macOS 矩阵各 114 passed | R §4.7; C |
 | NFR-O1~O3 | 可观测性 | 11 类事件已落地 | R §4.8; C |
 
 ---
@@ -843,7 +843,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 | # | 差异项 | B.1 记录(08-14) | 2026-08-24 后续复核 |
 |---|---|---|---|
-| 1 | 测试数量 | 336 项全绿 | **938 passed**(2026-08-27 Windows 复核;2026-08-21 审计 12 条缺陷全部修复闭环,见 `docs/review/audit-2026-08-21.md` 与 v0.3 §6.5) |
+| 1 | 测试数量 | 336 项全绿 | **938 passed**(2026-08-27 Windows 历史复核;2026-08-21 审计 12 条缺陷全部修复闭环，结论见 v0.3 §6.5) |
 | 5 | 事件类型 | 10 类 | **11 类**(新增 `confirmation_requested`,security-permissions) |
 | 6 | 会话接口 | abort / replace_graph | `abort` / `steer` / `followup`;热切换改 `SessionManager.replace_config` |
 | 7 | 模型客户端 | 自研,langchain-core/langgraph 保留于编排侧 | **langchain-core/langgraph 全部移除**(2026-08-14 自研编排;`ai/bridge/` 删除) |
@@ -852,6 +852,14 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | — | 会话持久化 | 🔲 v0.2 线性 | ✅ **JSONL 树形已落地**(含 fork) |
 | — | 安全确认环 | 🔲 v0.2 | ✅ 已落地(ApprovalPolicy + 三档分类器) |
 | — | 平台部署 | `langgraph.json` 待设计 | ⚠️ 永久废弃,改写为 HTTP/事件订阅(F-27);**2026-08-22 移出 v0.3(E12),远期按需重估** |
+
+### B.4 2026-08-28 当前基线
+
+- 本地 Windows 全量：`uv run pytest -q` **948 passed**（111.34s）。
+- GitHub CI：`quality-fast` **846 passed**；Ubuntu、Windows、macOS 矩阵各 **114 passed**，均无 failure/error/skip。
+- 快速质量集覆盖率：**78.90%**（7534/9549 statements）。
+- package smoke：已生成 `codeagent-0.3.0-py3-none-any.whl` 与 sdist；安装后 smoke 的 stdout 不在 artifact 中，最终结果以 Job 日志为准。
+- TUI 性能：history / restore / stream / tool-output 四场景均已生成 JSON；比较结果为 `no-baseline`，尚未形成性能硬门禁。
 
 ---
 

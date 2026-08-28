@@ -4,7 +4,7 @@
 
 当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
-当前验收基线（2026-08-27）：`uv run pytest -q` **944 passed**。测试已完成分层与结构迁移；CI 已配置快速质量门禁、Ubuntu/Windows/macOS 离线矩阵、构建后安装冒烟和非阻塞性能报告。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
+当前验收基线（2026-08-28）：`uv run pytest -q` **948 passed**（Windows，111.34s）。GitHub CI artifact 显示 `quality-fast` 846 项通过，Ubuntu/Windows/macOS 各 114 项通过；package smoke 已生成 0.3.0 wheel/sdist，TUI 性能报告已生成但当前仍为 `no-baseline`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
 
 ## 项目介绍
 
@@ -15,7 +15,7 @@
 - **可感知**:会话运行过程以事件流对外暴露,CLI、TUI、测试和 CI 都能订阅,而不是只拿一个最终返回值。
 - **可测试**:核心编排层零网络、零密钥即可运行(注入 `FakeClient` 离线假模型)。
 
-设计参考:[earendil-works/pi](https://github.com/earendil-works/pi) 的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。架构设计见 [`docs/design/architecture.md`](docs/design/architecture.md),需求基线见 [`docs/design/requirements-analysis.md`](docs/design/requirements-analysis.md),迭代记录见 [`docs/iteration/v0.1.md`](docs/iteration/v0.1.md) / [`v0.2.md`](docs/iteration/v0.2.md) / [`v0.3.md`](docs/iteration/v0.3.md)。
+设计参考:[earendil-works/pi](https://github.com/earendil-works/pi) 的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。架构设计见 [`docs/design/architecture.md`](docs/design/architecture.md),需求基线见 [`docs/design/requirements-analysis.md`](docs/design/requirements-analysis.md),迭代记录见 [`docs/iteration/v0.1.md`](docs/iteration/v0.1.md) / [`v0.2.md`](docs/iteration/v0.2.md) / [`v0.3.md`](docs/iteration/v0.3.md) / [`v0.4.md`](docs/iteration/v0.4.md)。
 
 ### 当前能力(v0.3.0)
 
@@ -141,13 +141,12 @@ uv run python scripts/benchmark_tui.py --scenario stream --blocks 100 --stream-c
 ```text
 codeagent/
 ├── pyproject.toml / uv.lock     # 依赖、CLI 入口(codeagent = codeagent.app.main:main)
-├── CLAUDE.md                    # Claude Code 工作指南(当前树的权威快速参考)
+├── AGENTS.md                    # Agent 工作指南(当前树的权威快速参考)
 ├── docs/
 │   ├── design/                  # 需求分析 / 架构设计 / 自研蓝图
 │   ├── iteration/               # v0.1 / v0.2 / v0.3 / v0.4 迭代记录(权威)
 │   ├── testing.md               # 测试分层、CI、覆盖率和安装冒烟
-│   └── benchmarks/              # TUI 性能基线与优化记录
-│   └── review/                  # 审计报告
+│   └── benchmarks/              # TUI 性能观测、历史基线与优化记录
 ├── openspec/                    # OpenSpec 规格与归档变更
 │
 └── src/codeagent/
@@ -194,7 +193,7 @@ codeagent/
     │
     └── resources/               # [资源层] 内建 skills / prompts（Skills 已启用）
 
-tests/                          # 按行为域分包，944 passed（2026-08-27）
+tests/                          # 按行为域分包，948 passed（2026-08-28）
 ├── conftest.py / fixtures/     #   marker、隔离环境和共享离线夹具
 ├── contracts/                  #   跨实现公共契约与分层边界
 ├── ai/ / core/ / mcp/          #   模型、编排和 MCP 行为
@@ -213,7 +212,7 @@ tests/                          # 按行为域分包，944 passed（2026-08-27�
 
 v0.3.0 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。当前未实现且已明确移出本版本的能力包括：费用估算、Web / HTTP 事件订阅、轻量记忆、插件系统、多智能体和自动化任务；它们在出现真实需求后重新评估。
 
-工程后续优先级是补充 Hooks 与完成前验证门禁、积累跨平台性能数据并评估硬门槛、构建/安装冒烟测试和发布流程。性能基线在 CI 数据稳定前保持非阻塞。
+工程后续优先级是完成 CI 性能基线和阈值决策、补充 Hooks 与完成前验证门禁，再推进 Runtime、上下文和 TUI 产品化。性能基线在数据稳定前保持非阻塞。
 
 ## 参考
 

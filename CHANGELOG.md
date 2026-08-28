@@ -11,10 +11,10 @@
 
 ### Engineering updates
 
-- 测试按行为域拆分并集中公共契约，当前全量验证为 `944 passed`；补齐会话 `last_activity_at` 跨层契约。
+- 测试按行为域拆分并集中公共契约，当前全量验证为 `948 passed`（2026-08-28）；补齐会话 `last_activity_at` 跨层契约。
 - CI 增加快速质量检查、Ubuntu/Windows/macOS 离线测试矩阵、wheel 安装冒烟和 TUI 性能 artifact。
 - 增加 pytest-cov、Ruff 正确性检查、安装后 fake provider CLI 验证和性能相对变化报告。
-- 性能和覆盖率暂不设置高强度硬门槛，等待稳定 CI 数据后再评估。
+- 本轮 CI 的 `quality-fast` 为 846 项通过，三平台矩阵各 114 项通过；覆盖率为 78.90%，TUI 性能报告因尚无 JSON 基线暂为 `no-baseline`，性能和覆盖率暂不设置硬门槛。
 
 ## [0.3.0] - 2026-08-22
 

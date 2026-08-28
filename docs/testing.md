@@ -4,9 +4,11 @@
 
 截至 `test-structure-coverage` 完成测试结构迁移后：
 
-- `uv run pytest -q`：**944 passed**（2026-08-27，124.09s）。测试数量变化来自测试拆分、边界契约补充和 `last_activity_at` 覆盖。
-- `test-foundation-stability` 已归档；`test-structure-coverage` 的 `last_activity_at` 产品实现与跨层测试已完成，待归档。
-- 当前全量结果由开发者在 Windows 环境复核；Ubuntu、Windows、macOS 的 CI 矩阵已配置，跨平台结果以 CI artifact 为准。
+- `uv run pytest -q`：**948 passed**（2026-08-28，Windows，111.34s）。测试数量变化来自测试拆分、边界契约补充和 `last_activity_at` 覆盖。
+- `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
+- 本轮 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；质量测试覆盖率为 78.90%。
+- package smoke 已产出 0.3.0 wheel/sdist；压缩包不包含 smoke 脚本 stdout，安装后的 CLI 成功与否仍以 GitHub Job 日志为准。
+- TUI 性能四场景均生成 JSON，但比较结果为 `no-baseline`；详见 [`docs/benchmarks/tui-ci-2026-08-28.md`](benchmarks/tui-ci-2026-08-28.md)。
 
 测试改造应保持行为基线不变。测试数量变化时，需要说明是新增覆盖、拆分迁移还是删除过期兼容测试。
 
@@ -94,4 +96,4 @@ uv run python scripts/compare_benchmark.py artifacts/tui-benchmark.json
 uv run python scripts/compare_benchmark.py artifacts/tui-benchmark.json baseline.json --max-regression 0.20
 ```
 
-只有在至少一轮跨平台 CI 数据稳定后，才评估是否增加 `--fail-on-regression` 或固定覆盖率下限。
+当前 `quality-fast` 与平台矩阵之间有 25 个兼容性/平台边界测试重复执行；这不影响正确性，但需要后续决定保留边界保护还是调整 marker 分层。只有在至少一轮稳定 CI 数据并完成基线校准后，才评估是否增加 `--fail-on-regression` 或固定覆盖率下限。

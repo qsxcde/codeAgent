@@ -2,8 +2,8 @@
 
 > 版本: v0.3(阶段 1~4 落地后校准)
 > 适用范围: 自研编排(2026-08-14 起,已弃用 langgraph/langchain)的 Code Agent 项目
-> 更新日期: 2026-08-27(校准至当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills / MCP / token 用量 / 会话树、测试分层与 CI 质量门禁)
-> 事实来源: 本文描述当前代码树;演进决策见 [self-built-orchestration-blueprint.md](./self-built-orchestration-blueprint.md)(决策与收益记录)、迭代记录 `docs/iteration/v0.1.md` / `v0.2.md` / `v0.3.md`
+> 更新日期: 2026-08-28(校准至当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills / MCP / token 用量 / 会话树、测试分层与 CI 质量门禁)
+> 事实来源: 本文描述当前代码树;演进决策见 [self-built-orchestration-blueprint.md](./self-built-orchestration-blueprint.md)(决策与收益记录)、迭代记录 `docs/iteration/v0.1.md` / `v0.2.md` / `v0.3.md` / `v0.4.md`
 
 ## 1. 背景与目标
 
@@ -50,7 +50,7 @@
 - token 用量透明(v0.3 阶段 3):usage 归一、会话级 append-only 落库、`/status` 与 headless CLI 展示输入 / 输出 / 缓存命中（不做费用估算）。
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
-- 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **944 passed**(2026-08-27, Windows);CI 已增加 Ruff 正确性检查、覆盖率报告、三平台离线矩阵、安装包冒烟和非阻塞 TUI 性能报告。
+- 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **948 passed**(2026-08-28, Windows);本轮 CI 的 `quality-fast` 为 846 passed，Ubuntu/Windows/macOS 各 114 passed，覆盖率 78.90%，并已接入 Ruff、安装包冒烟和非阻塞 TUI 性能报告。
 
 **v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
 
@@ -61,9 +61,9 @@
 ```text
 codeagent/
 ├── pyproject.toml / uv.lock          # 依赖、CLI 入口(codeagent.app.main:main)
-├── README.md / CLAUDE.md             # 说明 + Claude Code 工作指南
+├── README.md / AGENTS.md             # 说明 + Agent 工作指南
 ├── .env.example                      # 密钥模板(不入库;实际密钥在 ~/.codeagent/.env)
-├── docs/                             # design/(需求/架构/蓝图)+ iteration/(权威)+ review/audit
+├── docs/                             # design/(需求/架构/蓝图)+ iteration/(权威)+ benchmarks
 ├── openspec/                         # OpenSpec 规格与归档变更
 │
 ├── src/codeagent/
@@ -131,7 +131,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按行为域分包,944 passed(2026-08-27)
+└── tests/                            # 按行为域分包,948 passed(2026-08-28)
     ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
     ├── contracts/                    # AI、core、session、tools 边界契约
     ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为
@@ -356,14 +356,14 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
 | **v0.3 生态成型** | Skills(✅)+ MCP(✅)+ 成本透明(✅)+ 会话树 UI(✅);插件 / 轻量记忆 / Web 经评估移出(见 E5/E4/E12) | 扩展生态、体验差异、平台导航 |
 
-v0.3.0 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64)。2026-08-27 复核结果:`uv run pytest -q` **944 passed**、`openspec validate --specs` **12 passed**、`git diff --check` 通过。CI 已配置快速质量、三平台离线矩阵、构建安装冒烟和非阻塞性能报告；尚未根据稳定 CI 数据启用硬阈值。
+v0.3.0 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64)。2026-08-28 复核结果:`uv run pytest -q` **948 passed**、`openspec validate --specs` **12 passed**、`git diff --check` 通过。CI artifact 中 `quality-fast` 为 846 passed，三平台矩阵各 114 passed，覆盖率 78.90%；TUI 性能比较仍为 `no-baseline`，尚未启用硬阈值。
 
 ## 12. 参考
 
 - 编排自研决策与收益:[`self-built-orchestration-blueprint.md`](./self-built-orchestration-blueprint.md)
 - 需求基线:[`requirements-analysis.md`](./requirements-analysis.md)(FR / NFR / F-xx 编号出处)
 - 迭代记录:[`docs/iteration/v0.1.md`](../iteration/v0.1.md) / [`v0.2.md`](../iteration/v0.2.md) / [`v0.3.md`](../iteration/v0.3.md)(权威)
-- 审计报告:[`docs/review/audit-2026-08-21.md`](../review/audit-2026-08-21.md)(文档漂移 / 安全 / 测试基线核查)
+- 历史审计结论:2026-08-21 文档漂移、安全与测试基线审计的修复结论已记录在 `docs/iteration/v0.3.md` §6.5；原始审计文件不在当前工作树中。
 - [earendil-works/pi](https://github.com/earendil-works/pi) — Pi Agent SDK(三层协作 / 双层 loop / 事件驱动 / 会话即状态)
 - [learning-pi-agent](https://github.com/yamsfeer/learning-pi-agent) — 架构深度笔记
 - [how-pi-agent-works](https://github.com/myxiaoao/how-pi-agent-works) — 中文教学实现
