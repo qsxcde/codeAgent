@@ -111,7 +111,9 @@ class TuiApp(
         self._restore_task: asyncio.Task[None] | None = None
         self._conversation_task: asyncio.Task[None] | None = None
         self._session_action_task: asyncio.Task[None] | None = None
+        self._package_task: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._unsubscribe: Callable[[], None] | None = None
         self._shutdown_started = False
         self._shutdown_complete = False
@@ -179,7 +181,25 @@ class TuiApp(
             asyncio.run(self.shutdown())
             return
         if not self._shutdown_complete and self._shutdown_task is None:
-            self._shutdown_task = loop.create_task(self.shutdown())
+            self._shutdown_task = self._track_task(loop.create_task(self.shutdown()))
+
+    def _track_task(self, task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+        """Register a TUI-owned task so shutdown can await or cancel it."""
+        self._background_tasks.add(task)
+
+        def consume_done(done: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(done)
+            if done.cancelled():
+                return
+            try:
+                done.exception()
+            except BaseException:
+                # Retrieving the exception prevents asyncio's orphan-task
+                # warning; task bodies render their own operational errors.
+                pass
+
+        task.add_done_callback(consume_done)
+        return task
 
     # -- 事件 → 渲染 -------------------------------------------------------
 
@@ -219,9 +239,14 @@ class TuiApp(
                 self._restore_task,
                 self._conversation_task,
                 self._session_action_task,
+                self._package_task,
             )
             if task is not None and not task.done()
         ]
+        current = asyncio.current_task()
+        for task in tuple(self._background_tasks):
+            if task is not current and not task.done() and task not in tasks:
+                tasks.append(task)
         if self._task_supervisor is not None:
             self._task_supervisor.cancel()
         for task in tasks:

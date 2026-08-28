@@ -20,6 +20,24 @@ def test_create_agent_config_returns_config():
     assert config.model.model_id == "fake-model"
 
 
+def test_create_agent_config_passes_context_preflight_policy():
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_agent_config
+        from codeagent.core import ContextPreflightConfig
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        policy = ContextPreflightConfig(warning_headroom_tokens=321)
+        config = create_agent_config(
+            provider="fake",
+            uncertain_budget_policy="fail",
+            context_preflight=policy,
+        )
+
+    assert config.context_preflight is policy
+    assert config.uncertain_budget_policy == "fail"
+
+
 
 def test_create_agent_session_returns_session():
     """create_agent_session 返回可订阅的 AgentSession。"""
@@ -150,6 +168,54 @@ def test_rebuild_config_syncs_model_context_window():
         app._rebuild_ports("fake", "small-model", None)
 
     assert app._manager.current.context_window == 32_000
+
+
+def test_create_agent_config_binds_catalog_window_to_model_budget():
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+        from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.spec import ModelSpec
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_agent_config
+        from codeagent.core.messages import Message
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        registry = ModelRegistry()
+        registry._catalogs.setdefault("fake", {})["small-model"] = ModelSpec(
+            id="small-model", context_window=32_000, max_tokens=2_000
+        )
+        config = create_agent_config(
+            provider="fake", model="small-model", registry=registry
+        )
+
+    budget = config.model.describe_context_budget(
+        [Message(role="user", content="hello")], []
+    )
+
+    assert budget.context_window == 32_000
+    assert budget.output_reserve == 2_000
+    assert budget.window_source == "catalog"
+
+
+def test_create_agent_config_keeps_tiny_catalog_window_budget_valid():
+    with patch("codeagent.app.composition.model_selection.create_llm") as mock_llm:
+        from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.spec import ModelSpec
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_agent_config
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        registry = ModelRegistry()
+        registry._catalogs.setdefault("fake", {})["tiny-model"] = ModelSpec(
+            id="tiny-model", context_window=8_000
+        )
+        config = create_agent_config(
+            provider="fake", model="tiny-model", registry=registry
+        )
+
+    budget = config.model.describe_context_budget([], [])
+
+    assert budget.context_window == 8_000
+    assert budget.output_reserve + budget.reserve_tokens <= 8_000
 
 
 def test_create_tui_app_uses_provider_default_model_context_window():

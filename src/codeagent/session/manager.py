@@ -6,6 +6,8 @@
   (10 类 AgentEvent 契约零改动,无全局事件转发总线——并行会话的转发列为
   未来演进,``AgentEvent.metadata`` 已预留扩展位);
 - **ports 共享**:模型端口与工具无状态,所有会话共用同一份(组合根装配一次);
+- **常驻上限**:内存中只保留有限数量的会话壳;淘汰只影响内存,持久化会话仍可
+  通过 ``switch`` 恢复;
   ``replace_config`` 属 T-44(/provider /model 时按 Pi 式 ``model_change``
   entry 演进,design D4);
 - **header 元数据**:首轮成功落盘时把模型配置(model/effort)固化进会话头
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import uuid
 import asyncio
+import inspect
 from typing import Any, Callable
 
 from codeagent.session.events.bus import EventBus, Subscriber
@@ -39,10 +42,14 @@ class SessionManager:
         tool_timeout: float | None = None,
         confirmation_timeout: float | None = None,
         summarizer: Any = None,
-        context_window: int = DEFAULT_CONTEXT_WINDOW,
+        context_window: int | None = None,
         runtime_closer: Callable[[], Any] | None = None,
         policy: Any = None,
+        session_config_factory: Callable[[SessionRef], Any] | None = None,
+        max_resident_sessions: int = 32,
     ) -> None:
+        if type(max_resident_sessions) is not int or max_resident_sessions < 1:
+            raise ValueError("max_resident_sessions must be positive")
         self._config = config
         self._policy = policy
         self._store = store
@@ -53,12 +60,26 @@ class SessionManager:
         self._confirmation_timeout = confirmation_timeout
         #: 上下文压缩摘要端口(session-compaction;None = 压缩不可用)。
         self._summarizer = summarizer
+        if context_window is None:
+            model_window = getattr(getattr(config, "model", None), "context_window", None)
+            context_window = (
+                model_window
+                if type(model_window) is int and model_window > 0
+                else DEFAULT_CONTEXT_WINDOW
+            )
+        elif type(context_window) is not int or context_window < 1:
+            raise ValueError("context_window must be positive")
         self._context_window = context_window
         self._runtime_closer = runtime_closer
+        self._session_config_factory = session_config_factory
+        self._max_resident_sessions = max_resident_sessions
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         #: 活动会话:session_id → AgentSession(dispose 摘除,文件保留)。
         self._sessions: dict[str, AgentSession] = {}
+        #: 最近使用序号,用于有界淘汰;current 永不被淘汰。
+        self._session_access: dict[str, int] = {}
+        self._access_counter = 0
         self._current_id: str | None = None
         #: 已注册订阅:(回调, 当前 bus 的取消函数列表)。switch 时列表被
         #: 清空并重新绑定到新会话的 bus(订阅跟随 current)。
@@ -192,8 +213,12 @@ class SessionManager:
             self._policy = policy
         self._model = model
         self._effort = effort
+        if context_window is None:
+            model_window = getattr(getattr(config, "model", None), "context_window", None)
+            if type(model_window) is int and model_window > 0:
+                context_window = model_window
         if context_window is not None:
-            if context_window < 1:
+            if type(context_window) is not int or context_window < 1:
                 raise ValueError("context_window must be positive")
             self._context_window = context_window
         # 既有会话壳在构造时固化端口引用:逐壳更新,后续轮次用新配置。
@@ -232,6 +257,7 @@ class SessionManager:
     def dispose(self, session_id: str) -> None:
         """释放会话:中止运行并从活动集合移除(文件与历史保留,可再恢复)。"""
         session = self._sessions.pop(session_id, None)
+        self._session_access.pop(session_id, None)
         if session is not None:
             session.abort()
         if self._current_id == session_id:
@@ -249,6 +275,7 @@ class SessionManager:
             else:
                 session.abort()
         self._sessions.pop(session_id, None)
+        self._session_access.pop(session_id, None)
         if self._current_id == session_id:
             self._current_id = None
 
@@ -269,18 +296,24 @@ class SessionManager:
                     await result
             else:
                 session.abort()
+        close_summarizer = getattr(self._summarizer, "aclose", None)
+        if callable(close_summarizer):
+            result = close_summarizer()
+            if inspect.isawaitable(result):
+                await result
         if self._runtime_closer is not None:
             result = self._runtime_closer()
             if hasattr(result, "__await__"):
                 await result
 
-    def close_sync(self) -> None:
+    def close_sync(self) -> asyncio.Task[None] | None:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(self.close())
+            return None
         else:
-            asyncio.create_task(self.close())
+            return asyncio.create_task(self.close())
 
     def list(self) -> list[SessionRef]:
         """列出全部会话(含派生标题;无 store 时为空)。"""
@@ -356,8 +389,22 @@ class SessionManager:
         ``previous_session_id`` 为分叉来源(session-fork):分叉产生的会话
         首轮 SESSION_STARTED 事件携带父会话 id。
         """
+        config = self._config
+        context_window = self._context_window
+        if self._store is not None and self._session_config_factory is not None:
+            ref = self._store.get(session_id)
+            if ref is not None and ref.model:
+                config = self._session_config_factory(ref)
+                model_window = getattr(getattr(config, "model", None), "context_window", None)
+                if type(model_window) is int and model_window > 0:
+                    context_window = model_window
+                self._config = config
+                self._context_window = context_window
+                self._model = ref.model
+                self._effort = ref.effort
+
         session = AgentSession(
-            self._config,
+            config,
             EventBus(),
             store=self._store,
             session_id=session_id,
@@ -366,7 +413,7 @@ class SessionManager:
             confirmation_timeout=self._confirmation_timeout,
             previous_session_id=previous_session_id,
             summarizer=self._summarizer,
-            context_window=self._context_window,
+            context_window=context_window,
             defer_persistence=defer_persistence,
             persistence_options=persistence_options,
             policy=self._policy,
@@ -378,4 +425,27 @@ class SessionManager:
             unsubs.append(session.subscribe(fn))
         self._sessions[session_id] = session
         self._current_id = session_id
+        self._touch_session(session_id)
+        self._evict_idle_sessions()
         return session
+
+    def _touch_session(self, session_id: str) -> None:
+        self._access_counter += 1
+        self._session_access[session_id] = self._access_counter
+
+    def _evict_idle_sessions(self) -> None:
+        """Bound resident session shells without deleting persisted sessions."""
+        while len(self._sessions) > self._max_resident_sessions:
+            candidates = [
+                session_id
+                for session_id in self._sessions
+                if session_id != self._current_id
+            ]
+            if not candidates:
+                return
+            victim = min(
+                candidates,
+                key=lambda session_id: self._session_access.get(session_id, 0),
+            )
+            self._sessions.pop(victim, None)
+            self._session_access.pop(victim, None)

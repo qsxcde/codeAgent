@@ -109,6 +109,11 @@ def test_write_env_key_rejects_empty(tmp_path):
         write_env_key("deepseek", "", tmp_path / ".env")
 
 
+def test_write_env_key_rejects_newline_injection(tmp_path):
+    with pytest.raises(ValueError, match="换行"):
+        write_env_key("deepseek", "safe\nINJECTED=value", tmp_path / ".env")
+
+
 def test_write_env_key_unwritable_location(tmp_path):
     """写入位置不可用(父路径被文件占位)→ OSError 原样上抛,不吞错。"""
     blocker = tmp_path / "blocker"

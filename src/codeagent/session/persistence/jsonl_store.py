@@ -154,8 +154,6 @@ class JsonFileStore:
         effort: str | None = None,
     ) -> SessionRef:
         path = self._path(session_id)
-        if path.exists():
-            raise ValueError(f"会话已存在: {session_id}")
         self._directory.mkdir(parents=True, exist_ok=True)
         self._private_dir()  # sessions 目录 0700(转录含敏感内容,审计 M-10)
         created_at = _now()
@@ -183,7 +181,15 @@ class JsonFileStore:
         if effort is not None:
             header["effort"] = effort
         with _lock_for(path):
-            path.write_text(json.dumps(header, ensure_ascii=False) + "\n", encoding="utf-8")
+            # The existence check must share the write lock; otherwise two
+            # processes can both observe a missing session and overwrite the
+            # first header (TOCTOU).
+            if path.exists():
+                raise ValueError(f"会话已存在: {session_id}")
+            with path.open("w", encoding="utf-8") as stream:
+                stream.write(json.dumps(header, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
             self._chmod_private(path)  # 会话文件 0600(审计 M-10)
             try:
                 self._safe_write_index(path, self._new_index(path, header))
@@ -298,10 +304,11 @@ class JsonFileStore:
             return
         index_path = self._index_path(path)
         with _lock_for(path):
-            # The snapshot, complete append batch, and rollback share one
-            # lock. Otherwise a writer can append between the failed batch and
-            # recovery and be erased by our failure recovery.
-            original = path.read_bytes()
+            # Record a byte boundary rather than copying the complete JSONL
+            # file. The lock prevents another writer from crossing this
+            # boundary, and truncate is O(1) and atomic enough for the
+            # append-only recovery path.
+            original_size = path.stat().st_size
             original_index = index_path.read_bytes() if index_path.exists() else None
             try:
                 for message in messages:
@@ -326,12 +333,18 @@ class JsonFileStore:
                     if context_tokens is not None:
                         self.set_meta(session_id, "last_context_tokens", context_tokens)
             except BaseException:
-                path.write_bytes(original)
+                with path.open("r+b") as stream:
+                    stream.truncate(original_size)
+                    stream.flush()
+                    os.fsync(stream.fileno())
                 self._chmod_private(path)
                 if original_index is None:
                     self._invalidate_index(path)
                 else:
-                    index_path.write_bytes(original_index)
+                    with index_path.open("wb") as stream:
+                        stream.write(original_index)
+                        stream.flush()
+                        os.fsync(stream.fileno())
                     self._chmod_private(index_path)
                 raise
 
@@ -586,6 +599,8 @@ class JsonFileStore:
             index = self._read_valid_index(path)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
             self._chmod_private(path)  # 追加后保持 0600(审计 M-10)
             try:
                 if index is None:

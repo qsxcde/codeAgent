@@ -17,18 +17,26 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
+from codeagent.core.awaiting import await_if_needed
 from codeagent.core.events import AgentEvent, EventType
 from codeagent.core.context import AgentContext
-from codeagent.core.errors import AgentContinueError, AgentRuntimeError
+from codeagent.core.errors import (
+    AgentContinueError,
+    AgentRuntimeError,
+    ContextPreparationError,
+    ContextPreflightError,
+)
 from codeagent.core.messages import (
     CleanupStatus,
     Message,
     ToolCall,
-    ToolExecutionStatus,
     ToolResult,
-    new_id,
 )
-from codeagent.core.ports import AgentLoopConfig, ToolDecision
+from codeagent.core.model_request import new_model_message
+from codeagent.core.ports import (
+    AgentLoopConfig,
+)
+from codeagent.core.tool_invocation import new_tool_result
 
 DEFAULT_RECURSION_LIMIT = 50
 
@@ -43,172 +51,6 @@ class RecursionLimitError(RuntimeError):
 
     def __str__(self) -> str:
         return self.friendly
-
-
-async def _await_if_needed(value: Any) -> Any:
-    if hasattr(value, "__await__"):
-        return await value
-    return value
-
-
-async def _new_model_message(
-    config: AgentLoopConfig,
-    history: list[Message],
-    emit: Callable[[AgentEvent], Any],
-) -> Message:
-    """Collect one model stream into a core Agent assistant message."""
-    text_parts: list[str] = []
-    thinking_parts: list[str] = []
-    tool_calls: list[ToolCall] = []
-
-    emit(AgentEvent(EventType.MESSAGE_START))
-    transformed = await _await_if_needed(config.transform_context(list(history)))
-    stream = getattr(config.model, "stream_agent", None) or config.model.stream
-    async for event in stream(transformed, config.tools):
-        if event.type == "content":
-            text_parts.append(event.text)
-            emit(AgentEvent(EventType.MESSAGE_UPDATE, payload=event.text))
-        elif event.type == "thinking":
-            thinking_parts.append(event.text)
-            emit(
-                AgentEvent(
-                    EventType.MESSAGE_UPDATE,
-                    payload={"type": "thinking_delta", "text": event.text},
-                )
-            )
-        elif event.type == "tool_call":
-            index = event.tool_index if event.tool_index is not None else len(tool_calls)
-            tool_calls.append(
-                ToolCall(
-                    id=event.tool_id or new_id(),
-                    name=event.tool_name or "",
-                    args=dict(event.arguments or {}),
-                    details=(
-                        {"argument_error": event.argument_error}
-                        if event.argument_error
-                        else {}
-                    ),
-                )
-            )
-            emit(
-                AgentEvent(
-                    EventType.MESSAGE_UPDATE,
-                    payload={
-                        "type": "tool_call",
-                        "tool_index": index,
-                        "tool_name": event.tool_name,
-                        "tool_call_id": event.tool_id,
-                        "arguments": event.arguments or {},
-                    },
-                )
-            )
-        elif event.type == "finish":
-            pass
-        elif event.type == "usage":
-            emit(AgentEvent(EventType.USAGE, payload=event.usage or {}))
-
-    message = Message(
-        role="assistant",
-        content="".join(text_parts),
-        tool_calls=tool_calls,
-    )
-    emit(AgentEvent(EventType.MESSAGE_END, payload=message))
-    return message
-
-
-async def _new_tool_result(
-    tool: Any,
-    call: ToolCall,
-    context: AgentContext,
-    config: AgentLoopConfig,
-    emit: Callable[[AgentEvent], Any],
-) -> ToolResult:
-    """Run one AgentTool-shaped object and normalize its result."""
-    if call.details.get("argument_error"):
-        return ToolResult(
-            call.id,
-            f"[工具参数错误] {call.details['argument_error']}",
-            error=True,
-            name=call.name,
-            status=ToolExecutionStatus.INVALID_ARGUMENTS,
-            cleanup_confirmed=True,
-        )
-    if tool is None:
-        return ToolResult(
-            call.id,
-            f"[工具执行出错] 未知工具: {call.name}",
-            error=True,
-            name=call.name,
-            status=ToolExecutionStatus.FAILED,
-            cleanup_confirmed=True,
-        )
-    if config.before_tool_call is not None:
-        decision = await _await_if_needed(config.before_tool_call(call, context))
-        if isinstance(decision, ToolDecision) and decision.action != "allow":
-            return ToolResult(
-                call.id,
-                f"[工具执行被拒绝] {decision.reason}",
-                error=True,
-                name=call.name,
-                rejected=True,
-                status=ToolExecutionStatus.REJECTED,
-                cleanup_confirmed=True,
-            )
-    try:
-        runtime = config.tool_runtime
-        if runtime is not None:
-            async def on_update(update: Any) -> None:
-                emit(
-                    AgentEvent(
-                        EventType.TOOL_EXECUTION_UPDATE,
-                        payload=update,
-                        metadata={"tool_call_id": call.id, "tool_name": call.name},
-                    )
-                )
-
-            result = await runtime.execute(
-                tool,
-                call,
-                timeout=config.tool_timeout,
-                operation_id=new_id(),
-                on_update=on_update,
-            )
-            if config.after_tool_call is not None:
-                updated = await _await_if_needed(config.after_tool_call(call, result, context))
-                if updated is not None:
-                    result = updated
-            return result
-
-        execute = getattr(tool, "execute", None)
-        if callable(execute):
-            value = execute(call.id, call.args, signal=None, on_update=None)
-            if config.tool_timeout is not None:
-                value = await asyncio.wait_for(_await_if_needed(value), config.tool_timeout)
-        else:
-            args_obj = tool.Args(**call.args)
-            method = getattr(tool, "ainvoke", None) or getattr(tool, "invoke_async", None)
-            value = method(args_obj) if method is not None else await asyncio.to_thread(tool.invoke, args_obj)
-        value = await _await_if_needed(value)
-        if isinstance(value, ToolResult):
-            result = value
-        elif isinstance(value, dict) and "content" in value:
-            result = ToolResult(call.id, str(value["content"]), name=call.name)
-        else:
-            result = ToolResult(call.id, str(value), name=call.name)
-    except Exception as exc:  # noqa: BLE001 - tool errors are model-visible
-        result = ToolResult(
-            call.id,
-            f"[工具执行出错] {exc}",
-            error=True,
-            name=call.name,
-            status=ToolExecutionStatus.FAILED,
-            cleanup_confirmed=True,
-        )
-    if config.after_tool_call is not None:
-        updated = await _await_if_needed(config.after_tool_call(call, result, context))
-        if updated is not None:
-            result = updated
-    return result
 
 
 async def _run_agent_loop(
@@ -234,7 +76,7 @@ async def _run_agent_loop(
     try:
         for iteration in range(max(1, recursion_limit)):
             emit(AgentEvent(EventType.TURN_START, metadata={"turn_index": iteration}))
-            assistant = await _new_model_message(config, working.messages, emit)
+            assistant = await new_model_message(config, working.messages, emit)
             working.messages.append(assistant)
             new_messages.append(assistant)
             if not assistant.tool_calls:
@@ -253,7 +95,7 @@ async def _run_agent_loop(
                         payload={"tool_call_id": call.id, "tool_name": call.name, "args": call.args},
                     )
                 )
-                return index, await _new_tool_result(tool, call, working, config, emit)
+                return index, await new_tool_result(tool, call, working, config, emit)
 
             pending: list[asyncio.Task[tuple[int, ToolResult]]] = []
             if config.tool_execution == "parallel":
@@ -314,7 +156,9 @@ async def _run_agent_loop(
                 new_messages.append(steer)
             emit(AgentEvent(EventType.TURN_END, payload=assistant, metadata={"tool_results": ordered_results}))
             if config.should_stop_after_turn is not None:
-                stop = await _await_if_needed(config.should_stop_after_turn(assistant, ordered_results, working))
+                stop = await await_if_needed(
+                    config.should_stop_after_turn(assistant, ordered_results, working)
+                )
                 if stop:
                     break
         else:
@@ -333,7 +177,29 @@ async def _run_agent_loop(
         emit(AgentEvent(EventType.ABORTED, metadata=metadata))
         raise
     except Exception as exc:
-        emit(AgentEvent(EventType.ERROR, payload=str(exc), metadata={"error_type": type(exc).__name__}))
+        error_metadata = {"error_type": type(exc).__name__}
+        if isinstance(exc, ContextPreparationError):
+            error_metadata.update(
+                {
+                    "error_code": exc.code,
+                    "phase": exc.phase,
+                    "cause_type": type(exc.cause).__name__,
+                }
+            )
+            if isinstance(exc, ContextPreflightError):
+                snapshot = exc.result.snapshot
+                error_metadata.update(
+                    {
+                        "budget_status": exc.result.status,
+                        "budget_allowed": exc.result.allowed,
+                        "input_tokens": snapshot.input_tokens,
+                        "input_budget": snapshot.input_budget,
+                        "headroom": snapshot.headroom,
+                        "window_source": snapshot.window_source,
+                        "warning_boundary": exc.result.warning_boundary,
+                    }
+                )
+        emit(AgentEvent(EventType.ERROR, payload=str(exc), metadata=error_metadata))
         raise
     emit(AgentEvent(EventType.AGENT_END, payload=new_messages))
     return new_messages

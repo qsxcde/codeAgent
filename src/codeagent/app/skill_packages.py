@@ -20,6 +20,7 @@ from typing import Any, Iterable
 
 PACKAGE_MANIFEST_FILE = "codeagent-package.json"
 PACKAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+PACKAGE_GIT_TIMEOUT_S = 120
 
 __all__ = [
     "PACKAGE_MANIFEST_FILE",
@@ -338,12 +339,18 @@ class PackageManager:
             checkout = staging_parent / checkout_name
             if is_git:
                 git_source = source_text[4:] if source_text.startswith("git:") else source_text
-                result = subprocess.run(
-                    ["git", "clone", "--depth", "1", git_source, str(checkout)],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
+                try:
+                    result = subprocess.run(
+                        ["git", "clone", "--depth", "1", git_source, str(checkout)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=PACKAGE_GIT_TIMEOUT_S,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise PackageValidationError(
+                        f"Git Package 下载超时({PACKAGE_GIT_TIMEOUT_S}s): {git_source}"
+                    ) from exc
                 if result.returncode != 0:
                     raise PackageValidationError(f"Git Package 下载失败: {result.stderr.strip() or git_source}")
             else:
@@ -358,6 +365,7 @@ class PackageManager:
                     capture_output=True,
                     text=True,
                     check=False,
+                    timeout=10,
                 )
                 if result.returncode == 0:
                     revision = result.stdout.strip()

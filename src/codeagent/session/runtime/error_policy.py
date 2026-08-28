@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from codeagent.core.errors import ContextPreparationError
 from codeagent.core.loop import RecursionLimitError
 from codeagent.session.runtime.state import RunPhase, RuntimeFailure
 
@@ -19,7 +20,29 @@ def classify_error(
     """Map an exception to a stable, machine-readable runtime failure."""
     phase_value = phase.value if isinstance(phase, RunPhase) else str(phase)
     code = "runtime_error"
-    if isinstance(exc, RecursionLimitError):
+    cause_type = type(exc).__name__
+    if isinstance(exc, ContextPreparationError):
+        # Budget/context failures are deterministic pre-model failures.  They
+        # must not be presented as retryable provider errors, and the cause
+        # remains visible for diagnostics.
+        code = exc.code
+        phase_value = exc.phase
+        cause_type = type(exc.cause).__name__
+        if hasattr(exc, "result"):
+            result = exc.result
+            snapshot = result.snapshot
+            budget_status = result.status
+            input_tokens = snapshot.input_tokens
+            input_budget = snapshot.input_budget
+            headroom = snapshot.headroom
+            window_source = snapshot.window_source
+        else:
+            budget_status = None
+            input_tokens = None
+            input_budget = None
+            headroom = None
+            window_source = None
+    elif isinstance(exc, RecursionLimitError):
         code = "recursion_limit"
     elif phase_value == "tool_running":
         code = "tool_error"
@@ -53,6 +76,13 @@ def classify_error(
         elif phase_value == RunPhase.MODEL_WAIT.value:
             code = "model_error"
 
+    if not isinstance(exc, ContextPreparationError):
+        budget_status = None
+        input_tokens = None
+        input_budget = None
+        headroom = None
+        window_source = None
+
     retryable = (
         code
         in {
@@ -73,7 +103,12 @@ def classify_error(
         side_effect_state=side_effect_state,
         cleanup_uncertain=cleanup_uncertain,
         operation_id=operation_id,
-        cause_type=type(exc).__name__,
+        cause_type=cause_type,
+        budget_status=budget_status,
+        input_tokens=input_tokens,
+        input_budget=input_budget,
+        headroom=headroom,
+        window_source=window_source,
     )
 
 

@@ -1,36 +1,146 @@
-# Repository Guidelines
+# 仓库开发与 Codex 协作规范
 
-## Project Structure & Module Organization
+本文档适用于本仓库中的代码、测试、文档和配置变更。用户的明确需求优先于一般开发约定；涉及安全、数据丢失或不可逆操作时，必须先说明影响并获得确认。
 
-- `src/codeagent/app/` contains the composition root, CLI, and TUI; cross-layer wiring belongs in `app/container.py` or `app/main.py`.
-- `src/codeagent/core/` is the dependency-light orchestration layer; `session/` owns state, JSONL persistence, compaction, and session trees; `ai/` contains providers and transports; `tools/` contains built-in and MCP tools.
-- `src/codeagent/resources/` stores bundled prompts and skills. Tests live under `tests/`, generally mirroring source packages; `tests/conftest.py` provides isolated configuration and filesystem fixtures.
-- `docs/` contains architecture and iteration notes. `openspec/` contains specifications and change artifacts.
+## 项目结构
 
-## Build, Test, and Development Commands
+- `src/codeagent/app/`：程序入口、CLI、TUI 和依赖组装。跨层组装逻辑放在 `app/container.py` 或 `app/main.py`。
+- `src/codeagent/core/`：依赖较少的领域模型、协议和核心编排，不直接依赖具体 UI、网络、工具或持久化实现。
+- `src/codeagent/session/`：会话状态、生命周期、JSONL 持久化、压缩和会话树。
+- `src/codeagent/ai/`：模型提供商、客户端和传输层。
+- `src/codeagent/tools/`：内置工具、MCP 工具、外部命令和基础设施适配。
+- `src/codeagent/resources/`：打包内置的提示词和技能。
+- `tests/`：测试代码，通常与源代码包结构对应；共享 pytest 夹具位于 `tests/conftest.py` 和 `tests/fixtures/`。
+- `docs/`：架构、测试和迭代文档；`openspec/`：规格说明和变更产物。
+
+模块应按职责组织，避免把业务逻辑、配置读取、基础设施适配和 UI 展示集中到同一文件。核心逻辑应通过接口或协议隔离外部依赖，对外接口保持稳定，内部实现应可替换。
+
+## 任务执行规范
+
+1. 开始前阅读本文件、相关 OpenSpec、README、设计文档和目标模块。
+2. 修改前检查 `git status` 和相关 `git diff`，保留用户已有的修改，不覆盖、不回退无关工作。
+3. 先定位现有实现和测试，再决定新增、修改还是拆分模块；不得在未理解职责边界时直接向大文件追加代码。
+4. 多步骤任务先制定简短计划；需求涉及行为、架构、公共接口或持久化格式时，检查是否需要更新 OpenSpec 和文档。
+5. 新增或修复行为时优先补充回归测试，随后实现最小必要变更。
+6. 修改范围保持最小，不顺手重构无关模块，不引入未说明的新依赖。
+7. 先运行相关的窄测试，再运行分层测试；根据变更范围决定是否运行完整测试。
+8. 完成前检查差异、格式、测试结果、敏感文件和文档状态，并报告修改文件、验证命令和未解决问题。
+
+## 构建、测试与开发命令
 
 ```bash
-uv sync --group dev                 # Install runtime and development dependencies
-uv run codeagent --prompt "你好"     # Run the headless CLI
-uv run codeagent --tui               # Run the interactive terminal UI
-uv run pytest -q                    # Run the complete test suite
+uv sync --group dev                                      # 安装运行时和开发依赖
+uv run codeagent --prompt "你好"                         # 运行无头 CLI
+uv run codeagent --tui                                   # 运行交互式终端 UI
+uv run pytest -m "unit or contract" -q --strict-markers  # 快速质量测试
+uv run pytest -m "integration or e2e or platform or compatibility" -q --strict-markers
+uv run pytest -m "not slow" -q                          # 排除慢测试的日常反馈集
+uv run pytest -q                                         # 完整离线测试
 uv run pytest tests/session/test_store.py::test_create_and_header
-uv build                            # Build distribution artifacts
-openspec validate --specs           # Validate main OpenSpec specifications
+uv run ruff check src tests scripts                      # 当前 CI 的正确性检查
+uv run pytest -m "unit or contract" -q --cov=codeagent --cov-report=term-missing
+uv build                                                 # 构建发行产物
+openspec validate --specs                                # 验证 OpenSpec 规格说明
 ```
 
-## Coding Style & Naming Conventions
+测试和构建必须使用仓库声明的工具链。CI 使用 `uv sync --locked --group dev`，本地应优先保持 lock 文件同步。
 
-Use Python 3.12+, four-space indentation, type annotations, `snake_case` functions and variables, `PascalCase` classes, and uppercase constants. Match existing formatting; Black, Ruff, and mypy are not currently configured. Keep modules cohesive, avoid top-level side effects, and write comments for design reasons rather than line-by-line narration. Preserve the dependency direction: `core/` must not import `config`, `ai`, `tools`, or `session`; `session/` must not import `ai`, `tools`, or `config`.
+## 架构与依赖边界
 
-## Testing Guidelines
+- `app/` 负责入口、CLI、TUI 和依赖组装，不承载核心业务规则。
+- `core/` 负责领域模型、协议和核心编排，不直接依赖 `config`、`ai`、`tools`、`session` 或具体基础设施。
+- `session/` 负责会话状态和持久化，不依赖 `ai`、`tools` 或 `config` 的具体实现。
+- `ai/` 负责模型和传输，不把 UI 行为或会话编排塞入提供商实现。
+- `tools/` 负责工具适配，不把工具细节泄漏到核心领域层。
+- 配置、领域逻辑、外部适配和展示逻辑必须保持分离；跨层依赖只能沿既定方向流动。
+- 外部依赖应通过接口、协议或工厂注入；核心代码不得为了测试直接绑定真实网络、用户目录或外部进程。
 
-Use pytest with behavior-focused names such as `test_load_context_reconstructs_summary_plus_kept`. Keep tests offline and platform-independent; use `tmp_path`, `monkeypatch`, and the `FakeClient` instead of real credentials or network calls. Add regression tests for bug fixes and run the narrow test first, then `uv run pytest -q`.
+## 编码风格与代码规模
 
-## Commit & Pull Request Guidelines
+- 使用 Python 3.12 及更高版本、四个空格缩进和类型注解。
+- 函数及变量使用 `snake_case`，类使用 `PascalCase`，常量使用 `UPPER_SNAKE_CASE`。
+- 布尔变量使用 `is_`、`has_` 或 `can_` 等前缀。
+- 公共函数、类和模块接口必须有清晰的类型注解；复杂类型应使用命名类型、数据类或协议提升可读性。
+- 注释说明设计原因、约束和取舍，不逐行复述代码。
+- 保持模块内聚，避免重复代码、隐式全局状态和无理由的魔法数字。
+- 生产代码文件原则上不超过 300 行；函数原则上不超过 50–80 行。接近或超过规模时，应按职责拆分，而不是继续向原文件追加代码。
+- 若修改后生产文件超过 300 行，应在本次变更中完成拆分，除非有充分理由并在提交说明中注明。生成文件、第三方代码和必要的兼容层可例外处理。
+- 当前 CI 已配置 Ruff，但仅启用 `E9`、`F821` 和 `F841` 等基础正确性检查；Black、完整 Ruff 规则集、mypy 和 pyright 尚未作为现行门禁。接入新工具时必须同步更新 `pyproject.toml`、CI 和本文档。
+- 统一格式化工具确定后，项目只能选择一种主要格式化方案；行宽遵循 `pyproject.toml` 中的配置，目前为 100 个字符。
 
-Use short imperative commits with the repository’s prefixes, for example `feat:`, `fix:`, `docs:`, `test:`, or `ci:`; Chinese descriptions are also present in history. PRs should explain the behavior change, list verification commands, and update relevant OpenSpec artifacts or docs. Include screenshots or terminal recordings for TUI changes. Keep unrelated worktree changes out of the PR.
+## 错误处理与异步规范
 
-## Security & Configuration Tips
+- 使用明确的项目异常表达领域错误，不用 `None`、空字符串或静默默认值掩盖失败。
+- 除非重新抛出或记录完整上下文，否则不得无差别捕获 `Exception`。
+- 错误信息应包含操作、对象和失败原因，并区分失败、超时、取消和资源清理不确定等状态。
+- 异步函数中不得直接执行阻塞 I/O 或同步子进程；必须正确处理取消、超时和资源清理。
+- 外部资源必须在成功、失败、超时和取消路径中得到释放。
+- 修改异常、取消或重试语义时，必须补充覆盖边界路径的测试。
 
-Store credentials only in `~/.codeagent/.env`; the application intentionally does not read a repository-local `.env`. Never commit keys, generated secrets, or user session data. Use the `fake` provider for local development and tests.
+## 测试规范
+
+- 使用 pytest，测试名称应描述行为，例如 `test_load_context_reconstructs_summary_plus_kept`。
+- 测试必须离线、可重复并尽量与平台无关；使用 `tmp_path`、`monkeypatch` 和 `FakeClient`，不要使用真实凭据、真实 Provider 或真实网络。
+- `unit`：单模块、快速、无外部进程的行为测试。
+- `contract`：跨实现或架构边界契约测试。
+- `integration`：组合多个运行时模块、文件存储、MCP 或 subprocess 的测试。
+- `e2e`：从 CLI 或 TUI 入口验证完整用户流程。
+- `platform`：依赖 Windows、Linux 或 macOS 差异的测试。
+- `security`：安全策略、拒绝、确认和文件边界测试。
+- `performance`：性能基线、内存和渲染指标测试。
+- `slow`：不适合快速反馈但仍属于常规回归的测试。
+- 纯逻辑测试不得反复启动真实 Bash、MCP 或网络进程；外部边界使用少量集成测试覆盖。
+- Bug 修复必须添加回归测试；修改测试数量时，应说明是新增覆盖、拆分迁移还是删除过期测试。
+- 新增测试必须使用合适的 marker；`tests/conftest.py` 会为未特别识别的测试补充默认分类，但不能替代正确的测试设计。
+- 日常开发优先运行 `unit` 和 `contract` 测试；涉及外部进程的测试使用 `--durations` 排查慢点，不得为追求速度静默删除覆盖。
+
+## 依赖、配置与安全
+
+- 依赖集中声明并锁定版本；新增依赖前说明用途、替代方案和维护成本，并同步更新 `pyproject.toml` 与 lock 文件。
+- 定期检查依赖的过期版本和安全漏洞，避免引入职责重复或无法维护的库。
+- 配置通过环境变量或配置文件注入，不在代码中硬编码环境差异。
+- 明确区分开发、测试、预发布和生产环境；默认配置必须安全。
+- 凭据仅存储在 `~/.codeagent/.env`；应用有意不读取仓库本地 `.env`。
+- 切勿提交密钥、令牌、生成的机密、用户会话数据、临时产物或本地配置。
+- 涉及凭据、用户数据或外部命令时，必须进行输入校验、权限边界检查和敏感信息脱敏。
+- 不执行可能删除、覆盖大量文件或破坏用户环境的命令，除非目标明确、范围已核对并获得确认。
+
+## Git、提交与拉取请求
+
+- 提交信息使用简短的祈使句式和仓库前缀，例如 `feat:`、`fix:`、`docs:`、`test:` 或 `ci:`。
+- 一次提交只做一件主要事情；不要把格式化、重命名或无关重构混入功能提交。
+- PR 必须说明行为变化、影响范围、风险、验证命令和未覆盖部分。
+- 涉及 TUI 的变更应附截图或终端录屏。
+- PR 不得包含无关工作区修改、密钥、构建产物或用户数据。
+- 合并前应通过当前 CI 已配置的 Ruff、相关测试、覆盖率、OpenSpec 验证和构建检查；类型检查和完整格式化检查只有在工具接入 CI 后才作为强制门禁。
+
+## CI/CD 与发布
+
+当前 CI 包含以下质量层级：
+
+- 快速质量门禁：Ruff、`unit/contract` 测试、覆盖率、版本一致性、差异格式和 OpenSpec 验证。
+- 跨平台测试：Ubuntu、Windows 和 macOS 上的 `integration/e2e/platform/compatibility` 测试。
+- 发行检查：构建 wheel/sdist、检查版本和资源、干净环境安装，并使用 fake provider 验证 CLI。
+- 性能报告：TUI 基准和基线比较，当前为非阻塞任务。
+
+发布前必须检查版本号、发行产物、内置资源和变更日志，并准备清晰的回滚方案。慢测试、性能基准和端到端测试可以单独运行，但不得因本地运行缓慢而被静默跳过。
+
+## 文档与可观测性
+
+- README 应说明安装、配置、运行、测试和开发方法。
+- 重要架构决策、兼容性变化、迁移步骤和废弃策略记录在 `docs/` 或相关 OpenSpec 产物中。
+- 公共接口提供必要的使用示例；行为或配置变化同步更新文档。
+- 日志使用统一格式和级别，关键操作记录耗时、状态和错误上下文。
+- 日志不得输出密钥、令牌或其他敏感数据；对超时、失败率和资源泄漏保留诊断信息。
+
+## 完成标准
+
+一次代码变更只有在以下条件满足后才算完成：
+
+- 需求行为已实现，且没有改变无关行为。
+- 相关测试已新增或更新，回归测试覆盖了修复场景。
+- 已运行与变更范围匹配的窄测试和分层测试；必要时已运行完整测试。
+- 当前可用的 Ruff 检查、`git diff --check` 和相关构建检查已通过。
+- 相关文档或 OpenSpec 已同步。
+- 没有提交密钥、临时文件、用户数据或无关修改。
+- 最终回复列出修改摘要、验证命令、验证结果和已知限制。

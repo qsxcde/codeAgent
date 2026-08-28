@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from codeagent.core.context_budget import ContextBudgetSnapshot
+from codeagent.core.context_preflight import ContextPreflightResult
+from codeagent.session.persistence.models import UsageStats
 
 class RunPhase(StrEnum):
     """Observable phases owned by the session runtime."""
@@ -110,10 +113,15 @@ class RuntimeFailure:
     cleanup_uncertain: bool = False
     operation_id: str | None = None
     cause_type: str | None = None
+    budget_status: str | None = None
+    input_tokens: int | None = None
+    input_budget: int | None = None
+    headroom: int | None = None
+    window_source: str | None = None
 
     def as_metadata(self) -> dict[str, Any]:
         """Return fields safe to attach to a session event."""
-        return {
+        metadata = {
             "error": self.message,
             "error_code": self.code,
             "error_message": self.message,
@@ -124,6 +132,17 @@ class RuntimeFailure:
             "operation_id": self.operation_id,
             "cause_type": self.cause_type,
         }
+        if self.budget_status is not None:
+            metadata.update(
+                {
+                    "budget_status": self.budget_status,
+                    "input_tokens": self.input_tokens,
+                    "input_budget": self.input_budget,
+                    "headroom": self.headroom,
+                    "window_source": self.window_source,
+                }
+            )
+        return metadata
 
 
 @dataclass(frozen=True)
@@ -185,10 +204,40 @@ class RunState:
         return self.sequence
 
 
+@dataclass
+class SessionBudgetState:
+    """Runtime-only budget and provider usage state for the active session."""
+
+    latest_estimate: ContextBudgetSnapshot | None = None
+    latest_preflight: ContextPreflightResult | None = None
+    latest_actual_usage: UsageStats | None = None
+
+    def reset_request(self) -> None:
+        """Clear request-local observations before a new session run."""
+        self.latest_estimate = None
+        self.latest_preflight = None
+        self.latest_actual_usage = None
+
+    def record_estimate(self, snapshot: ContextBudgetSnapshot) -> None:
+        self.latest_estimate = snapshot
+
+    def record_preflight(self, result: ContextPreflightResult) -> None:
+        self.latest_preflight = result
+
+    def record_actual_usage(self, payload: dict[str, Any]) -> None:
+        self.latest_actual_usage = UsageStats(
+            input_tokens=int(payload.get("input_tokens", 0) or 0),
+            output_tokens=int(payload.get("output_tokens", 0) or 0),
+            reasoning_tokens=int(payload.get("reasoning_tokens", 0) or 0),
+            cached_tokens=int(payload.get("cached_tokens", 0) or 0),
+        )
+
+
 __all__ = [
     "CommitStatus",
     "RunOutcome",
     "RunPhase",
     "RunState",
+    "SessionBudgetState",
     "RuntimeFailure",
 ]

@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-__all__ = ["AgentContinueError", "AgentRuntimeError"]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from codeagent.core.context_preflight import ContextPreflightResult
+
+__all__ = [
+    "AgentContinueError",
+    "AgentRuntimeError",
+    "ContextPreparationError",
+    "ContextPreflightError",
+]
 
 
 class AgentRuntimeError(RuntimeError):
@@ -11,3 +21,35 @@ class AgentRuntimeError(RuntimeError):
 
 class AgentContinueError(AgentRuntimeError, ValueError):
     """The current context cannot be resumed as an Agent turn."""
+
+
+class ContextPreparationError(AgentRuntimeError, ValueError):
+    """A budget or context extension failed before the model request."""
+
+    code = "context_preparation_failed"
+    phase = "context_preparation"
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+class ContextPreflightError(ContextPreparationError):
+    """A deterministic local request block from the budget preflight."""
+
+    phase = "context_preflight"
+
+    def __init__(self, result: "ContextPreflightResult") -> None:
+        self.result = result
+        self.code = (
+            "context_budget_exceeded"
+            if result.status == "over_limit"
+            else "context_budget_uncertain"
+        )
+        self.budget_status = result.status
+        self.input_tokens = result.input_tokens
+        self.input_budget = result.input_budget
+        self.headroom = result.headroom
+        self.window_source = result.window_source
+        self.warning_boundary = result.warning_boundary
+        super().__init__(ValueError(result.reason))

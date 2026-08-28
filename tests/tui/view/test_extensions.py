@@ -1,5 +1,7 @@
 """TUI view extensions behavior tests."""
 
+import threading
+
 from tests.tui.view.fixtures import *  # noqa: F401,F403
 
 
@@ -18,6 +20,26 @@ def test_skills_package_subcommand_is_forwarded_to_composition_root():
 
     assert calls == [("install", ("./demo",))]
     assert "已安装 Package demo" in "\n".join(app.model.transcript.all_lines(120))
+
+
+async def test_package_action_runs_off_the_tui_event_loop():
+    started = threading.Event()
+    release = threading.Event()
+
+    def package_action(action, args):
+        started.set()
+        assert release.wait(1)
+        return "安装完成"
+
+    app = TuiApp(FakeManager(), StubBackend(), package_action=package_action)
+    app._cmd_skills(Command("skills", ("install", "./demo"), "install ./demo"))
+
+    assert await asyncio.to_thread(started.wait, 1)
+    task = app._package_task
+    assert task is not None and not task.done()
+    release.set()
+    await task
+    assert "安装完成" in "\n".join(app.model.transcript.all_lines(120))
 
 
 

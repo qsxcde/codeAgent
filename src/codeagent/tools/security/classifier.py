@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import shlex
 from pathlib import Path
 from typing import Callable
 
 from codeagent.tools.security.bash_rules import (
-    _SEGMENT_SEPARATORS,
     _dangerous_hit,
     _dangerous_intent,
 )
@@ -18,6 +16,9 @@ from codeagent.tools.security.filesystem import (
     classify_file,
 )
 from codeagent.tools.security.mcp import classify_mcp
+from codeagent.tools.security.shell_parse import (
+    split_segments,
+)
 from codeagent.tools.shared import resolve_to_cwd
 
 DEFAULT_ALLOWLIST: tuple[str, ...] = (
@@ -36,20 +37,26 @@ DEFAULT_ALLOWLIST: tuple[str, ...] = (
 )
 
 
+_INTERPRETER_WRAPPERS = {
+    "bash",
+    "sh",
+    "zsh",
+    "python",
+    "python3",
+    "node",
+    "perl",
+    "ruby",
+    "php",
+    "lua",
+    "awk",
+    "gawk",
+}
+
+
 def _split_segments(command: str) -> list[list[str]]:
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        tokens = command.strip().split()
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token in _SEGMENT_SEPARATORS:
-            segments.append([])
-        else:
-            segments[-1].append(token)
-    return segments
+    """Use the same parser as bash_rules; malformed syntax fails closed there."""
+
+    return split_segments(command) or [[command.strip()]]
 
 
 def _matches_allowlist(tokens: list[str], allowlist: tuple[str, ...]) -> bool:
@@ -112,7 +119,86 @@ def _default_ask_rules(
 
     def interpreter_inline(segments: list[list[str]]) -> bool:
         segment = segments[-1]
-        return bool(segment) and segment[0] in ("python", "python3") and "-c" in segment[1:]
+        return bool(segment) and segment[0] in _INTERPRETER_WRAPPERS and any(
+            flag in segment[1:] for flag in ("-c", "-e", "--eval")
+        )
+
+    def encoded_pipeline(segments: list[list[str]]) -> bool:
+        for index, segment in enumerate(segments[:-1]):
+            if not segment or segment[0] != "base64":
+                continue
+            if not any(flag in {"-d", "--decode"} for flag in segment[1:]):
+                continue
+            next_segment = segments[index + 1]
+            if next_segment and next_segment[0] in _INTERPRETER_WRAPPERS:
+                return True
+        return False
+
+    def xargs_execution(segments: list[list[str]]) -> bool:
+        segment = segments[-1]
+        return bool(segment) and segment[0] == "xargs"
+
+    def system_redirect(segments: list[list[str]]) -> bool:
+        for segment in segments:
+            for index, token in enumerate(segment[:-1]):
+                if token not in {">", ">>", ">|"}:
+                    continue
+                target = segment[index + 1].replace("\\", "/").lower()
+                if target.startswith(("/etc/", "/boot/", "/sys/", "/usr/", "/var/lib/")):
+                    return True
+        return False
+
+    def tee_system_path(segments: list[list[str]]) -> bool:
+        return any(
+            segment
+            and segment[0] == "tee"
+            and any(
+                token.replace("\\", "/").lower().startswith(
+                    ("/etc/", "/boot/", "/sys/", "/usr/", "/var/lib/")
+                )
+                for token in segment[1:]
+            )
+            for segment in segments
+        )
+
+    def docker_root_mount(segments: list[list[str]]) -> bool:
+        for segment in segments:
+            if not segment or segment[0] != "docker" or "run" not in segment[1:]:
+                continue
+            for index, token in enumerate(segment[1:], start=1):
+                value = ""
+                if token in {"-v", "--volume"} and index + 1 < len(segment):
+                    value = segment[index + 1]
+                elif token.startswith("-v") and ":" in token:
+                    value = token[2:].lstrip("=")
+                elif token.startswith("--volume="):
+                    value = token.split("=", 1)[1]
+                elif token.startswith("--mount") and "src=/" in token:
+                    value = "/:/"
+                if value.split(":", 1)[0] in {"/", "\\"}:
+                    return True
+        return False
+
+    def tar_root_extract(segments: list[list[str]]) -> bool:
+        return any(
+            segment
+            and segment[0] == "tar"
+            and any(
+                token in {"-C", "--directory"}
+                or token.startswith(("-C/", "--directory=/"))
+                for token in segment[1:]
+            )
+            and any(token == "/" or token.endswith("=/") for token in segment[1:])
+            for segment in segments
+        )
+
+    def awk_system_call(segments: list[list[str]]) -> bool:
+        return any(
+            segment
+            and segment[0] in {"awk", "gawk"}
+            and any("system" in token.lower() for token in segment[1:])
+            for segment in segments
+        )
 
     def mv_overwrite(segments: list[list[str]]) -> bool:
         segment = segments[-1]
@@ -137,6 +223,13 @@ def _default_ask_rules(
         (dd_write_device, "写入块设备(dd of=/dev/..." + ")"),
         (nested_shell, "嵌套 shell 执行(-c)"),
         (interpreter_inline, "解释器内联代码(-c)"),
+        (encoded_pipeline, "编码数据管道进入解释器"),
+        (xargs_execution, "xargs 间接批量执行"),
+        (system_redirect, "写入系统目录"),
+        (tee_system_path, "tee 写入系统文件"),
+        (docker_root_mount, "容器挂载主机根目录"),
+        (tar_root_extract, "解包覆盖文件系统根目录"),
+        (awk_system_call, "awk 间接执行外部命令"),
         (
             lambda seg: bool(seg[-1]) and seg[-1][0] in ("kill", "pkill", "killall"),
             "终止进程",
@@ -181,11 +274,14 @@ def classify_bash(
     for segment in segments:
         if not segment:
             continue
-        if _matches_allowlist(segment, allow):
-            continue
         for match, reason in rules:
             if match([segment]):
                 return SecurityDecision(ASK, reason)
+        if _matches_allowlist(segment, allow):
+            continue
+    for match, reason in rules:
+        if match(segments):
+            return SecurityDecision(ASK, reason)
     if _download_to_shell(segments):
         return SecurityDecision(ASK, "网络下载并执行(curl|sh 类)")
     return SecurityDecision(ALLOW)

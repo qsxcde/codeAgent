@@ -5,8 +5,27 @@
 """
 
 from codeagent.core.context import AgentContext
+from codeagent.core.context_budget import (
+    ContextBudgetInput,
+    ContextBudgetSnapshot,
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_OUTPUT_RESERVE,
+    DEFAULT_RESERVE_TOKENS,
+    estimate_context_budget,
+)
+from codeagent.core.context_preflight import (
+    ContextPreflightConfig,
+    ContextPreflightResult,
+    PreflightStatus,
+    evaluate_context_preflight,
+)
 from codeagent.core.agent import Agent
-from codeagent.core.errors import AgentContinueError, AgentRuntimeError
+from codeagent.core.errors import (
+    AgentContinueError,
+    AgentRuntimeError,
+    ContextPreparationError,
+    ContextPreflightError,
+)
 from codeagent.core.events import AgentEvent, EventType
 from codeagent.core.execution import (
     CleanupResult,
@@ -30,6 +49,10 @@ from codeagent.core.messages import (
 from codeagent.core.ports import (
     AgentLoopConfig,
     AgentTool,
+    ContextBudgetPort,
+    ContextPreparationRequest,
+    ContextPreparer,
+    ContextToolDefinition,
     ModelPort,
     ModelResponse,
     StreamEvent,
@@ -43,7 +66,20 @@ __all__ = [
     "AgentContinueError",
     "AgentLoopConfig",
     "AgentRuntimeError",
+    "ContextBudgetInput",
+    "ContextBudgetPort",
+    "ContextBudgetSnapshot",
+    "ContextToolDefinition",
+    "ContextPreparationRequest",
+    "ContextPreparer",
+    "ContextPreparationError",
+    "ContextPreflightConfig",
+    "ContextPreflightError",
+    "ContextPreflightResult",
     "CleanupStatus",
+    "DEFAULT_CONTEXT_WINDOW",
+    "DEFAULT_OUTPUT_RESERVE",
+    "DEFAULT_RESERVE_TOKENS",
     "CleanupResult",
     "AgentTool",
     "DEFAULT_RECURSION_LIMIT",
@@ -62,4 +98,7 @@ __all__ = [
     "ToolExecutionStatus",
     "ToolOperation",
     "ToolResult",
+    "PreflightStatus",
+    "evaluate_context_preflight",
+    "estimate_context_budget",
 ]

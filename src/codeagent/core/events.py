@@ -41,6 +41,8 @@ class EventType:
     ERROR = "error"                          # 图运行出错(供订阅方感知并终止)
     RUN_CANCELLED = "run_cancelled"          # 运行被用户中断(abort 后由 session 广播)
     USAGE = "usage"                          # token 用量(模型 usage_metadata 透传)
+    CONTEXT_BUDGET = "context_budget"        # 本次模型请求的预算快照
+    CONTEXT_PREFLIGHT = "context_preflight"  # 本次模型请求的预算前置判定
     CONFIRMATION_REQUESTED = "confirmation_requested"  # 工具执行需用户确认(security-permissions)
     COMPACTION_STARTED = "compaction_started"          # 上下文压缩开始
     COMPACTION_FINISHED = "compaction_finished"        # 上下文压缩结束

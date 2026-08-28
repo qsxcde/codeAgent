@@ -134,8 +134,6 @@ class TuiRenderCoordinator:
                     break
                 self.model.advance_activity()
                 self.schedule_render()
-        except asyncio.CancelledError:
-            pass
         finally:
             if self.activity_task is asyncio.current_task():
                 self.activity_task = None

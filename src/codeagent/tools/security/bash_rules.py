@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import re
-import shlex
 from pathlib import Path
+
+from codeagent.tools.security.shell_parse import (
+    split_segments,
+    tokenize_shell,
+)
 
 __all__ = ["DANGEROUS_PATTERNS"]
 
@@ -18,7 +22,20 @@ DANGEROUS_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 _DYNAMIC_TARGET_CHARS = set("$`\\\"*?[]{}")
-_INTERPRETER_WRAPPERS = ("bash", "sh", "zsh")
+_INTERPRETER_WRAPPERS = (
+    "bash",
+    "sh",
+    "zsh",
+    "python",
+    "python3",
+    "node",
+    "perl",
+    "ruby",
+    "php",
+    "lua",
+    "awk",
+    "gawk",
+)
 _MAX_NESTING_DEPTH = 5
 _SEGMENT_SEPARATORS = {"|", "&&", ";", "||", "&"}
 
@@ -31,12 +48,7 @@ def _dangerous_hit(command: str) -> str | None:
 
 
 def _tokenize_shell(command: str) -> list[str] | None:
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        return list(lexer)
-    except ValueError:
-        return None
+    return tokenize_shell(command)
 
 
 def _split_segments_tokens(tokens: list[str]) -> list[list[str]]:
@@ -206,8 +218,16 @@ def _dangerous_intent(
         if index >= len(segment):
             continue
         first = segment[index]
-        if first in _INTERPRETER_WRAPPERS and "-c" in segment[index:]:
-            arg_index = segment.index("-c", index) + 1
+        inline_flag = next(
+            (
+                flag
+                for flag in ("-c", "-e", "--eval")
+                if flag in segment[index:]
+            ),
+            None,
+        )
+        if first in _INTERPRETER_WRAPPERS and inline_flag is not None:
+            arg_index = segment.index(inline_flag, index) + 1
             if arg_index < len(segment):
                 inner = _dangerous_intent(segment[arg_index], cwd, _depth + 1)
                 if inner is not None:

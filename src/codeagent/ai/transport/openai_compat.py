@@ -12,6 +12,7 @@ import asyncio
 import json
 import uuid
 from typing import Any, AsyncIterator
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import SecretStr
@@ -52,6 +53,24 @@ class OpenAICompatClient:
         timeout: float | httpx.Timeout | None = None,
         max_retries: int = 3,
     ) -> None:
+        parsed_url = urlsplit(base_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise ValueError("base_url 必须是带主机名的 http/https URL")
+        if parsed_url.query or parsed_url.fragment:
+            raise ValueError("base_url 不得包含 query 或 fragment")
+        if max_tokens is not None and (
+            type(max_tokens) is not int or max_tokens < 1
+        ):
+            raise ValueError("max_tokens 必须是正整数")
+        if reasoning_effort is not None and reasoning_effort not in {
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra",
+        }:
+            raise ValueError("reasoning_effort 必须是 low/medium/high/xhigh/max/ultra")
         self._base_url = base_url.rstrip("/")
         # 统一存 SecretStr:repr/日志/回溯不泄露明文(M7)
         self._api_key = api_key if isinstance(api_key, SecretStr) else SecretStr(api_key)
@@ -59,14 +78,22 @@ class OpenAICompatClient:
         self._reasoning_effort = reasoning_effort
         self._max_tokens = max_tokens
         self._temperature = temperature
-        # 区分 connect/read 超时:流式首 token 可能很久(xhigh 思考),read 不限制
+        # 非流式请求必须有有限的 read timeout；流式请求另行允许较长的
+        # 首 token 等待，避免服务端 accept 后永远不返回导致 TUI 假死。
         if timeout is None:
-            self._timeout: httpx.Timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+            self._timeout = httpx.Timeout(
+                connect=10.0, read=120.0, write=30.0, pool=10.0
+            )
+            self._stream_timeout = httpx.Timeout(
+                connect=10.0, read=None, write=30.0, pool=10.0
+            )
         elif isinstance(timeout, httpx.Timeout):
             self._timeout = timeout
+            self._stream_timeout = timeout
         else:
             # float: 向后兼容(全部操作同一超时)
             self._timeout = httpx.Timeout(timeout)
+            self._stream_timeout = self._timeout
         self._max_retries = max_retries
         self._tools: list[Any] = []
         #: 复用的底层 HTTP 客户端(懒创建,提供 aclose 释放);连接/TLS 复用(M6)。
@@ -172,7 +199,12 @@ class OpenAICompatClient:
         client = self._get_client()
         for attempt in range(self._max_retries + 1):
             try:
-                resp = await client.post(self._endpoint(), headers=self._headers(), json=body)
+                resp = await client.post(
+                    self._endpoint(),
+                    headers=self._headers(),
+                    json=body,
+                    timeout=self._timeout,
+                )
                 resp.raise_for_status()
                 data = resp.json()
                 break
@@ -287,7 +319,11 @@ class OpenAICompatClient:
         for attempt in range(self._max_retries + 1):
             try:
                 async with client.stream(
-                    "POST", self._endpoint(), headers=self._headers(), json=body
+                    "POST",
+                    self._endpoint(),
+                    headers=self._headers(),
+                    json=body,
+                    timeout=self._stream_timeout,
                 ) as resp:
                     # 先读 body 再 raise:错误细节不因 body 未读而丢失
                     if not resp.is_success:

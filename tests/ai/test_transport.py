@@ -32,6 +32,26 @@ def test_model_id_and_endpoint():
     assert c._endpoint() == "https://api.deepseek.com/chat/completions"
 
 
+def test_non_streaming_timeout_is_finite_while_streaming_allows_slow_first_token():
+    c = _client()
+    assert c._timeout.read == 120.0
+    assert c._stream_timeout.read is None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"base_url": "ftp://example.com"},
+        {"base_url": "https://example.com?token=leak"},
+        {"max_tokens": 0},
+        {"reasoning_effort": "unknown"},
+    ],
+)
+def test_client_rejects_invalid_transport_configuration(kwargs):
+    with pytest.raises(ValueError):
+        _client(**kwargs)
+
+
 def test_body_includes_reasoning_effort_and_tools():
     c = _client(reasoning_effort="xhigh", max_tokens=4096)
 

@@ -117,6 +117,8 @@ async def test_run_agent_loop_returns_new_messages_and_agent_events():
         EventType.AGENT_START,
         EventType.TURN_START,
         EventType.MESSAGE_START,
+        EventType.CONTEXT_BUDGET,
+        EventType.CONTEXT_PREFLIGHT,
         EventType.MESSAGE_UPDATE,
         EventType.MESSAGE_END,
         EventType.TURN_END,

@@ -142,7 +142,7 @@ class TuiSessionCoordinator:
             return
         self.model.append_info("正在压缩会话上下文...")
         loop = asyncio.get_running_loop()
-        loop.create_task(self._run_compact(session))
+        self._track_task(loop.create_task(self._run_compact(session)))
 
     def _cmd_output(self, cmd: Command) -> None:
         """分页/导出输出视图；动作只触碰本地显示缓冲。"""
@@ -176,13 +176,15 @@ class TuiSessionCoordinator:
             self.model.append_info("当前失败不可安全重试,请确认副作用后使用 /continue <新消息>")
             return
         loop = asyncio.get_running_loop()
-        loop.create_task(self._run_retry(session))
+        self._track_task(loop.create_task(self._run_retry(session)))
 
     async def _run_retry(self, session: Any) -> None:
         try:
             await session.retry()
         except ValueError as exc:
             self.model.append_info(str(exc))
+        except Exception as exc:
+            self.model.append_info(f"重试失败: {exc}")
         self._schedule_render()
 
     def _cmd_continue(self, cmd: Command) -> None:
@@ -264,6 +266,8 @@ class TuiSessionCoordinator:
                 session = await method(*args)
             except ValueError as exc:
                 self.model.append_info(str(exc))
+            except Exception as exc:
+                self.model.append_info(f"会话操作失败: {exc}")
             else:
                 self._hydrate_current_session()
                 self.model.append_info(message(session))
@@ -272,7 +276,7 @@ class TuiSessionCoordinator:
                 self._schedule_render()
 
         self.model.append_info("正在等待当前运行收尾并切换会话...")
-        self._session_action_task = loop.create_task(run_action())
+        self._session_action_task = self._track_task(loop.create_task(run_action()))
         self._schedule_render()
         return True
 
@@ -303,8 +307,8 @@ class TuiSessionCoordinator:
                 # 避免旧会话晚到的快照覆盖当前界面。
                 if self._restore_task is not None and not self._restore_task.done():
                     self._restore_task.cancel()
-                self._restore_task = loop.create_task(
-                    self._restore_large_session(session)
+                self._restore_task = self._track_task(
+                    loop.create_task(self._restore_large_session(session))
                 )
                 self._sync_context_status()
                 return

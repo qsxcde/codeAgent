@@ -330,5 +330,11 @@ class TuiInteractionCoordinator:
         if handler is None:  # 理论不可达:注册表与分派表同源
             self.model.append_info(f"未知命令: /{cmd.name}")
         else:
-            handler(cmd)
+            try:
+                handler(cmd)
+            except Exception as exc:
+                # Command handlers include optional integrations (Package,
+                # MCP and persistence). Keep one bad integration from
+                # escaping Textual's input callback and taking down the UI.
+                self.model.append_info(f"命令执行失败: {exc}")
         self._schedule_render()

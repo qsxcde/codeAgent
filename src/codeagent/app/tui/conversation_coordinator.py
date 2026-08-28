@@ -124,19 +124,35 @@ class TuiConversationCoordinator:
         selected_mode = mode or self._task_mode
         self.model.append_pending_user(text)
         self._task_active = True
-        self._task_supervisor = TaskSupervisor(
+        supervisor = TaskSupervisor(
             session,
             cwd=self.model.status.cwd or ".",
             base_policy=getattr(session, "policy", None),
             event_sink=self._on_task_event,
         )
+        self._task_supervisor = supervisor
 
         async def _run() -> None:
             try:
-                await self._task_supervisor.run(text, mode=selected_mode)
+                await supervisor.run(text, mode=selected_mode)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A failure outside AgentSession (workspace inspection,
+                # verification resolution, or a coordinator bug) must still
+                # become visible in the transcript instead of an orphaned
+                # "Task exception was never retrieved" warning.
+                self.model.apply(
+                    AgentEvent(
+                        EventType.ERROR,
+                        payload=f"任务执行失败: {exc}",
+                        metadata={"error_code": "tui_task_error"},
+                    )
+                )
             finally:
-                self._task_active = False
-                self._task_supervisor = None
+                if self._task_supervisor is supervisor:
+                    self._task_active = False
+                    self._task_supervisor = None
                 self._schedule_render()
 
         try:
@@ -144,4 +160,4 @@ class TuiConversationCoordinator:
         except RuntimeError:
             asyncio.run(_run())
             return
-        self._conversation_task = loop.create_task(_run())
+        self._conversation_task = self._track_task(loop.create_task(_run()))

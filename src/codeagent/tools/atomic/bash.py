@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import os
-import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,10 +18,10 @@ from codeagent.tools.base import AtomicTool
 from codeagent.tools.execution import ProcessRequest, ProcessRunner, bash_env, resolve_bash
 from codeagent.tools.security.bash_rules import (
     DANGEROUS_PATTERNS,
-    _SEGMENT_SEPARATORS,
     _dangerous_hit,
     _dangerous_intent,
 )
+from codeagent.tools.security.shell_parse import last_segment_first_token
 from codeagent.tools.shared import DEFAULT_MAX_LINES, truncate_tail
 
 __all__ = [
@@ -66,21 +65,7 @@ class BashArgs(BaseModel):
 
 def _last_segment_first_token(command: str) -> str:
     """取最后一个逻辑段的首 token，用于退出码语义判断。"""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        tokens = command.strip().split()
-    if not tokens:
-        return ""
-    last_segment: list[str] = []
-    for token in tokens:
-        if token in _SEGMENT_SEPARATORS:
-            last_segment = []
-        else:
-            last_segment.append(token)
-    return last_segment[0] if last_segment else tokens[0]
+    return last_segment_first_token(command)
 
 
 def _semantically_ok(exit_code: int, command: str) -> bool:

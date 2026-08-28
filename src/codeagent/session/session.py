@@ -21,20 +21,26 @@ from dataclasses import replace
 from typing import Any, Callable
 
 from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.context_budget import ContextBudgetSnapshot
+from codeagent.core.context_preflight import ContextPreflightResult
 from codeagent.core.loop import DEFAULT_RECURSION_LIMIT
 from codeagent.core.messages import Message
 from codeagent.core.ports import AgentLoopConfig
 from codeagent.session.events.bus import EventBus, Subscriber
 from codeagent.session.compaction import (
     DEFAULT_BUDGET_TOKENS,
-    extract_file_ops,
-    find_cut_point,
 )
+from codeagent.session.compaction.service import CompactionService
 from codeagent.session.session_persistence import SessionPersistence
 from codeagent.session.runtime.controller import SessionRuntime
 from codeagent.session.runtime.error_policy import classify_error, friendly_error
-from codeagent.session.persistence.models import CompactionEntry, UsageStats
-from codeagent.session.runtime.state import CommitStatus, RunOutcome, RunPhase
+from codeagent.session.persistence.models import UsageStats
+from codeagent.session.runtime.state import (
+    CommitStatus,
+    RunOutcome,
+    RunPhase,
+    SessionBudgetState,
+)
 
 #: 摘要注入消息的前缀(模型识别"历史摘要";Pi COMPACTION_SUMMARY_PREFIX 对应物)。
 SUMMARY_PREFIX = "以下为会话历史摘要(此前内容已被压缩,无需再次执行其中操作):\n"
@@ -61,7 +67,7 @@ class AgentSession:
         confirmation_timeout: float | None = None,
         previous_session_id: str | None = None,
         summarizer: Any | None = None,
-        context_window: int = DEFAULT_CONTEXT_WINDOW,
+        context_window: int | None = None,
         compact_budget: int = DEFAULT_BUDGET_TOKENS,
         defer_persistence: bool = False,
         persistence_options: dict[str, Any] | None = None,
@@ -80,15 +86,26 @@ class AgentSession:
         self._previous_session_id = previous_session_id
         #: 上下文压缩(session-compaction):Summarizer 端口与上下文窗口。
         self._summarizer = summarizer
+        if context_window is None:
+            model_window = getattr(getattr(config, "model", None), "context_window", None)
+            context_window = (
+                model_window
+                if type(model_window) is int and model_window > 0
+                else DEFAULT_CONTEXT_WINDOW
+            )
+        elif type(context_window) is not int or context_window < 1:
+            raise ValueError("context_window must be positive")
         self._context_window = context_window
         self._runtime_closer = runtime_closer
+        self._budget_state = SessionBudgetState()
         #: Optional Memory/context extension; it only changes model-visible data.
         self._transform_context = transform_context
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         #: 切点预算(软目标;测试可注入小值)。
         self._compact_budget = compact_budget
-        #: 最近一次 usage.input_tokens(本轮请求总输入 = 当前上下文占用)。
+        #: 最近一次 provider usage.input_tokens;它不同于运行期预算 estimate,
+        #: 也不等同于会话 committed usage。
         self._last_input_tokens: int | None = None
         self._persistence = SessionPersistence(
             store,
@@ -140,6 +157,26 @@ class AgentSession:
     def usage(self) -> UsageStats:
         """会话累计用量(cost-transparency;无 store 或无记录返回全零)。"""
         return self._persistence.usage
+
+    @property
+    def committed_usage(self) -> UsageStats:
+        """Return usage from successfully committed session turns only."""
+        return self._persistence.usage
+
+    @property
+    def context_budget(self) -> ContextBudgetSnapshot | None:
+        """Latest request estimate; independent from actual and committed usage."""
+        return self._budget_state.latest_estimate
+
+    @property
+    def context_preflight(self) -> ContextPreflightResult | None:
+        """Latest request-local budget preflight result; never persisted."""
+        return self._budget_state.latest_preflight
+
+    @property
+    def last_actual_usage(self) -> UsageStats | None:
+        """Latest provider usage event, without aggregating it into history."""
+        return self._budget_state.latest_actual_usage
 
     @property
     def is_persisted(self) -> bool:
@@ -226,14 +263,15 @@ class AgentSession:
             if hasattr(result, "__await__"):
                 await result
 
-    def close_sync(self) -> None:
-        """Synchronous adapter for headless/CLI lifecycle owners."""
+    def close_sync(self) -> asyncio.Task[None] | None:
+        """同步适配；事件循环内返回可等待的关闭任务。"""
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(self.close())
+            return None
         else:
-            asyncio.create_task(self.close())
+            return asyncio.create_task(self.close())
 
     def steer(self, text: str) -> None:
         """运行中注入消息:下一轮循环前消费为 user 消息(不做旁路请求)。"""
@@ -263,10 +301,13 @@ class AgentSession:
         否则旧壳仍用旧模型继续对话。
         """
         self._config = config
+        model_window = getattr(getattr(config, "model", None), "context_window", None)
+        if type(model_window) is int and model_window > 0:
+            self._context_window = model_window
 
     def set_context_window(self, context_window: int) -> None:
         """在模型/provider 重建后同步新的上下文窗口上限。"""
-        if context_window < 1:
+        if type(context_window) is not int or context_window < 1:
             raise ValueError("context_window must be positive")
         self._context_window = context_window
 
@@ -284,10 +325,18 @@ class AgentSession:
             self._runtime.active_run_id,
         )
         try:
-            if self._summarizer is None:
-                raise ValueError("压缩不可用:未注入 Summarizer")
-            cut = find_cut_point(self._history, self._compact_budget)
-            if cut <= 0:
+            service = CompactionService(
+                self._summarizer,
+                self._compact_budget,
+                self._persistence.append_compaction,
+            )
+            result = await service.compact(
+                self._history,
+                self._summary,
+                self._summary_entry_id,
+                self._prev_details,
+            )
+            if result is None:
                 self._emit(
                     AgentEvent(
                         EventType.COMPACTION_FINISHED,
@@ -296,34 +345,10 @@ class AgentSession:
                     self._runtime.active_run_id,
                 )
                 return False
-            window = self._history[:cut]
-            kept = self._history[cut:]
-            summary = await self._summarizer.summarize(window, self._summary)
-            fresh = extract_file_ops(window)
-            details = {
-                "readFiles": list(
-                    dict.fromkeys(self._prev_details.get("readFiles", []) + fresh["readFiles"])
-                ),
-                "modifiedFiles": list(
-                    dict.fromkeys(
-                        self._prev_details.get("modifiedFiles", []) + fresh["modifiedFiles"]
-                    )
-                ),
-            }
-            parent_id = self._summary_entry_id or (
-                self._history[-1].id if self._history else None
-            )
-            entry = CompactionEntry(
-                summary=summary,
-                details=details,
-                parent_id=parent_id,
-                first_kept_entry_id=kept[0].id if kept else "",
-            )
-            entry_id = self._persistence.append_compaction(entry)
-            self._summary = summary
-            self._summary_entry_id = entry_id
-            self._prev_details = details
-            self._history = kept
+            self._summary = result.summary
+            self._summary_entry_id = result.summary_entry_id
+            self._prev_details = result.details
+            self._history = result.kept_history
             self._emit(
                 AgentEvent(
                     EventType.COMPACTION_FINISHED,
@@ -356,8 +381,15 @@ class AgentSession:
 
     def _on_internal_event(self, event: AgentEvent) -> None:
         """内部订阅:捕获 usage 事件更新上下文占用统计(阈值触发用)。"""
-        if event.type == EventType.USAGE:
+        if event.type == EventType.CONTEXT_BUDGET:
+            if isinstance(event.payload, ContextBudgetSnapshot):
+                self._budget_state.record_estimate(event.payload)
+        elif event.type == EventType.CONTEXT_PREFLIGHT:
+            if isinstance(event.payload, ContextPreflightResult):
+                self._budget_state.record_preflight(event.payload)
+        elif event.type == EventType.USAGE:
             payload = event.payload or {}
+            self._budget_state.record_actual_usage(payload)
             tokens = payload.get("input_tokens")
             if tokens:
                 self._last_input_tokens = int(tokens)
@@ -383,6 +415,7 @@ class AgentSession:
         压缩后首条新 user 消息的父级接回压缩记录。
         """
         metadata: dict[str, Any] = {}
+        self._budget_state.reset_request()
         run_id = self._runtime.start_run()
         if self._previous_session_id:
             # 分叉会话来源标记(session-fork):首轮事件携带父会话 id。

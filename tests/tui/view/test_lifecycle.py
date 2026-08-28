@@ -2,6 +2,9 @@
 
 from tests.tui.view.fixtures import *  # noqa: F401,F403
 
+from codeagent.app.task_supervisor import TaskSupervisor
+from codeagent.app.tui.blocks import ErrorBlock
+
 
 def test_fake_backend_regression_contract_covers_top_level_interactions():
     """FakeBackend 合同固定输入、命令、确认、切换、滚动、恢复、取消和退出边界。
@@ -69,6 +72,25 @@ async def test_submit_echoes_user_before_async_conversation_starts():
         await _wait_for_conversation(app)
 
     await (_run())
+
+
+async def test_unexpected_task_failure_is_rendered_instead_of_becoming_orphaned(
+    monkeypatch,
+):
+    app, backend, _ = _make_app()
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("verification service unavailable")
+
+    monkeypatch.setattr(TaskSupervisor, "run", fail)
+    backend.submit("触发失败")
+    await _wait_for_conversation(app)
+
+    assert any(isinstance(block, ErrorBlock) for block in app.model.transcript.blocks)
+    assert "verification service unavailable" in "\n".join(
+        app.model.transcript.all_lines(120)
+    )
+    assert app.model.running is False
 
 
 

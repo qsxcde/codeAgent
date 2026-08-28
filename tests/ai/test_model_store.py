@@ -55,6 +55,25 @@ def test_bool_max_tokens_rejected(tmp_path):
     assert "ok" in ids      # 正常 int 保留
 
 
+def test_non_positive_max_tokens_and_non_boolean_reasoning_are_rejected(tmp_path):
+    s = _store(
+        tmp_path,
+        json.dumps(
+            {
+                "fake": {
+                    "models": [
+                        {"id": "zero", "maxTokens": 0},
+                        {"id": "negative", "max_tokens": -1},
+                        {"id": "text", "reasoning": "false"},
+                        {"id": "valid", "maxTokens": 1, "reasoning": False},
+                    ]
+                }
+            }
+        ).encode(),
+    )
+    assert [model.id for model in s.load()["fake"]["models"]] == ["valid"]
+
+
 def test_camel_and_snake_keys_both_read(tmp_path):
     """camelCase 与 snake_case 键均可读,不静默丢弃其一(H12)。"""
     s = _store(
@@ -123,3 +142,71 @@ def test_model_spec_context_window_field():
     from codeagent.ai.catalog.builtin import DEEPSEEK_MODELS
 
     assert DEEPSEEK_MODELS["deepseek-v4-flash"].context_window == 256_000
+
+
+def test_context_window_keys_are_preserved_in_user_model_overrides(tmp_path):
+    store = _store(
+        tmp_path,
+        json.dumps(
+            {
+                "fake": {
+                    "models": [
+                        {"id": "camel", "contextWindow": 32_000},
+                        {"id": "snake", "context_window": 64_000},
+                    ]
+                }
+            }
+        ).encode(),
+    )
+
+    models = {model.id: model for model in store.load()["fake"]["models"]}
+
+    assert models["camel"].context_window == 32_000
+    assert models["snake"].context_window == 64_000
+
+
+def test_invalid_context_window_is_rejected_without_dropping_valid_records(tmp_path):
+    store = _store(
+        tmp_path,
+        json.dumps(
+            {
+                "fake": {
+                    "models": [
+                        {"id": "zero", "contextWindow": 0},
+                        {"id": "bool", "context_window": True},
+                        {"id": "text", "context_window": "64000"},
+                        {"id": "valid", "context_window": 64_000},
+                    ]
+                }
+            }
+        ).encode(),
+    )
+
+    models = {model.id: model for model in store.load()["fake"]["models"]}
+
+    assert list(models) == ["valid"]
+    assert models["valid"].context_window == 64_000
+
+
+def test_conflicting_context_window_keys_prefer_camel_case(tmp_path, caplog):
+    store = _store(
+        tmp_path,
+        json.dumps(
+            {
+                "fake": {
+                    "models": [
+                        {
+                            "id": "conflict",
+                            "contextWindow": 32_000,
+                            "context_window": 64_000,
+                        }
+                    ]
+                }
+            }
+        ).encode(),
+    )
+
+    model = store.load()["fake"]["models"][0]
+
+    assert model.context_window == 32_000
+    assert "contextWindow" in caplog.text

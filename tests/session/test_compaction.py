@@ -65,6 +65,12 @@ def test_cut_point_never_splits_turn():
     assert find_cut_point(messages, budget=100) == 0
 
 
+def test_cut_point_without_user_boundary_keeps_all_messages():
+    """没有完整 user 轮次时不能把保留窗口误算成空列表。"""
+    messages = [_msg("assistant", "partial"), _msg("tool", "result")]
+    assert find_cut_point(messages, budget=1) == 0
+
+
 def test_cut_point_multiple_rounds_soft_budget():
     """预算为软目标:最后一个整轮即使略超预算也整轮保留。"""
     messages = [*_turn("u1", "a1"), *_turn("u2", "a2")]

@@ -153,6 +153,8 @@ def _quote_env_value(value: str) -> str:
 
     保证写回后 python-dotenv 解析结果与原值一致(不因注释符/分隔符截断)。
     """
+    if "\n" in value or "\r" in value:
+        raise ValueError("API key 不能包含换行符")
     if re.search(r'[\s#"=]', value):
         return '"' + value.replace('"', '\\"') + '"'
     return value

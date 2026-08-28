@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from codeagent.core.context_preflight import ContextPreflightConfig
+
 from . import model_selection
 from .model_factory import _resolve_context_window, _resolve_model_effort
 from .prompt_builder import _workspace, agents_sources, skills_view
@@ -80,6 +82,8 @@ class TuiAssembler:
         reasoning_effort: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        uncertain_budget_policy: str = "allow",
+        context_preflight: ContextPreflightConfig | None = None,
     ) -> None:
         from codeagent.ai.catalog.registry import ModelRegistry
         from codeagent.ai.catalog.store import ModelStore
@@ -98,6 +102,8 @@ class TuiAssembler:
         self.reasoning_effort = reasoning_effort
         self.provider = provider
         self.model = model
+        self.uncertain_budget_policy = uncertain_budget_policy
+        self.context_preflight = context_preflight
         self.mcp_diagnostics: list[str] = []
         self.package_manager = PackageManager(CONFIG_DIR, _workspace(cfg))
         self.manager: Any = None
@@ -181,6 +187,32 @@ class TuiAssembler:
             model=self.model,
             approval_mode="interactive",
             mcp_diagnostics=self.mcp_diagnostics,
+            uncertain_budget_policy=self.uncertain_budget_policy,
+            context_preflight=self.context_preflight,
+        )
+
+    def _restore_session_config(self, ref: Any) -> Any:
+        """Rebuild the model/tool ports recorded in a persisted session header."""
+        provider = self.provider
+        base_model = model_selection.split_model_pattern(ref.model)[0]
+        if self.registry is not None:
+            owners = [
+                candidate
+                for candidate in self.registry.catalog_providers()
+                if base_model in self.registry.available(candidate)
+            ]
+            if len(owners) == 1:
+                provider = owners[0]
+        return create_agent_config(
+            self.cfg,
+            registry=self.registry,
+            reasoning_effort=ref.effort or self.reasoning_effort,
+            provider=provider,
+            model=ref.model,
+            approval_mode="interactive",
+            mcp_diagnostics=self.mcp_diagnostics,
+            uncertain_budget_policy=self.uncertain_budget_policy,
+            context_preflight=self.context_preflight,
         )
 
     def _build_manager(self) -> Any:
@@ -198,6 +230,9 @@ class TuiAssembler:
                 self.registry, self.cfg, self.provider, self.model
             ),
             mcp_diagnostics=self.mcp_diagnostics,
+            session_config_factory=self._restore_session_config,
+            uncertain_budget_policy=self.uncertain_budget_policy,
+            context_preflight=self.context_preflight,
         )
         return self.manager
 
@@ -229,6 +264,8 @@ class TuiAssembler:
             provider=target_provider or None,
             model=new_model or None,
             approval_mode="interactive",
+            uncertain_budget_policy=self.uncertain_budget_policy,
+            context_preflight=self.context_preflight,
         )
         close_runtime_for_config(old_config)
         model_id, effort = _resolve_model_effort(
@@ -277,6 +314,8 @@ class TuiAssembler:
             provider=target_provider or None,
             model=new_model or None,
             approval_mode="interactive",
+            uncertain_budget_policy=self.uncertain_budget_policy,
+            context_preflight=self.context_preflight,
         )
         await close_runtime_for_config_async(old_config)
         model_id, effort = _resolve_model_effort(
@@ -345,6 +384,8 @@ def create_tui_app(
     reasoning_effort: str | None = None,
     provider: str | None = None,
     model: str | None = None,
+    uncertain_budget_policy: str = "allow",
+    context_preflight: ContextPreflightConfig | None = None,
 ) -> Any:
     """创建 TUI 应用，具体状态由 ``TuiAssembler`` 持有。"""
     return TuiAssembler(
@@ -355,4 +396,6 @@ def create_tui_app(
         reasoning_effort=reasoning_effort,
         provider=provider,
         model=model,
+        uncertain_budget_policy=uncertain_budget_policy,
+        context_preflight=context_preflight,
     ).build()

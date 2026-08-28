@@ -29,22 +29,19 @@ class _FailingUsageJsonStore(JsonFileStore):
 
 
 def test_json_commit_failure_does_not_restore_over_a_concurrent_append(tmp_path, monkeypatch):
-    """The rollback snapshot must be taken while holding the path lock."""
+    """Rollback truncates only its own append batch under the path lock."""
     store = _FailingUsageJsonStore(tmp_path / "sessions")
     store.create("concurrent")
-    path = (tmp_path / "sessions" / "concurrent.jsonl").resolve()
-    snapshot_taken = threading.Event()
-    release_snapshot = threading.Event()
-    original_read_bytes = type(path).read_bytes
+    batch_started = threading.Event()
+    append_started = threading.Event()
+    original_append_message = store.append_message
 
-    def delayed_read_bytes(candidate):
-        data = original_read_bytes(candidate)
-        if candidate.resolve() == path and not snapshot_taken.is_set():
-            snapshot_taken.set()
-            assert release_snapshot.wait(1)
-        return data
+    def observe_batch(session_id, message):
+        batch_started.set()
+        assert append_started.wait(1)
+        return original_append_message(session_id, message)
 
-    monkeypatch.setattr(type(path), "read_bytes", delayed_read_bytes)
+    monkeypatch.setattr(store, "append_message", observe_batch)
     error: list[BaseException] = []
 
     def commit() -> None:
@@ -60,8 +57,6 @@ def test_json_commit_failure_does_not_restore_over_a_concurrent_append(tmp_path,
 
     worker = threading.Thread(target=commit)
     worker.start()
-    assert snapshot_taken.wait(1)
-    append_started = threading.Event()
     append_done = threading.Event()
     append_error: list[BaseException] = []
 
@@ -75,10 +70,9 @@ def test_json_commit_failure_does_not_restore_over_a_concurrent_append(tmp_path,
             append_done.set()
 
     append_worker = threading.Thread(target=append_other)
+    assert batch_started.wait(1)
     append_worker.start()
     assert append_started.wait(1)
-    assert not append_done.wait(0.05)
-    release_snapshot.set()
     worker.join(timeout=5)
     assert not worker.is_alive()
     assert append_done.wait(5)

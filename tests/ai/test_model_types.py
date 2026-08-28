@@ -93,3 +93,36 @@ async def test_chat_model_port_injects_system_prompt_at_adapter_boundary() -> No
         "role": "system",
         "content": "you are concise",
     }
+
+
+def test_chat_model_port_describes_the_same_system_and_tool_request_budget():
+    client = FakeClient(response="ok")
+    port = ChatModelPort(
+        client,
+        system_prompt="you are concise",
+        context_window=1_000,
+        output_reserve=100,
+        reserve_tokens=50,
+        window_source="catalog",
+    )
+
+    snapshot = port.describe_context_budget(
+        [Message(role="user", content="read the workspace")], [_Tool()]
+    )
+
+    assert snapshot.context_window == 1_000
+    assert snapshot.output_reserve == 100
+    assert snapshot.reserve_tokens == 50
+    assert snapshot.system_prompt_tokens > 0
+    assert snapshot.tool_definitions_tokens > 0
+    assert snapshot.conversation_tokens > 0
+    assert snapshot.status == "estimate"
+
+
+def test_chat_model_port_marks_fallback_window_as_uncertain():
+    snapshot = ChatModelPort(FakeClient(response="ok")).describe_context_budget(
+        [Message(role="user", content="hello")], []
+    )
+
+    assert snapshot.window_source == "fallback"
+    assert snapshot.status == "uncertain"

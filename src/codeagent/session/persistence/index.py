@@ -38,7 +38,14 @@ class SessionIndex:
     @staticmethod
     def _source_fingerprint(path: Path) -> dict[str, int]:
         stat = path.stat()
-        return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+        # ctime changes on truncation/replacement even on filesystems with a
+        # coarse mtime resolution, so a restored size is not enough to make a
+        # stale metadata index look valid.
+        return {
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
+        }
 
     def new_index(
         self,
@@ -194,7 +201,7 @@ class SessionIndex:
                 return None
             if not all(
                 isinstance(source.get(key), int) and not isinstance(source.get(key), bool)
-                for key in ("size", "mtime_ns")
+                for key in ("size", "mtime_ns", "ctime_ns")
             ):
                 return None
             if source != fingerprint(path):

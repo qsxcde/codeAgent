@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from codeagent.ai.model.types import (
@@ -11,6 +12,11 @@ from codeagent.ai.model.types import (
     ToolDefinition,
 )
 from codeagent.core.messages import Message, ToolCall
+from codeagent.core.context_budget import (
+    ContextBudgetInput,
+    ContextBudgetSnapshot,
+    estimate_context_budget,
+)
 from codeagent.core.ports import ModelResponse, StreamEvent
 
 from .model_selection import (
@@ -86,16 +92,61 @@ def _parse_tool_arguments(
     return value, None
 
 
+def _fit_budget_reserves(
+    context_window: int,
+    output_reserve: int,
+    reserve_tokens: int,
+) -> tuple[int, int]:
+    """Fit optional reservations inside a valid positive context window."""
+    if type(context_window) is not int or context_window < 1:
+        return output_reserve, reserve_tokens
+    if type(output_reserve) is int and output_reserve >= 0:
+        output_reserve = min(output_reserve, context_window)
+    if type(reserve_tokens) is int and reserve_tokens >= 0:
+        remaining = max(0, context_window - output_reserve)
+        reserve_tokens = min(reserve_tokens, remaining)
+    return output_reserve, reserve_tokens
+
+
 class ChatModelPort:
     """把 ai 层 ChatClient 适配为 core ModelPort。"""
 
-    def __init__(self, client: Any, system_prompt: str | None = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        system_prompt: str | None = None,
+        *,
+        context_window: int = 128_000,
+        output_reserve: int = 4_096,
+        reserve_tokens: int = 16_384,
+        window_source: str = "fallback",
+    ) -> None:
         self._client = client
         self._system_prompt = system_prompt
+        self._context_window = context_window
+        self._output_reserve, self._reserve_tokens = _fit_budget_reserves(
+            context_window, output_reserve, reserve_tokens
+        )
+        self._window_source = window_source
 
     @property
     def model_id(self) -> str:
         return self._client.model_id
+
+    @property
+    def context_window(self) -> int:
+        """Effective model context window exposed to session composition."""
+        return self._context_window
+
+    @property
+    def output_reserve(self) -> int:
+        """Effective output reservation used by request budget estimation."""
+        return self._output_reserve
+
+    @property
+    def reserve_tokens(self) -> int:
+        """Effective safety reservation used by request budget estimation."""
+        return self._reserve_tokens
 
     def _prepend_system(self, chat: list[ChatMessage]) -> list[ChatMessage]:
         """首条非 system 时前置插入 system 消息，仅插入一次。"""
@@ -126,6 +177,27 @@ class ChatModelPort:
             tool if isinstance(tool, ToolDefinition) else ToolDefinition.from_tool(tool)
             for tool in tools
         ]
+
+    def describe_context_budget(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+    ) -> ContextBudgetSnapshot:
+        """Describe the request after applying this adapter's request rules."""
+        definitions = self._tool_definitions(tools) or []
+        return estimate_context_budget(
+            ContextBudgetInput(
+                context_window=self._context_window,
+                output_reserve=self._output_reserve,
+                reserve_tokens=self._reserve_tokens,
+                system_prompt=self._system_prompt or "",
+                tool_definitions=tuple(
+                    definition.to_api_dict() for definition in definitions
+                ),
+                messages=tuple(messages),
+                window_source=self._window_source,
+            )
+        )
 
     async def _stream(
         self,
@@ -258,6 +330,14 @@ class LlmSummarizer:
         )
         return str(resp.content or "")
 
+    async def aclose(self) -> None:
+        """Release the provider client used only for compaction."""
+        close = getattr(self._client, "aclose", None)
+        if callable(close):
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+
 
 def _resolve_model_effort(
     cfg: Any,
@@ -281,15 +361,28 @@ def _resolve_model_effort(
     return model_id or "", effort or ""
 
 
-def _resolve_context_window(
+@dataclass(frozen=True)
+class ModelBudgetMetadata:
+    """Resolved model limits used to build a neutral context budget."""
+
+    context_window: int
+    output_reserve: int
+    window_source: str
+
+
+DEFAULT_MODEL_CONTEXT_WINDOW = 128_000
+DEFAULT_OUTPUT_RESERVE = 4_096
+DEFAULT_RESERVE_TOKENS = 16_384
+
+
+def _resolve_context_budget_metadata(
     registry: Any,
     cfg: Any,
     provider: str | None,
     model: str | None,
-) -> int:
-    """从模型规格解析上下文窗口，缺失时使用 session 兜底值。"""
+) -> ModelBudgetMetadata:
+    """Resolve model window/output limits and keep the metadata source visible."""
     from codeagent.app.config import Settings
-    from codeagent.session.session import DEFAULT_CONTEXT_WINDOW
 
     resolved_provider = (
         provider or getattr(cfg, "llm_provider", None) or Settings().llm_provider
@@ -306,6 +399,34 @@ def _resolve_context_window(
             spec = registry.resolve(base, provider=resolved_provider)
         except (AttributeError, ValueError):
             spec = None
-        if spec is not None and getattr(spec, "context_window", None):
-            return int(spec.context_window)
-    return DEFAULT_CONTEXT_WINDOW
+        if spec is not None:
+            context_window = getattr(spec, "context_window", None)
+            max_tokens = getattr(spec, "max_tokens", None)
+            if type(context_window) is int and context_window > 0:
+                output_reserve = (
+                    max_tokens
+                    if type(max_tokens) is int and max_tokens > 0
+                    else DEFAULT_OUTPUT_RESERVE
+                )
+                return ModelBudgetMetadata(
+                    context_window=context_window,
+                    output_reserve=min(output_reserve, context_window),
+                    window_source="catalog",
+                )
+    return ModelBudgetMetadata(
+        context_window=DEFAULT_MODEL_CONTEXT_WINDOW,
+        output_reserve=DEFAULT_OUTPUT_RESERVE,
+        window_source="fallback",
+    )
+
+
+def _resolve_context_window(
+    registry: Any,
+    cfg: Any,
+    provider: str | None,
+    model: str | None,
+) -> int:
+    """从模型规格解析上下文窗口,缺失时使用显式 fallback。"""
+    return _resolve_context_budget_metadata(
+        registry, cfg, provider, model
+    ).context_window

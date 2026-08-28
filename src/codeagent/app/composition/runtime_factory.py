@@ -8,9 +8,14 @@ import inspect
 from typing import Any, Callable
 
 from codeagent.core.execution import ToolExecutionRuntime
+from codeagent.core.context_preflight import ContextPreflightConfig
 from codeagent.core.ports import AgentLoopConfig
 
-from .model_factory import ChatModelPort
+from .model_factory import (
+    DEFAULT_RESERVE_TOKENS,
+    ChatModelPort,
+    _resolve_context_budget_metadata,
+)
 from . import model_selection
 from .policy_factory import _create_policy
 from .prompt_builder import _build_system_prompt, _load_skills
@@ -64,14 +69,15 @@ class AgentRuntime:
             # not keep a provider/model graph alive or be reused by a switch.
             _RUNTIMES_BY_CONFIG.pop(config_id, None)
 
-    def close_sync(self) -> None:
-        """TUI 命令回调使用的同步生命周期适配。"""
+    def close_sync(self) -> asyncio.Task[None] | None:
+        """同步关闭；已有事件循环时返回可等待的关闭任务。"""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(self.close())
+            return None
         else:
-            loop.create_task(self.close())
+            return loop.create_task(self.close())
 
 
 _RUNTIMES_BY_CONFIG: dict[int, AgentRuntime] = {}
@@ -100,11 +106,12 @@ def runtime_for_config(config: Any) -> AgentRuntime | None:
     return _RUNTIMES_BY_CONFIG.get(id(config))
 
 
-def close_runtime_for_config(config: Any) -> None:
-    """同步关闭配置对应的 runtime。"""
+def close_runtime_for_config(config: Any) -> asyncio.Task[None] | None:
+    """同步关闭配置对应的 runtime；事件循环内返回关闭任务。"""
     runtime = runtime_for_config(config)
     if runtime is not None:
-        runtime.close_sync()
+        return runtime.close_sync()
+    return None
 
 
 async def close_runtime_for_config_async(config: Any) -> None:
@@ -131,8 +138,15 @@ def create_agent_config(
     model: str | None = None,
     approval_mode: str = "deny",
     mcp_diagnostics: list[str] | None = None,
+    uncertain_budget_policy: str = "allow",
+    context_preflight: ContextPreflightConfig | None = None,
 ) -> AgentLoopConfig:
     """装配模型、工具执行器和独立安全策略。"""
+    preflight_config = (
+        context_preflight
+        if context_preflight is not None
+        else ContextPreflightConfig()
+    )
     from codeagent.app.skills import format_skill_invocation
     from codeagent.tools.mcp.loader import close_mcp_tools
 
@@ -152,10 +166,22 @@ def create_agent_config(
         atexit.register(close_mcp_tools, mcp_tools)
     raw_tools = create_tools(cfg, skills=rendered_skills) + mcp_tools
     tool_runtime = ToolExecutionRuntime()
+    budget_metadata = _resolve_context_budget_metadata(
+        registry, cfg, provider, model
+    )
     config = AgentLoopConfig(
-        model=ChatModelPort(client, system_prompt=_build_system_prompt(cfg, skills)),
+        model=ChatModelPort(
+            client,
+            system_prompt=_build_system_prompt(cfg, skills),
+            context_window=budget_metadata.context_window,
+            output_reserve=budget_metadata.output_reserve,
+            reserve_tokens=DEFAULT_RESERVE_TOKENS,
+            window_source=budget_metadata.window_source,
+        ),
         tools=adapt_tools(raw_tools),
         tool_runtime=tool_runtime,
+        uncertain_budget_policy=uncertain_budget_policy,
+        context_preflight=preflight_config,
     )
     runtime = AgentRuntime(config, _create_policy(cfg, approval_mode), client, mcp_tools, tool_runtime)
     _RUNTIMES_BY_CONFIG[id(config)] = runtime
@@ -211,3 +237,13 @@ class _LazySummarizer:
         if self._real is None:
             self._real = self._factory()
         return await self._real.summarize(messages, prev_summary)
+
+    async def aclose(self) -> None:
+        """Close the real summarizer when it has been initialized."""
+        if self._real is None:
+            return
+        close = getattr(self._real, "aclose", None)
+        if callable(close):
+            result = close()
+            if inspect.isawaitable(result):
+                await result

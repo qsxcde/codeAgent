@@ -68,8 +68,34 @@ def _parse_record(m: dict) -> ModelSpec | None:
     elif "max_tokens" in m and m["max_tokens"] != max_tokens:
         logger.warning("模型 %s 同时给出 maxTokens 与 max_tokens,采用 maxTokens", mid)
     # 用 type(...) is int 而非 isinstance(True 是 int 子类,会混过校验把 true 送进请求体)
-    if max_tokens is not None and type(max_tokens) is not int:
-        logger.warning("模型 %s 的 maxTokens 非法(应为整数,得到 %r),跳过", mid, max_tokens)
+    if max_tokens is not None and (
+        type(max_tokens) is not int or max_tokens < 1
+    ):
+        logger.warning(
+            "模型 %s 的 maxTokens 非法(应为正整数,得到 %r),跳过",
+            mid,
+            max_tokens,
+        )
+        return None
+
+    # contextWindow/context_window are accepted for Pi-compatible user
+    # catalogs.  Keep the same strict bool/type handling as maxTokens.
+    context_window = m.get("contextWindow")
+    if context_window is None:
+        context_window = m.get("context_window")
+    elif "context_window" in m and m["context_window"] != context_window:
+        logger.warning(
+            "模型 %s 同时给出 contextWindow 与 context_window,采用 contextWindow",
+            mid,
+        )
+    if context_window is not None and (
+        type(context_window) is not int or context_window < 1
+    ):
+        logger.warning(
+            "模型 %s 的 contextWindow 非法(应为正整数,得到 %r),跳过",
+            mid,
+            context_window,
+        )
         return None
 
     aliases = m.get("aliases", [])
@@ -77,10 +103,18 @@ def _parse_record(m: dict) -> ModelSpec | None:
         logger.warning("模型 %s 的 aliases 非法(应为 list[str],得到 %r),跳过", mid, aliases)
         return None
 
+    reasoning = m.get("reasoning", False)
+    if type(reasoning) is not bool:
+        logger.warning(
+            "模型 %s 的 reasoning 非法(应为布尔值,得到 %r),跳过", mid, reasoning
+        )
+        return None
+
     return ModelSpec(
         id=mid,
         name=m.get("name", ""),
-        reasoning=m.get("reasoning", False),
+        reasoning=reasoning,
         max_tokens=max_tokens,
+        context_window=context_window,
         aliases=aliases,
     )

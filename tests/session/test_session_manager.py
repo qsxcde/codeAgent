@@ -73,6 +73,58 @@ async def test_switch_restores_history():
     assert [m.role for m in a2.history] == ["user", "assistant"]
 
 
+async def test_switch_after_restart_uses_persisted_model_configuration():
+    store = MemoryStore()
+    initial = _manager(
+        FakeClient(response="first"),
+        store=store,
+        model="model-a",
+        effort="low",
+    )
+    session = initial.create()
+    await session.run("first")
+    initial.replace_config(
+        AgentLoopConfig(
+            model=ChatModelPort(
+                FakeClient(response="second"),
+                context_window=4_000,
+                output_reserve=100,
+                reserve_tokens=50,
+                window_source="catalog",
+            ),
+            tools=[],
+        ),
+        model="model-b",
+        effort="high",
+        context_window=4_000,
+    )
+    await initial.current.run("second")
+
+    def restore(ref):
+        assert ref.model == "model-b"
+        return AgentLoopConfig(
+            model=ChatModelPort(
+                FakeClient(response="restored"),
+                context_window=4_000,
+                output_reserve=100,
+                reserve_tokens=50,
+                window_source="catalog",
+            ),
+            tools=[],
+        )
+
+    restarted = SessionManager(
+        AgentLoopConfig(model=ChatModelPort(FakeClient(response="wrong")), tools=[]),
+        store=store,
+        session_config_factory=restore,
+    )
+    restored = restarted.switch(session.session_id)
+    await restored.run("after restart")
+
+    assert restored.context_budget is not None
+    assert restored.context_budget.context_window == 4_000
+
+
 async def test_subscribe_follows_current_across_switch():
     """订阅跟随:切换会话后订阅方无需重新订阅(design D1)。"""
     store = MemoryStore()
@@ -177,6 +229,26 @@ def test_switch_missing_session_raises():
     mgr = _manager(store=MemoryStore())
     with pytest.raises(ValueError, match="会话不存在"):
         mgr.switch("ghost")
+
+
+async def test_resident_session_limit_evicts_old_shell_but_keeps_persistence():
+    """常驻会话有界:淘汰内存壳,不删除可恢复的持久化记录。"""
+    store = MemoryStore()
+    mgr = _manager(store=store, max_resident_sessions=2)
+
+    first = mgr.create()
+    first_id = first.session_id
+    await first.run("first")
+    second = mgr.create()
+    await second.run("second")
+    mgr.create()
+
+    assert len(mgr._sessions) == 2
+    assert first_id not in mgr._sessions
+    assert store.get(first_id) is not None
+    restored = mgr.switch(first_id)
+    assert restored.session_id == first_id
+    assert len(restored.history) == 2
 
 
 async def test_create_with_parent_session():

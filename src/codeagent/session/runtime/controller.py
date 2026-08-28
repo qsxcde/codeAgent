@@ -202,8 +202,11 @@ class SessionRuntime:
                     "tools": list(config_values["tools"]),
                     "before_tool_call": before_tool_call,
                     "tool_timeout": tool_timeout,
+                    # A session-level transform overrides the config-level
+                    # hook; otherwise preserve the hook already assembled in
+                    # AgentLoopConfig so the runtime path matches core.
                     "transform_context": transform_context
-                    or (lambda messages: list(messages)),
+                    or config_values["transform_context"],
                 }
             )
             agent_config = AgentLoopConfig(**config_values)

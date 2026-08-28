@@ -37,4 +37,7 @@ def find_cut_point(
         total += turn_tokens
         index = turn_start
         i = turn_start - 1
-    return index
+    # A history without a user boundary (or a single oversized turn) has no
+    # safe cut point. Returning zero makes callers keep the full history
+    # instead of treating ``len(messages)`` as an empty retained window.
+    return 0 if index == len(messages) else index

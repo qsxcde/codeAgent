@@ -176,3 +176,16 @@ def test_package_manager_git_source_records_revision_and_repository_name(tmp_pat
 
     assert record.package_id == "git-superpowers"
     assert record.revision == expected_revision
+
+
+def test_package_manager_git_source_has_a_bounded_download(monkeypatch, tmp_path):
+    def timeout(*args, **kwargs):
+        assert kwargs["timeout"] == 120
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+
+    with pytest.raises(PackageValidationError, match="下载超时"):
+        PackageManager(tmp_path / "home", tmp_path / "project").install(
+            "https://example.invalid/package.git"
+        )

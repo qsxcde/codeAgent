@@ -50,6 +50,7 @@ class Agent:
         self._run_id = run_id
         self._listeners: list[EventListener] = []
         self._listener_errors: list[tuple[AgentEvent, Exception]] = []
+        self._listener_tasks: set[asyncio.Task[Any]] = set()
         self._task: asyncio.Task[list[Message]] | None = None
         self._follow_ups: list[tuple[str, asyncio.Future[list[Message]]]] = []
 
@@ -103,7 +104,9 @@ class Agent:
                 self._listener_errors.append((event, exc))
                 continue
             if inspect.isawaitable(result):
-                asyncio.create_task(self._consume_listener(result, event))
+                task = asyncio.create_task(self._consume_listener(result, event))
+                self._listener_tasks.add(task)
+                task.add_done_callback(self._listener_tasks.discard)
 
     async def _consume_listener(self, result: Any, event: AgentEvent) -> None:
         try:
@@ -158,6 +161,16 @@ class Agent:
                     if not waiter.done():
                         waiter.set_result(messages)
         finally:
+            # Do not leave observer coroutines behind after a run. Normal
+            # completion drains them so the terminal event is observable;
+            # cancellation cancels the remaining observers before returning.
+            pending_listeners = tuple(self._listener_tasks)
+            if task.cancelling():
+                for listener_task in pending_listeners:
+                    if not listener_task.done():
+                        listener_task.cancel()
+            if pending_listeners:
+                await asyncio.gather(*pending_listeners, return_exceptions=True)
             if self._task is task:
                 self._task = None
             # A cancelled run must not leak steering input into a later run.

@@ -101,6 +101,21 @@ async def test_agent_prompt_updates_context_and_notifies_subscribers() -> None:
     assert events[-1].type == EventType.AGENT_END
 
 
+async def test_agent_drains_async_event_listeners_before_prompt_returns() -> None:
+    agent = Agent(AgentContext(), AgentLoopConfig(model=_Model(["hello"])))
+    observed: list[EventType] = []
+
+    async def listener(event):
+        await asyncio.sleep(0)
+        observed.append(event.type)
+
+    agent.subscribe(listener)
+    await agent.prompt("hi")
+
+    assert observed[-1] is EventType.AGENT_END
+    assert not agent._listener_tasks
+
+
 async def test_agent_events_carry_the_configured_run_id() -> None:
     agent = Agent(
         AgentContext(),

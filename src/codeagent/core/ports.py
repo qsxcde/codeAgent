@@ -14,13 +14,26 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
+from codeagent.core.context_budget import (
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_OUTPUT_RESERVE,
+    DEFAULT_RESERVE_TOKENS,
+    ContextBudgetSnapshot,
+)
+from codeagent.core.context_preflight import ContextPreflightConfig
 from codeagent.core.messages import Message, ToolCall, ToolResult
 
 __all__ = [
     "AgentLoopConfig",
     "AgentTool",
+    "ContextBudgetPort",
+    "ContextPreparationRequest",
+    "ContextPreflightConfig",
+    "ContextPreparer",
+    "ContextToolDefinition",
     "ModelPort",
     "ModelResponse",
     "PolicyDecision",
@@ -128,6 +141,16 @@ class ModelPort(Protocol):
     ) -> AsyncIterator[StreamEvent]: ...
 
 
+class ContextBudgetPort(Protocol):
+    """Optional neutral budget description supplied by the composition root."""
+
+    def describe_context_budget(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+    ) -> ContextBudgetSnapshot: ...
+
+
 @runtime_checkable
 class AgentTool(Protocol):
     """Minimal tool contract consumed by the new Agent Runtime."""
@@ -169,6 +192,9 @@ async def _identity_context(messages: list[Message]) -> list[Message]:
 TransformContext = Callable[
     [list[Message]], Awaitable[list[Message]] | list[Message]
 ]
+ContextPreparer = Callable[
+    ["ContextPreparationRequest"], Awaitable[list[Message]] | list[Message]
+]
 BeforeToolCall = Callable[
     [ToolCall, Any], Awaitable[ToolDecision | None] | ToolDecision | None
 ]
@@ -178,6 +204,46 @@ AfterToolCall = Callable[
 ]
 
 
+@dataclass(frozen=True)
+class ContextToolDefinition:
+    """Immutable, provider-neutral tool metadata for context extensions."""
+
+    name: str
+    description: str = ""
+    parameters: Mapping[str, Any] = field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
+
+    def __post_init__(self) -> None:
+        # The outer copy prevents an extension from changing the live tool
+        # adapter.  Nested schema values are copied too because pydantic and
+        # MCP schemas are commonly nested dictionaries/lists.
+        import copy
+
+        object.__setattr__(self, "name", str(self.name))
+        object.__setattr__(self, "description", str(self.description))
+        object.__setattr__(self, "parameters", copy.deepcopy(dict(self.parameters)))
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a detached mapping suitable for pure budget estimation."""
+        import copy
+
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": copy.deepcopy(dict(self.parameters)),
+        }
+
+
+@dataclass(frozen=True)
+class ContextPreparationRequest:
+    """Neutral, per-request view passed to budget-aware extensions."""
+
+    messages: tuple[Message, ...]
+    tools: tuple[ContextToolDefinition, ...]
+    budget: ContextBudgetSnapshot | None = None
+
+
 @dataclass
 class AgentLoopConfig:
     """Configuration for the pure in-memory Agent loop."""
@@ -185,6 +251,14 @@ class AgentLoopConfig:
     model: Any
     tools: list[AgentTool] = field(default_factory=list)
     transform_context: TransformContext = _identity_context
+    context_preparer: ContextPreparer | None = None
+    context_budget: ContextBudgetPort | None = None
+    context_preflight: ContextPreflightConfig = field(
+        default_factory=ContextPreflightConfig
+    )
+    #: Explicit policy for a fallback/uncertain context window.  ``allow``
+    #: keeps legacy model adapters usable; ``fail`` makes the boundary hard.
+    uncertain_budget_policy: str = "allow"
     before_tool_call: BeforeToolCall | None = None
     after_tool_call: AfterToolCall | None = None
     tool_execution: str = "parallel"
@@ -193,3 +267,14 @@ class AgentLoopConfig:
     tool_runtime: ToolExecutionRuntimePort | None = None
     #: Runtime-owned steering queue; Agent drains it between tool batches.
     steer_queue: list[str] = field(default_factory=list)
+    #: Fallback metadata for model adapters that predate the budget contract.
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+    output_reserve: int = DEFAULT_OUTPUT_RESERVE
+    reserve_tokens: int = DEFAULT_RESERVE_TOKENS
+    window_source: str = "fallback"
+
+    def __post_init__(self) -> None:
+        if self.uncertain_budget_policy not in {"allow", "fail"}:
+            raise ValueError(
+                "uncertain_budget_policy must be 'allow' or 'fail'"
+            )

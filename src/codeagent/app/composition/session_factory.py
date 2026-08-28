@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
+
+from codeagent.core.context_preflight import ContextPreflightConfig
 
 from .model_factory import _resolve_context_window, _resolve_model_effort
 from .runtime_factory import create_agent_config, policy_for_config, runtime_for_config
@@ -22,6 +24,8 @@ def create_agent_session(
     confirmation_timeout: float | None = None,
     approval_mode: str = "deny",
     summarizer: Any = None,
+    uncertain_budget_policy: str = "allow",
+    context_preflight: ContextPreflightConfig | None = None,
 ) -> Any:
     """创建有状态的 AgentSession。"""
     from codeagent.session import AgentSession, EventBus
@@ -33,6 +37,8 @@ def create_agent_session(
         provider=provider,
         model=model,
         approval_mode=approval_mode,
+        uncertain_budget_policy=uncertain_budget_policy,
+        context_preflight=context_preflight,
     )
     runtime = runtime_for_config(config)
     return AgentSession(
@@ -66,11 +72,15 @@ def create_session_manager(
     context_window: int | None = None,
     config: Any = None,
     mcp_diagnostics: list[str] | None = None,
+    session_config_factory: Callable[[Any], Any] | None = None,
+    uncertain_budget_policy: str = "allow",
+    context_preflight: ContextPreflightConfig | None = None,
 ) -> Any:
     """创建会话管理器并注入共享端口和资源关闭器。"""
     from codeagent.session import SessionManager
 
-    if config is None:
+    config_was_created = config is None
+    if config_was_created:
         config = create_agent_config(
             cfg,
             registry=registry,
@@ -79,8 +89,26 @@ def create_session_manager(
             model=model,
             approval_mode=approval_mode,
             mcp_diagnostics=mcp_diagnostics,
+            uncertain_budget_policy=uncertain_budget_policy,
+            context_preflight=context_preflight,
         )
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
+
+    if session_config_factory is None and config_was_created:
+        def _restore_session_config(ref: Any) -> Any:
+            return create_agent_config(
+                cfg,
+                registry=registry,
+                reasoning_effort=ref.effort or reasoning_effort,
+                provider=provider,
+                model=ref.model or model,
+                approval_mode=approval_mode,
+                mcp_diagnostics=mcp_diagnostics,
+                uncertain_budget_policy=uncertain_budget_policy,
+                context_preflight=context_preflight,
+            )
+
+        session_config_factory = _restore_session_config
 
     async def _close_runtime() -> None:
         runtime = runtime_for_config(config)
@@ -101,4 +129,5 @@ def create_session_manager(
         ),
         runtime_closer=_close_runtime,
         policy=policy_for_config(config),
+        session_config_factory=session_config_factory,
     )

@@ -207,7 +207,9 @@ class TuiCommandCoordinator:
             return
         block = format_skill_invocation(skill)
         loop = asyncio.get_running_loop()
-        loop.create_task(session.run(f"[用户手动加载技能: {name}]\n{block}"))
+        self._track_task(
+            loop.create_task(session.run(f"[用户手动加载技能: {name}]\n{block}"))
+        )
 
     def _compact_skills_text(self) -> str:
         """Render the default Skill list as grouped, width-aware summaries."""
@@ -298,9 +300,40 @@ class TuiCommandCoordinator:
             self.model.append_info("当前环境不支持 Skill Package 操作")
             return
         try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Keep the synchronous adapter useful for headless callers and
+            # unit tests that invoke commands without an event loop.
+            self._apply_package_action(action, args)
+            return
+        self.model.append_info("正在执行 Skill Package 操作...")
+        self._package_task = self._track_task(
+            loop.create_task(self._run_package_action(action, args))
+        )
+
+    async def _run_package_action(self, action: str, args: tuple[str, ...]) -> None:
+        """Run potentially slow package I/O away from the Textual loop."""
+        try:
+            result = await asyncio.to_thread(self._package_action, action, args)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            self.model.append_info(f"Package 操作失败: {exc}")
+        else:
+            self._show_package_result(action, str(result or ""))
+        self._schedule_render()
+
+    def _apply_package_action(self, action: str, args: tuple[str, ...]) -> None:
+        """Execute and render a package command in a synchronous context."""
+        try:
             message = self._package_action(action, args)
-        except (KeyError, ValueError, OSError) as exc:
-            message = f"Package 操作失败: {exc}"
+        except Exception as exc:
+            self.model.append_info(f"Package 操作失败: {exc}")
+            return
+        self._show_package_result(action, str(message or ""))
+
+    def _show_package_result(self, action: str, message: str) -> None:
+        """Apply package result to the local TUI projection."""
         if action == "reload":
             self._refresh_skills()
         else:
@@ -414,8 +447,10 @@ class TuiCommandCoordinator:
         try:
             result = rebuild(provider, model, effort)
             if inspect.isawaitable(result):
-                asyncio.get_running_loop().create_task(
-                    self._finish_async_config(result)
+                self._track_task(
+                    asyncio.get_running_loop().create_task(
+                        self._finish_async_config(result)
+                    )
                 )
                 self.model.append_info("正在等待当前运行收尾并切换配置...")
                 self._schedule_render()
