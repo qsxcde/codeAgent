@@ -117,6 +117,52 @@ def test_status_command_includes_runtime_and_render_diagnostics():
     assert "输出:" in text
 
 
+def test_status_shows_model_capabilities_and_unknown_state():
+    from codeagent.app.composition.model.capabilities import ModelCapabilities
+
+    app, backend, manager = _make_app()
+    app.model.status.model = "diagnostic-model"
+    app.model.status.model_capabilities = ModelCapabilities(
+        provider="fake",
+        model="diagnostic-model",
+        context_window=32_000,
+        window_source="catalog",
+        reasoning=True,
+        tool_calling=None,
+        prompt_cache=True,
+    )
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+
+    assert "模型能力:" in text
+    assert "上下文窗口: 32,000 · 来源 catalog" in text
+    assert "思考: 支持" in text
+    assert "工具调用: 未知" in text
+    assert "缓存能力: 支持 · 观测未观测" in text
+    assert "不可用" not in text
+
+
+def test_status_separates_cache_capability_from_observed_usage():
+    from codeagent.app.composition.model.capabilities import ModelCapabilities
+
+    app, backend, manager = _make_app()
+    app.model.status.model_capabilities = ModelCapabilities(
+        provider="fake",
+        model="fake-model",
+        context_window=128_000,
+        window_source="fallback",
+        reasoning=None,
+        tool_calling=False,
+        prompt_cache=True,
+    )
+    manager.current.usage = UsageStats(input_tokens=1_000, cached_tokens=400)
+    backend.submit("/status")
+    text = _rendered_text(app, backend)
+
+    assert "缓存能力: 支持 · 观测命中 400 token" in text
+    assert "用量: 输入 1000" in text
+
+
 
 def test_status_shows_usage_line_with_cache_hit():
     """/status → 用量行:输入/输出(含推理)/缓存命中率(约,含原始计数)。"""

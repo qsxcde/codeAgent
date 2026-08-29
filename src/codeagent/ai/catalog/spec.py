@@ -1,6 +1,6 @@
 """模型规格:携带模型元数据(仿 Pi 的 Model)。
 
-元数据(价格/上下文/reasoning/别名)靠静态目录提供,不依赖 `/models` 探测——
+元数据(价格/上下文/reasoning/能力/别名)靠静态目录提供,不依赖 `/models` 探测——
 因为 `/models` 只返回 id。
 """
 
@@ -18,9 +18,11 @@ class ModelSpec:
 
     id: str
     name: str = ""
-    reasoning: bool = False
+    reasoning: bool | None = None
     max_tokens: int | None = None
     context_window: int | None = None  # 上下文窗口(token;压缩阈值触发用,缺省 None 兜底)
+    tool_calling: bool | None = None
+    prompt_cache: bool | None = None
     aliases: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:

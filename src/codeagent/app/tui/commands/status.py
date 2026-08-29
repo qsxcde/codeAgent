@@ -8,6 +8,7 @@ from codeagent.app.context_diagnostics import format_context_diagnostics
 from codeagent.core.context.diagnostics import ContextDiagnostics
 
 from .parser import Command
+from .model_capabilities import append_model_capability_lines
 from ..state.runtime import phase_label
 
 
@@ -30,6 +31,9 @@ class TuiStatusCommandCoordinator:
                 f"任务: {self.model.status.task_phase}"
                 f" {self.model.status.task_command or self.model.status.task_message}".rstrip()
             )
+        append_model_capability_lines(
+            lines, getattr(self.model.status, "model_capabilities", None), session
+        )
         self._append_runtime_lines(lines, runtime)
         self._append_tool_capability_lines(lines)
         self._append_context_lines(lines)

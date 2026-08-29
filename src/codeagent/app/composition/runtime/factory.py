@@ -18,6 +18,7 @@ from ..model.factory import (
     DEFAULT_RESERVE_TOKENS,
     ChatModelPort,
     _resolve_context_budget_metadata,
+    resolve_model_capabilities,
 )
 from ..model import selection as model_selection
 from ..policy import _create_policy
@@ -212,6 +213,7 @@ def create_agent_config(
             output_reserve=budget_metadata.output_reserve,
             reserve_tokens=DEFAULT_RESERVE_TOKENS,
             window_source=budget_metadata.window_source,
+            capabilities=resolve_model_capabilities(registry, cfg, provider, model),
         ),
         tools=adapt_tools(raw_tools),
         tool_runtime=tool_runtime,
@@ -230,6 +232,8 @@ def create_agent_config(
     # off the core contract so core remains independent of concrete tools.
     config.tool_capabilities = detect_tool_capabilities()
     config.tool_resource_limits = resolved_limits
+    # AI metadata is attached at the composition boundary; core stays provider-neutral.
+    config.model_capabilities = config.model.capabilities
     AgentRuntime(config, _create_policy(cfg, approval_mode), client, mcp_tools, tool_runtime)
     return config
 

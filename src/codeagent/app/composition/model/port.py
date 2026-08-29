@@ -11,6 +11,7 @@ from codeagent.core.contracts.messages import Message, ToolCall
 from codeagent.core.contracts.ports import AgentTool, ModelResponse, StreamEvent
 
 from .budget import fit_budget_reserves
+from .capabilities import ModelCapabilities
 
 
 def to_chat_message(message: Message) -> ChatMessage:
@@ -85,6 +86,7 @@ class ChatModelPort:
         output_reserve: int = 4_096,
         reserve_tokens: int = 16_384,
         window_source: str = "fallback",
+        capabilities: ModelCapabilities | None = None,
     ) -> None:
         self._client = client
         self._system_prompt = system_prompt
@@ -93,6 +95,11 @@ class ChatModelPort:
             context_window, output_reserve, reserve_tokens
         )
         self._window_source = window_source
+        self._capabilities = capabilities or ModelCapabilities(
+            model=getattr(client, "model_id", ""),
+            context_window=context_window,
+            window_source=window_source,
+        )
 
     @property
     def model_id(self) -> str:
@@ -109,6 +116,11 @@ class ChatModelPort:
     @property
     def reserve_tokens(self) -> int:
         return self._reserve_tokens
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        """Return the immutable model capability snapshot."""
+        return self._capabilities
 
     def _prepend_system(self, chat: list[ChatMessage]) -> list[ChatMessage]:
         if self._system_prompt and (not chat or chat[0].role != "system"):

@@ -52,7 +52,7 @@
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
- - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1522 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
+ - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1532 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
  - TUI 性能验收:`benchmark/` 使用 schema v2 的固定离线 fixture 测量提交首帧、首 token、帧 p50/p95、控制延迟、峰值 Python 分配和协调器的 dropped/over-budget 计数；`compare_benchmark.py` 只在 schema、平台、Python、视口和 fixture 一致时比较，`update_tui_baseline.py` 负责生成受约束的 Linux/Python 3.12 候选基线。
 
 **v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
@@ -84,7 +84,7 @@ codeagent/
 │   │   ├── tasks/                    #   模式、监督、结果和验证工作流
 │   │   │   └── verification/         #   工作区快照、验证命令和结果模型
 │   │   ├── composition/              #   按模型/runtime/session/tools/TUI 装配分包
-│   │   │   ├── model/                #   选择、预算、端口和模型工厂
+│   │   │   ├── model/                #   选择、预算、能力快照、端口和模型工厂
 │   │   │   ├── runtime/              #   Agent runtime 资源所有权
 │   │   │   ├── session/              #   AgentSession / SessionManager 装配
 │   │   │   ├── tools/                #   工具适配与定义
@@ -94,7 +94,7 @@ codeagent/
 │   │       ├── adapters/textual/     #     唯一具体 Textual 适配区
 │   │       ├── state/                #     TuiModel、runtime、Transcript 状态
 │   │       ├── presentation/         #     blocks、组件、文本和主题
-│   │       ├── commands/             #     解析、补全、分派和命令协调
+│   │       ├── commands/             #     解析、补全、分派、能力诊断和命令协调
 │   │       ├── session/              #     会话动作、对话和恢复
 │   │       ├── rendering/            #     帧调度与渲染协调
 │   │       ├── benchmark/            #     离线性能基准与指标
@@ -149,7 +149,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按行为域分包,1522 passed(2026-08-30)
+└── tests/                            # 按行为域分包,1532 passed(2026-08-30)
     ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
     ├── contracts/                    # AI、core、session、tools 边界契约
     ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为
@@ -170,7 +170,7 @@ codeagent/
 | `app/context/agents.py` | AGENTS.md 分层加载 + 基础提示词 | 纯函数,可离线测 |
 | `app/skills/` | SKILL.md 三源发现、提示词、运行时和 Package 生命周期 | 不持有全局服务状态;三源同名遮蔽 个人>项目>内建 |
 | `app/tasks/` | 任务模式、监督、结果和验证工作流 | 验证命令结构化执行且禁止变更型命令 |
-| `app/composition/model/` | AI 客户端端口适配、模型选择和上下文预算 | 仅组合根跨越 `ai`/`core`;规范模块为唯一模型装配入口 |
+| `app/composition/model/` | AI 客户端端口适配、模型选择、能力快照和上下文预算 | 仅组合根跨越 `ai`/`core`;规范模块为唯一模型装配入口 |
 | `app/tui/state/` | TUI 事件投影、工具生命周期归约、历史恢复和 Transcript 增量视口布局 | 不依赖具体 Textual;后端只通过 `TuiBackend` |
 | `app/tui/session/` | 会话命令、异步动作、对话协调、快照恢复和恢复诊断展示 | 恢复按成本后台化，并校验当前 session，丢弃过期结果；不可恢复目标不替换当前 transcript |
 | `app/tui/presentation/` | blocks、组件、Markdown、状态、输出和主题 | 纯终端表现层不 import Textual |

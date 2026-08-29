@@ -49,11 +49,15 @@ def _resolve_footer_info(
     provider: str | None,
     model: str | None,
     reasoning_effort: str | None,
+    registry: Any = None,
 ) -> Any:
     """解析底部状态栏所需的 model、effort、provider 和 cwd。"""
     from codeagent.app.config import Settings
     from codeagent.app.tui.presentation.status import FooterInfo
-    from codeagent.app.composition.model.factory import _resolve_model_effort
+    from codeagent.app.composition.model.factory import (
+        _resolve_model_effort,
+        resolve_model_capabilities,
+    )
 
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
     resolved_provider = provider or getattr(cfg, "llm_provider", None) or Settings().llm_provider
@@ -63,6 +67,7 @@ def _resolve_footer_info(
         effort=effort,
         provider=resolved_provider,
         cwd=str(Path(cwd or Path.cwd()).expanduser().resolve()),
+        capabilities=resolve_model_capabilities(registry, cfg, provider, model),
     )
 
 
@@ -156,7 +161,9 @@ class TuiAssembler(TuiConfigMixin):
         manager = self._build_manager()
         manager.create()
         self.backend = self.backend or TextualBackend()
-        footer = _resolve_footer_info(self.cfg, self.provider, self.model, self.reasoning_effort)
+        footer = _resolve_footer_info(
+            self.cfg, self.provider, self.model, self.reasoning_effort, self.registry
+        )
         return TuiApp(
             manager,
             self.backend,
@@ -172,7 +179,17 @@ class TuiAssembler(TuiConfigMixin):
             save_key=self.save_key,
             configured_providers=_configured_providers(),
             close_runtime=lambda: close_runtime_for_config(manager._config),
+            resolve_model_capabilities=self.resolve_model_capabilities,
         )
+
+    def resolve_model_capabilities(
+        self, provider: str | None, model: str | None, effort: str | None
+    ) -> Any:
+        """Resolve the immutable capability view for a newly selected model."""
+        del effort
+        from ..model.factory import resolve_model_capabilities
+
+        return resolve_model_capabilities(self.registry, self.cfg, provider, model)
 
 
 def create_tui_app(

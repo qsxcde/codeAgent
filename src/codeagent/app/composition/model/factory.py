@@ -17,6 +17,7 @@ from .budget import (
     ModelBudgetMetadata,
     fit_budget_reserves as _fit_budget_reserves,
 )
+from .capabilities import ModelCapabilities, resolve_model_capabilities
 from .port import (
     ChatModelPort,
     parse_tool_arguments as _parse_tool_arguments,
@@ -29,11 +30,13 @@ __all__ = [
     "ChatModelPort",
     "LlmSummarizer",
     "ModelBudgetMetadata",
+    "ModelCapabilities",
     "_fit_budget_reserves",
     "_parse_tool_arguments",
     "_resolve_context_budget_metadata",
     "_resolve_context_window",
     "_resolve_model_effort",
+    "resolve_model_capabilities",
     "_to_chat_message",
     "_usage_of",
 ]

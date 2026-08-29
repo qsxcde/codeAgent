@@ -262,7 +262,6 @@ class TuiInteractionCoordinator(TuiCommandDispatcher):
             self._schedule_render()
         else:
             self._dispatch_command(parsed)
-
     def _submit_login_key(self, key: str) -> None:
         """登录态提交:经组合根注入的保存器写 .env + 热切换;空值提示停留。"""
         provider = self._login_pending
@@ -292,6 +291,7 @@ class TuiInteractionCoordinator(TuiCommandDispatcher):
         self._end_login()
         self.model.status.model = new_model
         self.model.status.effort = new_effort
+        self._refresh_model_capabilities(provider, new_model, new_effort)
         self._provider = provider
         self._configured_providers.add(provider)
         self.model.append_info(

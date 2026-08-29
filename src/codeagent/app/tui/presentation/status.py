@@ -44,6 +44,8 @@ class StatusBar(Component):
         self.model = ""
         self.effort = ""
         self.cwd = ""
+        #: 组合根提供的模型能力声明;None/字段 None 均表示未知,不等价于不可用。
+        self.model_capabilities = None
         #: 最近一次请求的输入 token;None = 尚未收到 provider usage。
         self.context_tokens: int | None = None
         #: 上下文窗口上限;None = 装配层尚未提供上下文元数据。
@@ -93,7 +95,6 @@ class StatusBar(Component):
         self.task_attempt = attempt
         self.task_max_attempts = max_attempts
         self.task_message = message
-
     def apply_snapshot(self, snapshot: RuntimeSnapshot, now: float | None = None) -> None:
         """同步运行快照，并把阶段耗时更新为当前显示时刻。"""
         elapsed_ms = snapshot.elapsed(now)
@@ -101,18 +102,15 @@ class StatusBar(Component):
         self.runtime = replace(snapshot, elapsed_ms=elapsed_ms)
         self.context_tokens = snapshot.context_tokens
         self.context_window = snapshot.context_window
-
     def refresh_runtime(self, now: float | None = None) -> None:
         """只刷新阶段计时，不改变其它状态。"""
         self.apply_snapshot(self.runtime, now)
-
     @property
     def status_clock_active(self) -> bool:
         """Return whether a visible elapsed value still changes over time."""
         task_active = self._task_clock.is_active
         runtime_active = self.runtime_visible and self.runtime.phase in self._ACTIVE_RUNTIME_PHASES
         return task_active or runtime_active
-
     def refresh_status_clock(self, now: float | None = None) -> bool:
         """Refresh independent task/runtime elapsed values and return active state."""
         current = self._clock() if now is None else now
@@ -298,3 +296,5 @@ class FooterInfo:
     effort: str = ""
     provider: str = ""
     cwd: str = ""
+    #: app composition 提供的只读模型能力快照。
+    capabilities: object | None = None

@@ -4,7 +4,7 @@
 
 截至 2026-08-30 应用层包布局变更复核后：
 
-- `uv run pytest -q`：**1522 passed**（2026-08-30，macOS）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试、会话标题重启/分叉回归、会话查询双后端/TUI 回归、归档删除安全回归、恢复诊断回归、会话列表索引失效隔离回归、生命周期 Hook 契约、异常隔离、ContextTransformer 契约、RuntimeExtensions 装配、扩展契约、工具能力探测、工具资源保护、外部检索器 fallback、Provider 错误分类和安全模型重试回归。
+- `uv run pytest -q`：**1532 passed**（2026-08-30，macOS）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试、会话标题重启/分叉回归、会话查询双后端/TUI 回归、归档删除安全回归、恢复诊断回归、会话列表索引失效回归、生命周期 Hook 契约、异常隔离、ContextTransformer 契约、RuntimeExtensions 装配、扩展契约、工具能力探测、工具资源保护、外部检索器 fallback、Provider 错误分类、安全模型重试和模型能力诊断回归。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
 - 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 1037 passed，硬下限为 77.9%。
 - package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
@@ -37,6 +37,8 @@
 外部检索器回归覆盖 `rg --json` 的匹配/上下文解析、`fd` 路径过滤、可选依赖缺失、非零失败、超时和输出有界读取；同时断言搜索参数以独立 argv 传递、不经过 shell，fallback 后的 glob、相对路径、上下文和 limit 语义保持不变。
 
 Provider 错误回归覆盖 HTTP 状态分类、限流重试提示、认证和参数不支持判定、网络/超时可重试标记、响应详情脱敏，以及流式/非流式传输的统一错误字段和 `httpx.HTTPStatusError` 兼容性。模型重试回归进一步覆盖最大重试次数严格校验、`Retry-After` 与指数退避上限、首事件后的流式失败不重放、session 副作用安全闸门，以及模型临时失败后工具只执行一次的 Agent 链路。
+
+模型能力诊断回归覆盖 `ModelSpec` 的 `reasoning`、`toolCalling`/`tool_calling` 和 `promptCache`/`prompt_cache` 严格三态解析、模型窗口来源、组合根快照注入、未知能力诚实展示、缓存声明与 usage 观测分离，以及 `/status` 和热切换刷新；能力读取不发起网络、模型或工具调用。
 
 本次收口会使旧平铺导入路径失效；`tests/contracts/test_app_package_layout.py` 会同时检查旧模块不存在和规范模块可导入。
 

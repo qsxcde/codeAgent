@@ -225,6 +225,72 @@ def test_create_agent_config_binds_catalog_window_to_model_budget():
     assert budget.window_source == "catalog"
 
 
+def test_create_agent_config_injects_model_capabilities():
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
+        from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.spec import ModelSpec
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_agent_config
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        registry = ModelRegistry()
+        registry._catalogs.setdefault("fake", {})["diagnostic-model"] = ModelSpec(
+            id="diagnostic-model",
+            reasoning=True,
+            tool_calling=False,
+            prompt_cache=True,
+            context_window=32_000,
+        )
+        config = create_agent_config(
+            provider="fake", model="diagnostic-model", registry=registry
+        )
+
+    capabilities = config.model_capabilities
+    assert capabilities is config.model.capabilities
+    assert capabilities.model == "diagnostic-model"
+    assert capabilities.context_window == 32_000
+    assert capabilities.window_source == "catalog"
+    assert capabilities.reasoning is True
+    assert capabilities.tool_calling is False
+    assert capabilities.prompt_cache is True
+
+
+def test_create_tui_app_injects_model_capabilities_and_refreshes_after_rebuild():
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
+        from codeagent.ai.catalog.registry import ModelRegistry
+        from codeagent.ai.catalog.spec import ModelSpec
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_tui_app
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        registry = ModelRegistry()
+        registry._catalogs.setdefault("fake", {}).update(
+            {
+                "first": ModelSpec(
+                    id="first", reasoning=True, tool_calling=True, context_window=64_000
+                ),
+                "second": ModelSpec(
+                    id="second", reasoning=False, prompt_cache=True, context_window=16_000
+                ),
+            }
+        )
+        app = create_tui_app(
+            provider="fake", model="first", registry=registry, backend=_StubBackend()
+        )
+
+        assert app.model.status.model_capabilities.model == "first"
+        assert app.model.status.model_capabilities.tool_calling is True
+        model_id, effort = app._rebuild_ports("fake", "second", None)
+        app._finish_config(model_id, effort)
+
+    capabilities = app.model.status.model_capabilities
+    assert capabilities.model == "second"
+    assert capabilities.context_window == 16_000
+    assert capabilities.reasoning is False
+    assert capabilities.tool_calling is None
+    assert capabilities.prompt_cache is True
+
+
 def test_create_agent_config_keeps_tiny_catalog_window_budget_valid():
     with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.catalog.registry import ModelRegistry

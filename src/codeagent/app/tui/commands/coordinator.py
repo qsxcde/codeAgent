@@ -117,6 +117,7 @@ class TuiCommandCoordinator(TuiStatusCommandCoordinator, TuiSkillCommandCoordina
             self.model.append_info("当前环境不支持热切换(未注入端口重建器)")
             return False
         try:
+            self._pending_provider = provider if provider is not None else self._provider
             result = (self._rebuild_ports_async or self._rebuild_ports)(provider, model, effort)
             if inspect.isawaitable(result):
                 self._track_task(asyncio.get_running_loop().create_task(self._finish_async_config(result)))
@@ -139,5 +140,15 @@ class TuiCommandCoordinator(TuiStatusCommandCoordinator, TuiSkillCommandCoordina
 
     def _finish_config(self, model: str, effort: str) -> None:
         self.model.status.model, self.model.status.effort = model, effort
+        provider = getattr(self, "_pending_provider", self._provider)
+        self._provider = provider or self._provider
+        self._refresh_model_capabilities(self._provider, model, effort)
         self._refresh_skills()
         self.model.append_info("已切换配置")
+
+    def _refresh_model_capabilities(
+        self, provider: str | None, model: str, effort: str
+    ) -> None:
+        resolver = getattr(self, "_resolve_model_capabilities", None)
+        if callable(resolver):
+            self.model.status.model_capabilities = resolver(provider, model, effort)

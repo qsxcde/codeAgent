@@ -108,11 +108,14 @@ def _parse_record(m: dict) -> ModelSpec | None:
         logger.warning("模型 %s 的 aliases 非法(应为 list[str],得到 %r),跳过", mid, aliases)
         return None
 
-    reasoning = m.get("reasoning", False)
-    if type(reasoning) is not bool:
-        logger.warning(
-            "模型 %s 的 reasoning 非法(应为布尔值,得到 %r),跳过", mid, reasoning
-        )
+    reasoning, valid = _optional_bool(m, mid, "reasoning", "reasoning")
+    if not valid:
+        return None
+    tool_calling, valid = _optional_bool(m, mid, "toolCalling", "tool_calling")
+    if not valid:
+        return None
+    prompt_cache, valid = _optional_bool(m, mid, "promptCache", "prompt_cache")
+    if not valid:
         return None
 
     return ModelSpec(
@@ -121,5 +124,38 @@ def _parse_record(m: dict) -> ModelSpec | None:
         reasoning=reasoning,
         max_tokens=max_tokens,
         context_window=context_window,
+        tool_calling=tool_calling,
+        prompt_cache=prompt_cache,
         aliases=aliases,
     )
+
+
+def _optional_bool(
+    record: dict[str, object],
+    model_id: str,
+    camel_key: str,
+    snake_key: str,
+) -> tuple[bool | None, bool]:
+    """读取可选布尔元数据,缺失是 unknown,其它类型拒绝。"""
+    has_camel = camel_key in record
+    has_snake = snake_key in record
+    if has_camel and has_snake and record[camel_key] != record[snake_key]:
+        logger.warning(
+            "模型 %s 同时给出 %s 与 %s,采用 %s",
+            model_id,
+            camel_key,
+            snake_key,
+            camel_key,
+        )
+    if not has_camel and not has_snake:
+        return None, True
+    value = record[camel_key] if has_camel else record[snake_key]
+    if type(value) is not bool:
+        logger.warning(
+            "模型 %s 的 %s 非法(应为布尔值,得到 %r),跳过",
+            model_id,
+            camel_key,
+            value,
+        )
+        return None, False
+    return value, True

@@ -61,6 +61,8 @@ class TuiApp(
         refresh_skills: Callable[[], tuple[list[Skill], list[str]]] | None = None,
         package_action: Callable[[str, tuple[str, ...]], str] | None = None,
         close_runtime: Callable[[], None] | None = None,
+        resolve_model_capabilities: Callable[[str | None, str | None, str | None], Any]
+        | None = None,
     ) -> None:
         """初始化 TUI 状态、回调和组合根注入的适配器。"""
         self._manager = manager
@@ -78,6 +80,7 @@ class TuiApp(
         self._refresh_skills_callback = refresh_skills
         self._package_action = package_action
         self._close_runtime = close_runtime
+        self._resolve_model_capabilities = resolve_model_capabilities
         self._task_mode = TaskMode.AUTO
         self._task_active = False
         self._task_supervisor: TaskSupervisor | None = None
@@ -110,6 +113,7 @@ class TuiApp(
             self.model.status.model = footer.model
             self.model.status.effort = footer.effort
             self.model.status.cwd = footer.cwd
+            self.model.status.model_capabilities = footer.capabilities
         self._event_buffer = TuiEventBuffer(self._apply_event)
         self._render_coordinator = TuiRenderCoordinator(
             self.model,
@@ -120,9 +124,7 @@ class TuiApp(
         self._hydrate_current_session()
         self._sync_context_status()
         self._unsubscribe = self._manager.subscribe(self._on_event)
-
     # -- 生命周期 ----------------------------------------------------------
-
     def start(self) -> None:
         """注册后端回调并进入事件循环(阻塞直到退出)。"""
         self._backend.on_submit(self._submit)

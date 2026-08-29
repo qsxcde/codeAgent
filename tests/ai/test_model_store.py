@@ -184,6 +184,48 @@ def test_context_window_keys_are_preserved_in_user_model_overrides(tmp_path):
     assert models["snake"].context_window == 64_000
 
 
+def test_model_capability_flags_are_optional_and_strict(tmp_path):
+    store = _store(
+        tmp_path,
+        json.dumps(
+            {
+                "fake": {
+                    "models": [
+                        {
+                            "id": "declared",
+                            "reasoning": True,
+                            "toolCalling": False,
+                            "promptCache": True,
+                        },
+                        {"id": "legacy"},
+                        {"id": "bad-tool", "tool_calling": "true"},
+                        {"id": "bad-cache", "promptCache": 1},
+                    ]
+                }
+            }
+        ).encode(),
+    )
+
+    models = {model.id: model for model in store.load()["fake"]["models"]}
+
+    assert models["declared"].reasoning is True
+    assert models["declared"].tool_calling is False
+    assert models["declared"].prompt_cache is True
+    assert models["legacy"].reasoning is None
+    assert models["legacy"].tool_calling is None
+    assert models["legacy"].prompt_cache is None
+    assert "bad-tool" not in models
+    assert "bad-cache" not in models
+
+
+def test_model_spec_capability_defaults_are_unknown():
+    spec = ModelSpec(id="m")
+
+    assert spec.reasoning is None
+    assert spec.tool_calling is None
+    assert spec.prompt_cache is None
+
+
 def test_invalid_context_window_is_rejected_without_dropping_valid_records(tmp_path):
     store = _store(
         tmp_path,

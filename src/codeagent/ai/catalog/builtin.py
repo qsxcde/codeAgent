@@ -16,7 +16,7 @@ DEEPSEEK_MODELS: dict[str, ModelSpec] = {
 }
 
 OPENAI_MODELS: dict[str, ModelSpec] = {
-    "gpt-5-nano": ModelSpec(id="gpt-5-nano"),
+    "gpt-5-nano": ModelSpec(id="gpt-5-nano", reasoning=False),
     "gpt-5": ModelSpec(id="gpt-5", reasoning=True),
 }
 
@@ -25,33 +25,35 @@ QWEN_MODELS: dict[str, ModelSpec] = {
     "qwen3.8-max": ModelSpec(id="qwen3.8-max", reasoning=True),
     "qwen3.7-plus": ModelSpec(id="qwen3.7-plus", reasoning=True),
     "qwen3.7-flash": ModelSpec(id="qwen3.7-flash", reasoning=True),
-    "qwen-max": ModelSpec(id="qwen-max"),
-    "qwen-plus": ModelSpec(id="qwen-plus"),
-    "qwen-turbo": ModelSpec(id="qwen-turbo"),
-    "qwen-long": ModelSpec(id="qwen-long"),
+    "qwen-max": ModelSpec(id="qwen-max", reasoning=False),
+    "qwen-plus": ModelSpec(id="qwen-plus", reasoning=False),
+    "qwen-turbo": ModelSpec(id="qwen-turbo", reasoning=False),
+    "qwen-long": ModelSpec(id="qwen-long", reasoning=False),
 }
 
 # 智谱开放平台(2026-08):glm-5.2 为当前旗舰 Agent 模型。
 GLM_MODELS: dict[str, ModelSpec] = {
-    "glm-5.2": ModelSpec(id="glm-5.2"),
+    "glm-5.2": ModelSpec(id="glm-5.2", reasoning=False),
 }
 
 # Kimi / Moonshot(2026-08):kimi-k3 支持 reasoning_effort,上下文 1M;
 # kimi-k2.x 系列 256K,按官方文档仅列 kimi-k2.6 与 code-highspeed 变体。
 KIMI_MODELS: dict[str, ModelSpec] = {
     "kimi-k3": ModelSpec(id="kimi-k3", reasoning=True, aliases=["kimi"]),
-    "kimi-k2.7-code-highspeed": ModelSpec(id="kimi-k2.7-code-highspeed"),
-    "kimi-k2.6": ModelSpec(id="kimi-k2.6"),
+    "kimi-k2.7-code-highspeed": ModelSpec(
+        id="kimi-k2.7-code-highspeed", reasoning=False
+    ),
+    "kimi-k2.6": ModelSpec(id="kimi-k2.6", reasoning=False),
 }
 
 # MiniMax 开放平台(2026-08):OpenAI 兼容端点无需 group_id。
 MINIMAX_MODELS: dict[str, ModelSpec] = {
     "MiniMax-M3": ModelSpec(id="MiniMax-M3", reasoning=True),
     "MiniMax-M2.7": ModelSpec(id="MiniMax-M2.7", reasoning=True),
-    "MiniMax-M2.5": ModelSpec(id="MiniMax-M2.5"),
-    "MiniMax-M2.1": ModelSpec(id="MiniMax-M2.1"),
-    "MiniMax-M2": ModelSpec(id="MiniMax-M2"),
-    "MiniMax-M2-her": ModelSpec(id="MiniMax-M2-her"),
+    "MiniMax-M2.5": ModelSpec(id="MiniMax-M2.5", reasoning=False),
+    "MiniMax-M2.1": ModelSpec(id="MiniMax-M2.1", reasoning=False),
+    "MiniMax-M2": ModelSpec(id="MiniMax-M2", reasoning=False),
+    "MiniMax-M2-her": ModelSpec(id="MiniMax-M2-her", reasoning=False),
 }
 
 BUILTIN_CATALOGS: dict[str, dict[str, ModelSpec]] = {
