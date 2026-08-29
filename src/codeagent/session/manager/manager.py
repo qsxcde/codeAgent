@@ -102,6 +102,11 @@ class SessionManager(
     def tools(self) -> list[AgentTool]:
         return list(getattr(self._config, "tools", []))
 
+    @property
+    def tool_capabilities(self) -> Any:
+        """Return the composition-time tool environment snapshot, if present."""
+        return getattr(self._config, "tool_capabilities", None)
+
     def subscribe(self, fn: Subscriber) -> Callable[[], None]:
         unsubs: list[Callable[[], None]] = []
         current = self.current

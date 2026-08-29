@@ -16,6 +16,11 @@ from codeagent.tools.atomic import (
     WriteTool,
 )
 from codeagent.tools.registry import make_tools
+from codeagent.tools.capabilities import (
+    ToolCapabilities,
+    ToolCapability,
+    detect_tool_capabilities,
+)
 
 __all__ = [
     "AtomicTool",
@@ -27,4 +32,7 @@ __all__ = [
     "ReadTool",
     "WriteTool",
     "make_tools",
+    "ToolCapabilities",
+    "ToolCapability",
+    "detect_tool_capabilities",
 ]

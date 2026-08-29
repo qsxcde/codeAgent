@@ -18,6 +18,14 @@ def test_create_agent_config_returns_config():
     assert isinstance(config, AgentLoopConfig)
     assert len(config.tools) == 8
     assert config.model.model_id == "fake-model"
+    assert [item.key for item in config.tool_capabilities.items] == [
+        "platform",
+        "shell",
+        "process_tree_cleanup",
+        "rg",
+        "fd",
+        "permissions",
+    ]
 
 
 def test_create_agent_config_passes_context_preflight_policy():

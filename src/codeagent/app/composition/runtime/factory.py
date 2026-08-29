@@ -24,6 +24,7 @@ from ..policy import _create_policy
 from ..prompts import _build_system_prompt, _load_skills
 from .extensions import RuntimeExtensions, normalize_runtime_extensions
 from ..tools.adapter import adapt_tools
+from codeagent.tools.capabilities import detect_tool_capabilities
 from ..tools.factory import _load_mcp_tools, create_tools
 
 
@@ -213,6 +214,9 @@ def create_agent_config(
         after_tool_call=runtime_extensions.after_tool_call,
         lifecycle_hooks=runtime_extensions.lifecycle_hooks,
     )
+    # Tool environment facts belong to the composition boundary.  Keep them
+    # off the core contract so core remains independent of concrete tools.
+    config.tool_capabilities = detect_tool_capabilities()
     AgentRuntime(config, _create_policy(cfg, approval_mode), client, mcp_tools, tool_runtime)
     return config
 

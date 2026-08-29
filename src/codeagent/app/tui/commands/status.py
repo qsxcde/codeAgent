@@ -31,6 +31,7 @@ class TuiStatusCommandCoordinator:
                 f" {self.model.status.task_command or self.model.status.task_message}".rstrip()
             )
         self._append_runtime_lines(lines, runtime)
+        self._append_tool_capability_lines(lines)
         self._append_context_lines(lines)
         lines.append(f"用量: {self._usage_line(session)}")
         self.model.append_info("\n".join(lines))
@@ -97,6 +98,25 @@ class TuiStatusCommandCoordinator:
             lines.extend(["技能诊断:", *(f"  {message}" for message in self._skill_diagnostics)])
         if self._mcp_diagnostics:
             lines.extend(["MCP:", *(f"  {message}" for message in self._mcp_diagnostics)])
+
+    def _append_tool_capability_lines(self, lines: list[str]) -> None:
+        capabilities = getattr(self._manager, "tool_capabilities", None)
+        if capabilities is None:
+            return
+        labels = {
+            "platform": "平台",
+            "shell": "Shell",
+            "process_tree_cleanup": "进程清理",
+            "rg": "rg",
+            "fd": "fd",
+            "permissions": "权限策略",
+        }
+        lines.append("工具能力:")
+        for item in capabilities:
+            state = "可用" if item.available else "不可用"
+            label = labels.get(item.key, item.key)
+            detail = f" · {item.detail}" if item.detail else ""
+            lines.append(f"  {label}: {state} · {item.code} · {item.message}{detail}")
 
     def _append_skill_lines(self, lines: list[str]) -> None:
         bootstrap = next((skill for skill in self._skills if skill.bootstrap), None)

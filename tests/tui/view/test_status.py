@@ -247,6 +247,29 @@ def test_status_shows_mcp_diagnostics():
     assert "start_failed" in text and "bad" in text
 
 
+def test_status_shows_tool_capability_diagnostics():
+    """/status 展示工具环境能力，而不是等到调用失败后才暴露问题。"""
+    from codeagent.tools.capabilities import ToolCapabilities, ToolCapability
+
+    app, backend, manager = _make_app()
+    manager.tool_capabilities = ToolCapabilities(
+        platform="linux",
+        items=(
+            ToolCapability("platform", True, "platform_detected", "当前平台 linux"),
+            ToolCapability("shell", False, "shell_missing", "未找到 Bash", "请安装 Git for Windows"),
+        ),
+    )
+
+    backend.submit("/status")
+
+    text = _rendered_text(app, backend)
+    assert "工具能力:" in text
+    assert "平台: 可用" in text
+    assert "Shell: 不可用" in text
+    assert "shell_missing" in text
+    assert "用量:" in text
+
+
 
 def test_status_without_mcp_diagnostics():
     """/status → 无 MCP 诊断时无 MCP 区。"""
