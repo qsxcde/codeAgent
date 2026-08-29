@@ -35,6 +35,8 @@ def _payload(*, p95_ms: float = 10.0, peak_memory_bytes: int = 100) -> dict:
         },
         "counters": {"peak_memory_bytes": peak_memory_bytes},
         "environment": ENVIRONMENT,
+        "required_metrics": ["frame_total_ms"],
+        "unavailable_metrics": {},
     }
 
 
@@ -97,3 +99,38 @@ def test_compare_benchmark_can_fail_on_memory_regression(tmp_path: Path) -> None
     result = json.loads(completed.stdout)
     assert result["status"] == "regression"
     assert any(item["metric"] == "peak_memory_bytes" for item in result["regressions"])
+
+
+def test_compare_benchmark_marks_missing_required_metric_incomplete(tmp_path: Path) -> None:
+    current = _payload()
+    current["required_metrics"] = ["frame_total_ms", "first_token_latency_ms"]
+    current["unavailable_metrics"] = {"first_token_latency_ms": "not_measured"}
+    baseline = {"schema_version": 1, "scenarios": {"stream": _payload()}}
+
+    completed = _run_compare(tmp_path, current, baseline)
+
+    assert completed.returncode == 0
+    result = json.loads(completed.stdout)
+    assert result["status"] == "incomplete"
+    assert "first_token_latency_ms" in result["missing_metrics"]
+
+
+def test_compare_benchmark_reports_dropped_frame_regression(tmp_path: Path) -> None:
+    current = _payload()
+    baseline = {"schema_version": 2, "scenarios": {"stream": _payload()}}
+    current["schema_version"] = 2
+    current["counters"]["dropped_frames"] = 1
+    current["counters"]["over_budget_frames"] = 2
+    baseline["scenarios"]["stream"]["schema_version"] = 2
+    baseline["scenarios"]["stream"]["counters"]["dropped_frames"] = 0
+    baseline["scenarios"]["stream"]["counters"]["over_budget_frames"] = 0
+
+    completed = _run_compare(tmp_path, current, baseline, "--fail-on-regression")
+
+    assert completed.returncode == 1
+    result = json.loads(completed.stdout)
+    assert result["status"] == "regression"
+    assert {item["metric"] for item in result["regressions"]} >= {
+        "dropped_frames",
+        "over_budget_frames",
+    }

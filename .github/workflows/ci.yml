@@ -189,6 +189,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
+    env:
+      TUI_MAX_REGRESSION: "0.20"
 
     steps:
       - name: Check out repository
@@ -213,29 +215,46 @@ jobs:
 
       - name: Run deterministic TUI benchmarks
         run: |
-          for scenario in history stream tool-output restore; do
+          for scenario in history stream tool-output restore scroll-resize; do
             uv run python scripts/benchmark_tui.py \
               --scenario "$scenario" \
               --blocks 100 \
               --stream-chars 10000 \
+              --tool-output-bytes 20000 \
+              --width 80 \
+              --height 24 \
               --iterations 3 \
               --output "artifacts/tui-${scenario}.json"
           done
 
       - name: Compare with baseline when available
         run: |
-          for scenario in history stream tool-output restore; do
+          for scenario in history stream tool-output restore scroll-resize; do
             if [ -f docs/benchmarks/tui-baseline.json ]; then
               uv run python scripts/compare_benchmark.py \
                 "artifacts/tui-${scenario}.json" \
                 docs/benchmarks/tui-baseline.json \
+                --max-regression "$TUI_MAX_REGRESSION" \
                 > "artifacts/tui-${scenario}-comparison.json"
             else
               uv run python scripts/compare_benchmark.py \
                 "artifacts/tui-${scenario}.json" \
+                --max-regression "$TUI_MAX_REGRESSION" \
                 > "artifacts/tui-${scenario}-comparison.json"
             fi
           done
+
+      - name: Assemble candidate Linux baseline
+        if: always()
+        continue-on-error: true
+        run: |
+          uv run python scripts/update_tui_baseline.py \
+            --output artifacts/tui-baseline-v2-candidate.json \
+            --baseline-id linux-py312-tui-v2 \
+            artifacts/tui-history.json \
+            artifacts/tui-restore.json \
+            artifacts/tui-stream.json \
+            artifacts/tui-tool-output.json
 
       - name: Run long-session scaling benchmarks
         run: |

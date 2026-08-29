@@ -13,8 +13,11 @@ import tracemalloc
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+
+BENCHMARK_SCHEMA_VERSION = 2
 
 
 def _nearest_rank(values: list[float], percentile: float) -> float:
@@ -68,10 +71,13 @@ class BenchmarkResult:
     metrics: dict[str, MetricSummary]
     counters: dict[str, int | float]
     environment: dict[str, str]
+    schema_version: int = BENCHMARK_SCHEMA_VERSION
+    required_metrics: tuple[str, ...] = ()
+    unavailable_metrics: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": self.schema_version,
             "scenario": self.scenario,
             "parameters": dict(self.parameters),
             "iterations": self.iterations,
@@ -80,6 +86,8 @@ class BenchmarkResult:
             },
             "counters": dict(self.counters),
             "environment": dict(self.environment),
+            "required_metrics": list(self.required_metrics),
+            "unavailable_metrics": dict(self.unavailable_metrics),
         }
 
     def to_json(self) -> str:
@@ -93,6 +101,30 @@ class PerformanceRecorder:
         self._clock = clock
         self._samples: dict[str, list[float]] = {}
         self._counters: dict[str, int | float] = {}
+        self._marks: dict[str, float] = {}
+
+    def mark(self, name: str) -> None:
+        """Record an event boundary without retaining event or user content."""
+        self._marks[name] = self._clock()
+
+    def record_latency(self, name: str, start: str, end: str) -> None:
+        """Record the elapsed time between two previously marked boundaries."""
+        try:
+            started = self._marks[start]
+            finished = self._marks[end]
+        except KeyError as exc:
+            raise ValueError(f"missing performance mark: {exc.args[0]}") from exc
+        elapsed_ms = (finished - started) * 1000
+        if elapsed_ms < 0:
+            raise ValueError("performance marks must be monotonic")
+        self._samples.setdefault(name, []).append(round(elapsed_ms, 6))
+
+    def record_sample(self, name: str, value_ms: float) -> None:
+        """Add an already measured millisecond sample to a metric."""
+        value = float(value_ms)
+        if value < 0 or not math.isfinite(value):
+            raise ValueError("performance samples must be finite and non-negative")
+        self._samples.setdefault(name, []).append(round(value, 6))
 
     @contextmanager
     def measure(self, name: str) -> Iterator[None]:

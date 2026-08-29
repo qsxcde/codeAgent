@@ -43,7 +43,28 @@ def _compatibility_reason(current: dict[str, Any], baseline: dict[str, Any]) -> 
         baseline_value = baseline_env.get(key)
         if current_value is not None and baseline_value is not None and current_value != baseline_value:
             return f"environment.{key} differs"
+    current_viewport = current.get("environment", {}).get("viewport")
+    baseline_viewport = baseline.get("environment", {}).get("viewport")
+    if current_viewport is not None and baseline_viewport is not None and current_viewport != baseline_viewport:
+        return "environment.viewport differs"
     return None
+
+
+def _missing_required_metrics(document: dict[str, Any]) -> list[str]:
+    required = document.get("required_metrics", [])
+    if not isinstance(required, list):
+        return ["required_metrics"]
+    metrics = document.get("metrics", {})
+    unavailable = document.get("unavailable_metrics", {})
+    if not isinstance(metrics, dict) or not isinstance(unavailable, dict):
+        return ["metrics"]
+    return sorted(
+        name
+        for name in required
+        if isinstance(name, str)
+        and name not in metrics
+        and unavailable.get(name) != "not_applicable"
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -102,6 +123,21 @@ def _comparison(current: dict[str, Any], baseline: dict[str, Any], limit: float)
                 "regression": relative_change > limit,
             }
         )
+    for name in ("dropped_frames", "over_budget_frames"):
+        old = baseline_counters.get(name)
+        new = current_counters.get(name)
+        if not isinstance(old, (int, float)) or not isinstance(new, (int, float)):
+            continue
+        changes.append(
+            {
+                "metric": name,
+                "statistic": "value",
+                "baseline": old,
+                "current": new,
+                "relative_change": None,
+                "regression": new > old,
+            }
+        )
     return changes
 
 
@@ -136,6 +172,18 @@ def main(argv: list[str] | None = None) -> int:
             "status": "incomparable",
             "scenario": current.get("scenario"),
             "reason": reason,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    missing_metrics = sorted(
+        set(_missing_required_metrics(current)) | set(_missing_required_metrics(baseline))
+    )
+    if missing_metrics:
+        result = {
+            "status": "incomplete",
+            "scenario": current.get("scenario"),
+            "missing_metrics": missing_metrics,
+            "warning": "required benchmark metrics were not measured",
         }
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0

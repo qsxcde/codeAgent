@@ -4,11 +4,11 @@
 
 截至 2026-08-28 应用层包布局变更复核后：
 
-- `uv run pytest -q`：**1348 passed**（2026-08-29，macOS，31.21s）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归，以及应用包布局契约测试。
+- `uv run pytest -q`：**1370 passed**（2026-08-30，macOS，32.83s）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归，以及 TUI 性能指标/基线契约测试。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
 - 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 1037 passed，硬下限为 77.9%。
 - package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
-- TUI 性能四场景均生成 JSON；正式 Linux/Python 3.12 基线位于 [`docs/benchmarks/tui-baseline.json`](benchmarks/tui-baseline.json)，历史观测详见 [`docs/benchmarks/tui-ci-2026-08-28.md`](benchmarks/tui-ci-2026-08-28.md)。
+- TUI 性能五个标准场景均生成 JSON；仓库内 [`docs/benchmarks/tui-baseline.json`](benchmarks/tui-baseline.json) 仍是 schema v1 历史基线，不能直接与 v2 报告比较。Linux/Python 3.12 的 v2 候选基线由 CI artifact 和 `scripts/update_tui_baseline.py` 生成，历史观测详见 [`docs/benchmarks/tui-ci-2026-08-28.md`](benchmarks/tui-ci-2026-08-28.md)。
 
 测试改造应保持行为基线不变。测试数量变化时，需要说明是新增覆盖、拆分迁移还是删除过期兼容测试。
 
@@ -101,14 +101,20 @@ openspec validate --specs
 - `quality-fast`：Ruff、unit/contract、覆盖率报告、版本一致性、补丁格式和 OpenSpec 校验。
 - `test-matrix`：Ubuntu、Windows、macOS 上执行 integration/e2e/platform/compatibility，统一使用 fake provider；失败时保留 JUnit 和跳过原因。
 - `package-smoke`：运行 release check，构建并检查 wheel/sdist，在干净虚拟环境安装后检查 CLI 和内建 resources 可用。
-- `performance`：运行离线 TUI 基准并上传 JSON；性能回归目前只告警，不阻断普通 PR。
+- `performance`：运行离线 TUI 基准并上传 JSON；性能回归目前只告警，不阻断普通 PR。报告使用 schema v2，包含提交/首 token 延迟、帧 p50/p95、控制事件 p95、峰值 Python 分配和协调器帧计数。
 
 性能结果可用以下命令进行相对比较。正式基线包含四个场景；环境或输入参数不一致时会明确标注 `incomparable`：
 
 ```bash
-uv run python scripts/benchmark_tui.py --scenario stream --blocks 100 --stream-chars 10000 --iterations 3 --output artifacts/tui-benchmark.json
+uv run python scripts/benchmark_tui.py --scenario stream --blocks 100 --stream-chars 10000 --tool-output-bytes 20000 --width 80 --height 24 --iterations 3 --output artifacts/tui-benchmark.json
 uv run python scripts/compare_benchmark.py artifacts/tui-stream.json
 uv run python scripts/compare_benchmark.py artifacts/tui-stream.json docs/benchmarks/tui-baseline.json --max-regression 0.20
+
+# 在 Linux/Python 3.12 上将同一轮四场景报告组装为候选 v2 基线
+uv run python scripts/update_tui_baseline.py \
+  --output artifacts/tui-baseline-v2.json --baseline-id linux-py312-tui-v2 \
+  artifacts/tui-history.json artifacts/tui-restore.json \
+  artifacts/tui-stream.json artifacts/tui-tool-output.json
 
 # 长会话扩展：固定 mixed-shape fixture，观察视口物化和索引扫描是否随历史线性增长
 for blocks in 1000 5000 10000; do
@@ -118,8 +124,11 @@ done
 ```
 
 长会话结果中的 `blocks_inspected`、`blocks_materialized`、`index_updates`、`cache_entries`、
-`cache_rows` 和 `peak_memory_bytes` 是无内容性能计数器；`metrics` 中的 `frame_total_ms`、
-`model_render_ms` 和 `control_event_latency_ms` 提供 p50/p95。1,000/5,000/10,000 block
-扩展报告用于趋势观察，不与 100 block 的正式 Linux 基线直接比较，也不作为跨机器绝对 SLO。
+`cache_rows`、`rendered_frames`、`dropped_frames`、`over_budget_frames` 和
+`peak_memory_bytes` 是无内容性能计数器；`metrics` 中的 `frame_total_ms`、
+`model_render_ms` 和适用的 `control_event_latency_ms` 提供 p50/p95。stream 另外提供
+`submit_latency_ms` 与 `first_token_latency_ms`。场景不适用的指标会出现在
+`unavailable_metrics`，`not_measured` 则会使比较结果为 `incomplete`。1,000/5,000/10,000
+block 扩展报告用于趋势观察，不与 100 block 的正式 Linux 基线直接比较，也不作为跨机器绝对 SLO。
 
 当前 `quality-fast` 与平台矩阵之间有 25 个兼容性/平台边界测试重复执行；这不影响正确性，但需要后续决定保留边界保护还是调整 marker 分层。覆盖率硬下限当前为 77.9%；性能仍使用 20% 相对回归告警，不启用 `--fail-on-regression`。

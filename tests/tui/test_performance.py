@@ -24,6 +24,38 @@ def test_metric_summary_reports_nearest_rank_percentiles() -> None:
     assert summary.p95_ms == 4.0
 
 
+def test_performance_recorder_records_event_boundary_latency_with_injected_clock() -> None:
+    ticks = iter([10.0, 10.012])
+    recorder = PerformanceRecorder(clock=lambda: next(ticks))
+
+    recorder.mark("submit")
+    recorder.mark("first_frame")
+    recorder.record_latency("submit_latency_ms", "submit", "first_frame")
+
+    assert recorder.samples("submit_latency_ms") == [12.0]
+
+
+def test_benchmark_result_serializes_metric_contract_without_zero_defaults() -> None:
+    result = BenchmarkResult(
+        scenario="stream",
+        parameters={"history_blocks": 100},
+        iterations=1,
+        metrics={"frame_total_ms": MetricSummary.from_samples([1.0])},
+        counters={"dropped_frames": 0, "over_budget_frames": 0},
+        environment={"os": "Linux", "python_major_minor": "3.12"},
+        required_metrics=("frame_total_ms", "first_token_latency_ms"),
+        unavailable_metrics={"first_token_latency_ms": "not_measured"},
+    )
+
+    payload = json.loads(result.to_json())
+
+    assert payload["schema_version"] == 2
+    assert payload["required_metrics"] == ["frame_total_ms", "first_token_latency_ms"]
+    assert payload["unavailable_metrics"] == {"first_token_latency_ms": "not_measured"}
+    assert "first_token_latency_ms" not in payload["metrics"]
+    assert payload["counters"]["dropped_frames"] == 0
+
+
 def test_benchmark_result_serializes_metrics_and_safe_metadata() -> None:
     result = BenchmarkResult(
         scenario="render-history",
@@ -36,7 +68,7 @@ def test_benchmark_result_serializes_metrics_and_safe_metadata() -> None:
 
     payload = json.loads(result.to_json())
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["scenario"] == "render-history"
     assert payload["metrics"]["model_render_ms"]["p50_ms"] == 1.0
     assert payload["counters"] == {"event_count": 4}
@@ -164,6 +196,44 @@ def test_benchmark_reports_content_free_streaming_counters() -> None:
     assert result.counters["event_buffer_flushes"] > 0
     assert result.counters["max_pending_chars"] <= 4096
     assert result.counters["dropped_frames"] == 0
+    assert "submit_latency_ms" in result.metrics
+    assert "first_token_latency_ms" in result.metrics
+    assert "control_event_latency_ms" in result.metrics
+    assert "first_token_latency_ms" not in result.unavailable_metrics
+
+
+def test_benchmark_marks_non_stream_latency_metrics_not_applicable() -> None:
+    result = run_benchmark(
+        BenchmarkConfig(scenario="history", history_blocks=3, iterations=1)
+    )
+
+    assert result.required_metrics == ("frame_total_ms",)
+    assert result.unavailable_metrics == {
+        "submit_latency_ms": "not_applicable",
+        "first_token_latency_ms": "not_applicable",
+        "control_event_latency_ms": "not_applicable",
+    }
+
+
+def test_benchmark_uses_coordinator_frame_diagnostics(monkeypatch) -> None:
+    from codeagent.app.tui.rendering.coordinator import TuiRenderCoordinator
+
+    original = TuiRenderCoordinator.performance_snapshot
+
+    def snapshot_with_diagnostics(self):
+        snapshot = original(self)
+        snapshot["dropped_frames"] = 3
+        snapshot["over_budget_frames"] = 2
+        return snapshot
+
+    monkeypatch.setattr(TuiRenderCoordinator, "performance_snapshot", snapshot_with_diagnostics)
+
+    result = run_benchmark(
+        BenchmarkConfig(scenario="history", history_blocks=3, iterations=1)
+    )
+
+    assert result.counters["dropped_frames"] == 3
+    assert result.counters["over_budget_frames"] == 2
 
 
 def test_benchmark_fixture_rendering_is_deterministic() -> None:

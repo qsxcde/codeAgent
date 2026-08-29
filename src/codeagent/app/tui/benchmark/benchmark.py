@@ -1,152 +1,37 @@
-"""Offline, deterministic TUI benchmark scenarios."""
+"""Offline, deterministic TUI benchmark reporting."""
 
 from __future__ import annotations
 
 import platform
 import subprocess
 import sys
-from dataclasses import dataclass, field
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
-from codeagent.core.contracts.events import AgentEvent, EventType
-
-from ..state.model import TuiModel
-from ..presentation.primitives import RichLine
-from ..presentation.blocks import AssistantBlock, ToolCallBlock, UserBlock
-from ..presentation.md_renderer import md_renderer
-from ..rendering.coordinator import TuiEventBuffer
+from .fixture import (
+    SCENARIO_REQUIRED_METRICS,
+    STREAM_ONLY_METRICS,
+    BenchmarkConfig,
+    FixtureMessage,
+    FakeBackend,
+    TuiBenchmarkFixture,
+    build_fixture,
+    scenarios,
+)
 from .performance import BenchmarkResult, PerformanceRecorder
+from .runner import run_scenario
 
-
-_SCENARIOS = {"history", "stream", "tool-output", "restore", "scroll-resize"}
-
-
-@dataclass(frozen=True)
-class BenchmarkConfig:
-    """Parameters shared by all offline benchmark scenarios."""
-
-    scenario: str = "stream"
-    history_blocks: int = 100
-    stream_chars: int = 10_000
-    tool_output_bytes: int = 20_000
-    iterations: int = 5
-    width: int = 80
-    height: int = 24
-
-    def __post_init__(self) -> None:
-        if self.scenario not in _SCENARIOS:
-            raise ValueError(f"unknown TUI benchmark scenario: {self.scenario}")
-        for name in (
-            "history_blocks",
-            "stream_chars",
-            "tool_output_bytes",
-            "iterations",
-            "width",
-            "height",
-        ):
-            if getattr(self, name) < 0:
-                raise ValueError(f"{name} must be non-negative")
-        if self.iterations == 0:
-            raise ValueError("iterations must be positive")
-        if self.width == 0 or self.height == 0:
-            raise ValueError("width and height must be positive")
-
-
-@dataclass(frozen=True)
-class FixtureMessage:
-    """Small history message compatible with TuiModel.hydrate_history."""
-
-    role: str
-    content: str
-    tool_calls: tuple[dict[str, Any], ...] = ()
-    tool_call_id: str | None = None
-
-
-@dataclass
-class FakeBackend:
-    """Minimal backend used to measure view conversion without Textual."""
-
-    width: int = 80
-    height: int = 24
-    frames: int = 0
-    last_lines: list[RichLine] = field(default_factory=list)
-
-    def transcript_size(self) -> tuple[int, int]:
-        return self.width, self.height
-
-    def render(self, lines: list[RichLine]) -> None:
-        self.frames += 1
-        self.last_lines = lines
-
-    def resize(self, width: int, height: int) -> None:
-        self.width = width
-        self.height = height
-
-
-@dataclass
-class TuiBenchmarkFixture:
-    """Prepared pure-component inputs for one benchmark iteration."""
-
-    model: TuiModel
-    backend: FakeBackend
-    stream_text: str
-    tool_output: str
-    restore_history: list[FixtureMessage]
-    event_buffer: TuiEventBuffer
-
-
-def build_fixture(config: BenchmarkConfig) -> TuiBenchmarkFixture:
-    model = TuiModel()
-    for index in range(config.history_blocks):
-        _append_history_fixture_block(model, index)
-
-    restore_history = [
-        FixtureMessage(
-            role="user" if index % 2 == 0 else "assistant",
-            content=f"history message {index}",
-        )
-        for index in range(config.history_blocks)
-    ]
-    return TuiBenchmarkFixture(
-        model=model,
-        backend=FakeBackend(config.width, config.height),
-        stream_text="x" * config.stream_chars,
-        tool_output="t" * config.tool_output_bytes,
-        restore_history=restore_history,
-        event_buffer=TuiEventBuffer(model.apply),
-    )
-
-
-def _append_history_fixture_block(model: TuiModel, index: int) -> None:
-    """Append deterministic mixed-shape history for long-session measurements."""
-    if index % 37 == 0:
-        block = AssistantBlock()
-        block.append_text("long assistant line " + "x" * 240 + "\n" + "tail")
-        block.finalize()
-        model.transcript.append(block)
-    elif index % 17 == 0:
-        model.transcript.append(AssistantBlock())
-    elif index % 11 == 0:
-        block = ToolCallBlock("fixture", {}, call_id=f"history-{index}")
-        block.set_result(
-            f"tool line {index}\nsecond line",
-            output_metadata={
-                "source": "structured",
-                "completeness": "complete",
-                "total_bytes": 32,
-                "total_lines": 2,
-                "shown_lines": 2,
-                "exit_code": 0,
-            },
-        )
-        model.transcript.append(block)
-    elif index % 5 == 0:
-        model.transcript.append(UserBlock(f"history user {index}\nsecond line"))
-    elif index % 3 == 0:
-        model.append_info(f"history block {index}\nsecond line")
-    else:
-        model.append_info(f"history block {index}")
+__all__ = [
+    "BenchmarkConfig",
+    "BenchmarkResult",
+    "FixtureMessage",
+    "FakeBackend",
+    "TuiBenchmarkFixture",
+    "build_fixture",
+    "run_benchmark",
+    "scenarios",
+]
 
 
 def environment_metadata() -> dict[str, str]:
@@ -173,85 +58,31 @@ def environment_metadata() -> dict[str, str]:
     return metadata
 
 
-def _render_frame(
-    fixture: TuiBenchmarkFixture, recorder: PerformanceRecorder, config: BenchmarkConfig
-) -> None:
-    with recorder.measure("frame_total_ms"):
-        with recorder.measure("model_render_ms"):
-            lines = fixture.model.render(*fixture.backend.transcript_size())
-        with recorder.measure("backend_render_ms"):
-            fixture.backend.render(lines)
-
-
-def _stream_chunks(text: str, chunk_size: int = 256) -> list[str]:
-    return [text[start : start + chunk_size] for start in range(0, len(text), chunk_size)]
-
-
-def _run_scenario(
+def run_benchmark(
     config: BenchmarkConfig,
-    fixture: TuiBenchmarkFixture,
-    recorder: PerformanceRecorder,
-) -> None:
-    if config.scenario == "history":
-        _render_frame(fixture, recorder, config)
-    elif config.scenario == "stream":
-        fixture.event_buffer.push(AgentEvent(EventType.SESSION_STARTED, "prompt"))
-        fixture.event_buffer.flush()
-        for chunk in _stream_chunks(fixture.stream_text):
-            with recorder.measure("event_apply_ms"), recorder.measure("control_event_latency_ms"):
-                fixture.event_buffer.push(AgentEvent(EventType.TEXT_DELTA, chunk))
-                fixture.event_buffer.flush()
-            _render_frame(fixture, recorder, config)
-        with recorder.measure("markdown_render_ms"):
-            md_renderer(fixture.stream_text, max(1, config.width - 2))
-    elif config.scenario == "tool-output":
-        fixture.model.apply(
-            AgentEvent(
-                EventType.TOOL_CALL,
-                [{"name": "fixture", "args": {}, "id": "fixture-call"}],
-            )
-        )
-        fixture.model.apply(
-            AgentEvent(
-                EventType.TOOL_RESULT,
-                fixture.tool_output,
-                metadata={"tool_call_id": "fixture-call"},
-            )
-        )
-        _render_frame(fixture, recorder, config)
-    elif config.scenario == "restore":
-        with recorder.measure("restore_ms"):
-            fixture.model.hydrate_history(fixture.restore_history)
-        _render_frame(fixture, recorder, config)
-    else:
-        fixture.model.transcript.scroll(config.height // 2)
-        fixture.backend.resize(config.width + 1, config.height)
-        _render_frame(fixture, recorder, config)
-        fixture.backend.resize(config.width, config.height)
-        _render_frame(fixture, recorder, config)
-
-
-def run_benchmark(config: BenchmarkConfig) -> BenchmarkResult:
+    *,
+    clock: Callable[[], float] = time.perf_counter,
+) -> BenchmarkResult:
     """Run one deterministic scenario and return metrics without payload data."""
-    recorder = PerformanceRecorder()
+    recorder = PerformanceRecorder(clock=clock)
     last_snapshot: dict[str, int | float] = {}
 
     for _ in range(config.iterations):
-        fixture = build_fixture(config)
-        _run_scenario(config, fixture, recorder)
+        fixture = build_fixture(config, clock=clock)
+        run_scenario(config, fixture, recorder)
         last_snapshot = fixture.model.performance_snapshot()
+        last_snapshot.update(fixture.coordinator.performance_snapshot())
         last_snapshot.update(
             {
                 "event_buffer_flushes": fixture.event_buffer.flush_count,
                 "max_pending_chars": fixture.event_buffer.max_pending_chars,
-                "dropped_frames": 0,
             }
         )
 
-    memory_recorder = PerformanceRecorder()
+    memory_recorder = PerformanceRecorder(clock=clock)
     with memory_recorder.measure_memory():
-        memory_fixture = build_fixture(config)
-        _run_scenario(config, memory_fixture, PerformanceRecorder())
+        memory_fixture = build_fixture(config, clock=clock)
+        run_scenario(config, memory_fixture, PerformanceRecorder(clock=clock))
 
     counters = recorder.counters()
     counters.update(last_snapshot)
@@ -259,8 +90,23 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkResult:
     frames = int(counters.get("frames", 0))
     events = int(counters.get("event_count", 0))
     counters["events_per_frame"] = round(events / frames, 3) if frames else 0.0
-    control = recorder.summaries().get("control_event_latency_ms")
-    counters["control_event_p95_ms"] = control.p95_ms if control is not None else 0.0
+    metrics = recorder.summaries()
+    control = metrics.get("control_event_latency_ms")
+    if control is not None:
+        counters["control_event_p95_ms"] = control.p95_ms
+    required_metrics = SCENARIO_REQUIRED_METRICS[config.scenario]
+    unavailable_metrics = {
+        name: "not_applicable"
+        for name in STREAM_ONLY_METRICS
+        if name not in required_metrics
+    }
+    unavailable_metrics.update(
+        {
+            name: "not_measured"
+            for name in required_metrics
+            if name not in metrics
+        }
+    )
     return BenchmarkResult(
         scenario=config.scenario,
         parameters={
@@ -271,11 +117,9 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkResult:
             "height": config.height,
         },
         iterations=config.iterations,
-        metrics=recorder.summaries(),
+        metrics=metrics,
         counters=counters,
         environment=environment_metadata(),
+        required_metrics=required_metrics,
+        unavailable_metrics=unavailable_metrics,
     )
-
-
-def scenarios() -> tuple[str, ...]:
-    return tuple(sorted(_SCENARIOS))
