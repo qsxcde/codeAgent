@@ -25,7 +25,6 @@ class MemoryStore:
         self._compactions: list[tuple[str, CompactionEntry]] = []
         self._meta: dict[str, dict[str, Any]] = {}
         self._usage: dict[str, UsageStats] = {}
-
     def create(
         self,
         session_id: str,
@@ -50,16 +49,32 @@ class MemoryStore:
         self._sessions[session_id] = ref
         self._messages[session_id] = []
         return ref
-
     def get(self, session_id: str) -> SessionRef | None:
         if session_id not in self._sessions:
             return None
         return self._ref_with_title(session_id)
-
     def list(self, query: SessionQuery | None = None) -> list[SessionRef]:
         refs = [self._ref_with_title(sid) for sid in self._sessions]
         refs.sort(key=lambda r: (r.last_activity_at or r.timestamp, r.id))
-        return [ref for ref in refs if query is None or query.matches(ref)]
+        effective_query = query or SessionQuery()
+        return [ref for ref in refs if effective_query.matches(ref)]
+    def archive(self, session_id: str, *, archived: bool = True) -> None:
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        if type(archived) is not bool:
+            raise TypeError("archived 必须是 bool")
+        self._meta.setdefault(session_id, {})["archived"] = archived
+
+    def delete(self, session_id: str) -> None:
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        self._sessions.pop(session_id)
+        self._messages.pop(session_id, None)
+        self._meta.pop(session_id, None)
+        self._usage.pop(session_id, None)
+        self._compactions = [
+            (sid, entry) for sid, entry in self._compactions if sid != session_id
+        ]
 
     def load_messages(self, session_id: str) -> list[Message]:
         if session_id not in self._sessions:
@@ -262,7 +277,11 @@ class MemoryStore:
     def _ref_with_title(self, session_id: str) -> SessionRef:
         """返回带派生标题的 SessionRef(get/list 时派生,create 时为空)。"""
         base = self._sessions[session_id]
-        name = self._meta.get(session_id, {}).get("name")
+        metadata = self._meta.get(session_id, {})
+        name = metadata.get("name")
+        archived = metadata.get("archived")
+        if type(archived) is not bool:
+            archived = base.archived
         first_user = next(
             (m.content for m in self._messages[session_id] if m.role == "user"),
             "",
@@ -277,4 +296,5 @@ class MemoryStore:
             effort=base.effort,
             title=_derive_title(name or "", first_user),
             status=base.status,
+            archived=archived,
         )

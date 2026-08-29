@@ -142,6 +142,78 @@ async def test_manager_query_is_read_only_for_session_state():
     assert store.load_context(session.session_id) == before_context
 
 
+async def test_manager_archive_unarchive_preserves_history_and_visibility():
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    session = mgr.create()
+    await session.run("归档但不删除")
+    before_messages = store.load_messages(session.session_id)
+    before_context = store.load_context(session.session_id)
+
+    assert mgr.archive_many([session.session_id]) == {session.session_id: "archived"}
+    assert mgr.list() == []
+    assert [ref.id for ref in mgr.list(SessionQuery(archived=True))] == [session.session_id]
+    assert store.load_messages(session.session_id) == before_messages
+    assert store.load_context(session.session_id) == before_context
+
+    assert mgr.unarchive_many([session.session_id]) == {session.session_id: "unarchived"}
+    assert [ref.id for ref in mgr.list()] == [session.session_id]
+
+
+async def test_manager_delete_many_preflights_and_protects_current_session():
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    first = mgr.create()
+    await first.run("第一个")
+    second = mgr.create()
+    await second.run("第二个")
+
+    with pytest.raises(ValueError, match="确认"):
+        mgr.delete_many([first.session_id], confirmed=False)
+    with pytest.raises(ValueError, match="预检|不存在"):
+        mgr.delete_many([first.session_id, "missing"], confirmed=True)
+    assert store.get(first.session_id) is not None
+
+    assert mgr.delete_many([first.session_id], confirmed=True) == {first.session_id: "deleted"}
+    assert store.get(first.session_id) is None
+    assert mgr.current is second
+    with pytest.raises(ValueError, match="当前会话"):
+        mgr.delete_many([second.session_id], confirmed=True)
+
+
+async def test_manager_delete_many_reports_partial_failure_and_running_protection():
+    class FailingStore(MemoryStore):
+        fail_id = ""
+
+        def delete(self, session_id: str) -> None:
+            if session_id == self.fail_id:
+                raise OSError("磁盘不可用")
+            super().delete(session_id)
+
+    store = FailingStore()
+    mgr = _manager(store=store)
+    first = mgr.create()
+    await first.run("可删除")
+    failing = mgr.create()
+    await failing.run("存储失败")
+    store.fail_id = failing.session_id
+    current = mgr.create()
+    await current.run("当前")
+
+    results = mgr.delete_many([first.session_id, failing.session_id], confirmed=True)
+    assert results[first.session_id] == "deleted"
+    assert results[failing.session_id].startswith("failed:")
+    assert store.get(failing.session_id) is not None
+
+    running = mgr.create()
+    await running.run("运行中")
+    mgr.create()
+    running._runtime.start_run()
+    with pytest.raises(ValueError, match="运行中"):
+        mgr.delete_many([running.session_id], confirmed=True)
+    running._runtime.finish_run(RunPhase.CANCELLED)
+
+
 def test_manager_passes_compaction_policy_to_adopted_session():
     policy = CompactionPolicyConfig(
         trigger_ratio=0.75,

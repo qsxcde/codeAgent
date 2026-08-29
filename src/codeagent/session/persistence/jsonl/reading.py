@@ -86,13 +86,14 @@ class JsonlReadingMixin:
                 messages.append(_dict_to_message(entry))
         return messages, cut_found
 
-    def _scan(self, path: Path) -> tuple[dict[str, Any], str, str, str, str, str]:
+    def _scan(self, path: Path) -> tuple[dict[str, Any], str, str, str, str, str, bool]:
         header: dict[str, Any] | None = None
         first_user = ""
         last_name = ""
         model = ""
         effort = ""
         last_activity_at = ""
+        archived = False
         for entry in self._iter_entries(path):
             if header is None:
                 header = entry
@@ -107,12 +108,15 @@ class JsonlReadingMixin:
             elif entry.get("type") == "meta" and entry.get("key") == "name":
                 if entry.get("value") is not None:
                     last_name = str(entry["value"])
+            elif entry.get("type") == "meta" and entry.get("key") == "archived":
+                if type(entry.get("value")) is bool:
+                    archived = entry["value"]
             elif entry.get("type") == "model_change":
                 model = str(entry["model"]) if entry.get("model") is not None else model
                 effort = str(entry["effort"]) if entry.get("effort") is not None else effort
         if header is None:
             raise ValueError(f"会话文件缺少 header: {path}")
-        return header, first_user, last_name, model, effort, last_activity_at
+        return header, first_user, last_name, model, effort, last_activity_at, archived
 
 
 __all__ = ["JsonlReadingMixin"]

@@ -62,6 +62,7 @@ class SessionIndex:
                 "model": header.get("model", "") or "",
                 "effort": header.get("effort", "") or "",
                 "title": "",
+                "archived": False,
             },
             "meta": {"lastName": "", "firstUserTitle": "", "firstUserSeen": False},
             "usage": {
@@ -107,6 +108,9 @@ class SessionIndex:
         elif entry_type == "meta" and record.get("key") == "name":
             if record.get("value") is not None:
                 index["meta"]["lastName"] = str(record["value"])
+        elif entry_type == "meta" and record.get("key") == "archived":
+            if type(record.get("value")) is bool:
+                index["session"]["archived"] = record["value"]
         elif entry_type == "model_change":
             self._apply_model_change(index, record)
         elif entry_type == "usage":
@@ -226,4 +230,5 @@ class SessionIndex:
             effort=session.get("effort", "") or "",
             title=session.get("title", "") or "",
             status="idle",
+            archived=session.get("archived", False) is True,
         )

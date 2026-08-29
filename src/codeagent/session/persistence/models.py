@@ -46,6 +46,7 @@ class SessionRef:
     - ``model`` / ``effort``:会话创建时的模型配置(header 记录,读侧透传);
     - ``title``:派生标题(显式命名优先,否则首条用户消息截断)。
     - ``status``:运行态展示值;旧引用和持久化索引缺省为 ``idle``。
+    - ``archived``:归档状态;旧引用和旧索引缺省为未归档。
     """
 
     id: str
@@ -57,6 +58,7 @@ class SessionRef:
     title: str = ""
     last_activity_at: str = ""
     status: str = "idle"
+    archived: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ class SessionQuery:
     after: str = ""
     before: str = ""
     status: str = ""
+    archived: bool | None = False
 
     def __post_init__(self) -> None:
         for field_name in ("text", "model", "after", "before", "status"):
@@ -75,6 +78,8 @@ class SessionQuery:
             if not isinstance(value, str):
                 raise TypeError(f"查询字段必须是字符串: {field_name}")
             object.__setattr__(self, field_name, value.strip())
+        if self.archived is not None and type(self.archived) is not bool:
+            raise TypeError("archived 查询条件必须是 bool 或 None")
         if self.status and self.status.casefold() not in SESSION_STATUSES:
             allowed = ", ".join(sorted(SESSION_STATUSES))
             raise ValueError(f"未知会话状态: {self.status}; 可选值: {allowed}")
@@ -104,6 +109,8 @@ class SessionQuery:
         if self.before and activity > self.before:
             return False
         if self.status and getattr(ref, "status", "idle") != self.status:
+            return False
+        if self.archived is not None and getattr(ref, "archived", False) != self.archived:
             return False
         return True
 
@@ -165,6 +172,10 @@ class SessionStore(Protocol):
     def get(self, session_id: str) -> SessionRef | None: ...
 
     def list(self, query: SessionQuery | None = None) -> list[SessionRef]: ...
+
+    def archive(self, session_id: str, *, archived: bool = True) -> None: ...
+
+    def delete(self, session_id: str) -> None: ...
 
     def load_messages(self, session_id: str) -> list[Message]: ...
 

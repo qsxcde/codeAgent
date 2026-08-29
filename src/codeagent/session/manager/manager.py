@@ -13,13 +13,18 @@ from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session.constants import DEFAULT_CONTEXT_WINDOW
 from codeagent.session.contracts import SessionCloser
 from codeagent.session.events.bus import EventBus, Subscriber
+from codeagent.session.manager.archive import SessionManagerArchiveOperations
 from codeagent.session.manager.operations import SessionManagerOperations
 from codeagent.session.manager.registry import SessionManagerRegistry
 from codeagent.session.persistence.models import SessionRef, SessionStore
 from codeagent.session.session import AgentSession
 
 
-class SessionManager(SessionManagerOperations, SessionManagerRegistry):
+class SessionManager(
+    SessionManagerOperations,
+    SessionManagerArchiveOperations,
+    SessionManagerRegistry,
+):
     """Manage one active session and a bounded resident-session registry."""
 
     def __init__(

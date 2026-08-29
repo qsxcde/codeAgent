@@ -104,8 +104,8 @@ def default_registry() -> dict[str, CommandSpec]:
         "context": CommandSpec("context", "显示上下文预算与治理诊断"),
         "sessions": CommandSpec(
             "sessions",
-            "列出 / 新建 / 切换 / 恢复会话(recent = 最近)",
-            args=("action",),
+            "列出 / 搜索 / 筛选 / 归档 / 删除 / 恢复会话",
+            args=("action", "args..."),
             picker=True,
         ),
         "tree": CommandSpec("tree", "展示会话 fork 链树(/tree <id> 切换)", args=("session-id",)),

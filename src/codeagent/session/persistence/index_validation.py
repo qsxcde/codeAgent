@@ -46,7 +46,11 @@ def _valid_session(session: object) -> bool:
         for key in ("id", "timestamp", "cwd", "lastActivityAt", "model", "effort", "title")
     ):
         return False
-    return "parentSession" in session and isinstance(session["parentSession"], (str, type(None)))
+    return (
+        "parentSession" in session
+        and isinstance(session["parentSession"], (str, type(None)))
+        and type(session.get("archived")) is bool
+    )
 
 
 def _valid_meta(meta: object) -> bool:

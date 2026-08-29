@@ -44,20 +44,61 @@ class SessionCommandsMixin:
             return
         action = cmd.args[0]
         if action == "search":
-            if len(cmd.args) < 2:
-                self.model.append_info("用法: /sessions search <text>")
-                return
-            self._show_session_query(
-                SessionQuery(text=" ".join(cmd.args[1:])), "搜索结果"
-            )
+            self._cmd_session_search(cmd)
         elif action == "filter":
-            try:
-                query = self._parse_session_filter(cmd.raw_args)
-            except (TypeError, ValueError) as exc:
-                self.model.append_info(f"筛选失败: {exc}")
-                return
-            self._show_session_query(query, "筛选结果")
-        elif action == "list":
+            self._cmd_session_filter(cmd)
+        elif action == "archived":
+            self._show_session_query(SessionQuery(archived=True), "归档会话")
+        elif action in {"archive", "unarchive"}:
+            self._cmd_session_archive(cmd, action)
+        elif action == "delete":
+            self._cmd_session_delete(cmd)
+        else:
+            self._cmd_sessions_legacy(cmd, action)
+
+    def _cmd_session_search(self, cmd: Command) -> None:
+        if len(cmd.args) < 2:
+            self.model.append_info("用法: /sessions search <text>")
+            return
+        self._show_session_query(SessionQuery(text=" ".join(cmd.args[1:])), "搜索结果")
+
+    def _cmd_session_filter(self, cmd: Command) -> None:
+        try:
+            query = self._parse_session_filter(cmd.raw_args)
+        except (TypeError, ValueError) as exc:
+            self.model.append_info(f"筛选失败: {exc}")
+            return
+        self._show_session_query(query, "筛选结果")
+
+    def _cmd_session_archive(self, cmd: Command, action: str) -> None:
+        session_ids = list(cmd.args[1:])
+        if not session_ids:
+            self.model.append_info(f"用法: /sessions {action} <id...>")
+            return
+        try:
+            results = getattr(self._manager, f"{action}_many")(session_ids)
+        except (OSError, ValueError) as exc:
+            self.model.append_info(f"{action}失败: {exc}")
+            return
+        self._show_session_mutation(results, action)
+
+    def _cmd_session_delete(self, cmd: Command) -> None:
+        session_ids = list(cmd.args[1:])
+        if not session_ids or session_ids[-1].casefold() != "confirm":
+            self.model.append_info(
+                "删除失败: 需要确认; 用法: /sessions delete <id...> confirm"
+            )
+            return
+        session_ids.pop()
+        try:
+            results = self._manager.delete_many(session_ids, confirmed=True)
+        except (OSError, ValueError) as exc:
+            self.model.append_info(f"删除失败: {exc}")
+            return
+        self._show_session_mutation(results, "delete")
+
+    def _cmd_sessions_legacy(self, cmd: Command, action: str) -> None:
+        if action == "list":
             refs = self._manager.list()
             if not refs:
                 self.model.append_info("(暂无会话)")
@@ -65,7 +106,8 @@ class SessionCommandsMixin:
             lines = ["会话列表:"]
             lines.extend(self._tree_lines(build_tree(refs)))
             self.model.append_info("\n".join(lines))
-        elif action == "new":
+            return
+        if action == "new":
             if self._schedule_session_action(
                 "create_async", lambda session: f"已新建会话: {session.session_id}"
             ):
@@ -73,7 +115,8 @@ class SessionCommandsMixin:
             session = self._manager.create()
             self._hydrate_current_session()
             self.model.append_info(f"已新建会话: {session.session_id}")
-        elif action == "recent":
+            return
+        if action == "recent":
             if self._schedule_session_action(
                 "continue_recent_async", lambda session: f"已恢复最近会话: {session.session_id}"
             ):
@@ -81,18 +124,18 @@ class SessionCommandsMixin:
             session = self._manager.continue_recent()
             self._hydrate_current_session()
             self.model.append_info(f"已恢复最近会话: {session.session_id}")
-        else:
-            if self._schedule_session_action(
-                "switch_async", lambda session: f"已切换到会话: {session.session_id}", action
-            ):
-                return
-            try:
-                session = self._manager.switch(action)
-            except ValueError as exc:
-                self.model.append_info(str(exc))
-                return
-            self._hydrate_current_session()
-            self.model.append_info(f"已切换到会话: {session.session_id}")
+            return
+        if self._schedule_session_action(
+            "switch_async", lambda session: f"已切换到会话: {session.session_id}", action
+        ):
+            return
+        try:
+            session = self._manager.switch(action)
+        except ValueError as exc:
+            self.model.append_info(str(exc))
+            return
+        self._hydrate_current_session()
+        self.model.append_info(f"已切换到会话: {session.session_id}")
 
     @staticmethod
     def _parse_session_filter(raw_args: str) -> SessionQuery:
@@ -135,6 +178,22 @@ class SessionCommandsMixin:
             activity = ref.last_activity_at or ref.timestamp or "(未知)"
             status = getattr(ref, "status", "idle")
             lines.append(f"- {title} | {model} | {activity} | {status} | {ref.id}")
+        self.model.append_info("\n".join(lines))
+
+    def _show_session_mutation(self, results: dict[str, str], action: str) -> None:
+        success_state = {
+            "archive": "archived",
+            "unarchive": "unarchived",
+            "delete": "deleted",
+        }[action]
+        success = [sid for sid, state in results.items() if state == success_state]
+        failed = [(sid, state) for sid, state in results.items() if state != success_state]
+        label = {"archive": "归档", "unarchive": "取消归档", "delete": "删除"}[action]
+        lines = [f"已{label} {len(success)} 个会话"]
+        if success:
+            lines.append("成功: " + ", ".join(success))
+        if failed:
+            lines.extend(f"失败: {sid} ({state})" for sid, state in failed)
         self.model.append_info("\n".join(lines))
 
     def _cmd_tree(self, cmd: Command) -> None:

@@ -69,12 +69,12 @@ class JsonlIndexingMixin:
 
     def get(self, session_id: str) -> SessionRef | None:
         path = self._path(session_id)
-        if not path.exists():
+        if not path.exists() or path.is_symlink():
             return None
         index = self._index_for_read(path)
         if index is not None:
             return self._ref_from_index(index, session_id)
-        header, first_user, last_name, model, effort, last_activity_at = self._scan(path)
+        header, first_user, last_name, model, effort, last_activity_at, archived = self._scan(path)
         return SessionRef(
             id=header.get("id", session_id),
             timestamp=header.get("timestamp", ""),
@@ -89,18 +89,20 @@ class JsonlIndexingMixin:
             effort=effort,
             title=_derive_title(last_name, first_user),
             status="idle",
+            archived=archived,
         )
 
     def list(self, query: SessionQuery | None = None) -> list[SessionRef]:
         if not self._directory.exists():
             return []
         refs: list[SessionRef] = []
+        effective_query = query or SessionQuery()
         for path in self._directory.glob("*.jsonl"):
             try:
                 ref = self.get(path.stem)
             except ValueError:
                 continue
-            if ref is not None and (query is None or query.matches(ref)):
+            if ref is not None and effective_query.matches(ref):
                 refs.append(ref)
         refs.sort(key=lambda ref: (ref.last_activity_at or ref.timestamp, ref.id))
         return refs

@@ -27,6 +27,7 @@ class FakeSession:
         self.title = ""
         self.model = "DeepSeek-V4"
         self.status = "idle"
+        self.archived = False
         # cost-transparency:缺省全零用量(load_usage 空态)。
         self.usage = UsageStats()
         self.history: list[Message] = []
@@ -68,6 +69,7 @@ class FakeRef:
         self.model = session.model
         self.last_activity_at = self.timestamp
         self.status = session.status
+        self.archived = session.archived
         self.parent_session = None  # session-tree:树视图读父会话 id
 
 
@@ -107,6 +109,38 @@ class FakeManager:
         refs = [FakeRef(s) for s in self.sessions]
         refs.sort(key=lambda r: (r.timestamp, r.id))
         return [ref for ref in refs if query is None or query.matches(ref)]
+
+    def archive_many(self, session_ids):
+        return self._set_archived(session_ids, True)
+
+    def unarchive_many(self, session_ids):
+        return self._set_archived(session_ids, False)
+
+    def _set_archived(self, session_ids, archived):
+        results = {}
+        for session_id in session_ids:
+            session = next(
+                (item for item in self.sessions if item.session_id == session_id), None
+            )
+            if session is None:
+                raise ValueError(f"会话不存在: {session_id}")
+            session.archived = archived
+            results[session_id] = "archived" if archived else "unarchived"
+        return results
+
+    def delete_many(self, session_ids, *, confirmed=False):
+        if not confirmed:
+            raise ValueError("删除需要确认")
+        for session_id in session_ids:
+            if session_id == self.current.session_id:
+                raise ValueError("不能删除当前会话")
+            if not any(item.session_id == session_id for item in self.sessions):
+                raise ValueError(f"会话不存在: {session_id}")
+        results = {}
+        for session_id in session_ids:
+            self.sessions = [item for item in self.sessions if item.session_id != session_id]
+            results[session_id] = "deleted"
+        return results
 
     def continue_recent(self):
         refs = self.list()

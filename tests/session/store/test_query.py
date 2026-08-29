@@ -57,6 +57,19 @@ def test_session_query_defaults_legacy_ref_to_idle():
     assert SessionQuery(status="idle").matches(ref)
 
 
+def test_session_query_archive_scope_is_explicit():
+    active = SessionRef("active", "2026-08-20", "/workspace")
+    archived = SessionRef("archived", "2026-08-20", "/workspace", archived=True)
+
+    assert SessionQuery().matches(active)
+    assert not SessionQuery().matches(archived)
+    assert SessionQuery(archived=True).matches(archived)
+    assert SessionQuery(archived=None).matches(active)
+    assert SessionQuery(archived=None).matches(archived)
+    with pytest.raises(TypeError, match="archived"):
+        SessionQuery(archived=1)
+
+
 def test_session_query_rejects_invalid_status_and_time_range():
     with pytest.raises(ValueError, match="状态"):
         SessionQuery(status="unknown")

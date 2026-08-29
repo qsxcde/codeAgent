@@ -268,6 +268,49 @@ def test_sessions_query_reports_invalid_and_empty_results_inline():
     assert manager.current.run_texts == before
 
 
+def test_sessions_archive_and_unarchive_keep_commands_read_only_to_model():
+    """归档/恢复只改变会话元数据,不将命令交给模型。"""
+    app, backend, manager = _make_app()
+    first = manager.current
+    before = list(first.run_texts)
+
+    backend.submit(f"/sessions archive {first.session_id}")
+    assert "已归档" in _rendered_text(app, backend)
+    assert manager.current is first
+    assert manager.current.run_texts == before
+
+    backend.submit("/sessions archived")
+    assert first.session_id in _rendered_text(app, backend)
+
+    backend.submit(f"/sessions unarchive {first.session_id}")
+    assert "已取消归档" in _rendered_text(app, backend)
+    backend.submit("/sessions list")
+    assert first.session_id in _rendered_text(app, backend)
+
+
+def test_sessions_delete_requires_confirmation_and_supports_batch():
+    """删除必须带 confirm,确认后批量删除非当前会话。"""
+    app, backend, manager = _make_app()
+    first = manager.current
+    second = manager.create()
+    third = manager.create()
+    before = list(manager.current.run_texts)
+
+    backend.submit(f"/sessions delete {first.session_id} {second.session_id}")
+    assert "confirm" in _rendered_text(app, backend)
+    assert len(manager.sessions) == 3
+
+    backend.submit(
+        f"/sessions delete {first.session_id} {second.session_id} confirm"
+    )
+    text = _rendered_text(app, backend)
+    assert "已删除" in text
+    assert first.session_id not in [item.session_id for item in manager.sessions]
+    assert second.session_id not in [item.session_id for item in manager.sessions]
+    assert manager.current is third
+    assert manager.current.run_texts == before
+
+
 
 def test_switching_session_hydrates_transcript_and_context_status():
     """切换会话会替换 transcript,并同步目标会话的上下文占用。"""

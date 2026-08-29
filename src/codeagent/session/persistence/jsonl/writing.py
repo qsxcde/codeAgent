@@ -158,6 +158,42 @@ class JsonlWritingMixin:
             {"type": "meta", "key": key, "value": value, "timestamp": self._now()},
         )
 
+    def archive(self, session_id: str, *, archived: bool = True) -> None:
+        if type(archived) is not bool:
+            raise TypeError("archived 必须是 bool")
+        self._validated_session_path(session_id)
+        self.set_meta(session_id, "archived", archived)
+
+    def delete(self, session_id: str) -> None:
+        """Delete one validated session file and its derived index."""
+        path = self._validated_session_path(session_id)
+        index_path = self._index_path(path)
+        with self._lock_for(path):
+            if index_path.is_symlink():
+                raise ValueError(f"拒绝删除符号链接索引: {session_id}")
+            if index_path.exists():
+                index_path.unlink()
+            try:
+                path.unlink()
+            except OSError:
+                # The source JSONL remains the authority; a future read can
+                # rebuild the missing derived index after a failed deletion.
+                raise
+
+    def _validated_session_path(self, session_id: str) -> Path:
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("会话 id 不能为空")
+        if session_id in {".", ".."} or "/" in session_id or "\\" in session_id:
+            raise ValueError(f"非法会话 id: {session_id}")
+        path = self._path(session_id)
+        if path.parent != self._directory:
+            raise ValueError(f"会话 id 越界: {session_id}")
+        if path.is_symlink():
+            raise ValueError(f"拒绝删除符号链接会话: {session_id}")
+        if not path.exists():
+            raise ValueError(f"会话不存在: {session_id}")
+        return path
+
     def get_meta(self, session_id: str, key: str) -> Any | None:
         path = self._path(session_id)
         if not path.exists():
