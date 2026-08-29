@@ -2,6 +2,8 @@
 
 from tests.tui.view.fixtures import *  # noqa: F401,F403
 
+from codeagent.session.persistence import RecoveryDiagnostic, SessionRecoveryError, SessionRecoveryReport
+
 
 def test_session_switch_refreshes_skill_registry_and_diagnostics():
     """切换会话后 TUI 应重读 Adapter/Registry 视图，而非保留启动快照。"""
@@ -266,6 +268,91 @@ def test_sessions_query_reports_invalid_and_empty_results_inline():
     assert "搜索结果: 无匹配会话" in _rendered_text(app, backend)
     assert manager.current is current
     assert manager.current.run_texts == before
+
+
+def test_sessions_recovery_command_shows_actionable_report_without_switching():
+    app, backend, manager = _make_app()
+    current = manager.current
+    report = SessionRecoveryReport(
+        "fake-1",
+        "degraded",
+        (
+            RecoveryDiagnostic(
+                "malformed_record",
+                "发现损坏记录",
+                "1 条记录未恢复",
+                "请先备份文件后继续",
+            ),
+        ),
+        valid_message_count=2,
+        skipped_record_count=1,
+    )
+    manager.recovery_report = lambda session_id: report
+
+    backend.submit("/sessions recovery fake-1")
+
+    text = _rendered_text(app, backend)
+    assert "degraded" in text
+    assert "malformed_record" in text
+    assert "请先备份文件后继续" in text
+    assert manager.current is current
+    assert manager.current.run_texts == []
+
+
+def test_sessions_switch_recovery_error_keeps_current_and_shows_code():
+    report = SessionRecoveryReport(
+        "bad",
+        "unavailable",
+        (
+            RecoveryDiagnostic(
+                "incompatible_version",
+                "会话版本不兼容",
+                "无法安全解释会话记录",
+                "请升级客户端后迁移",
+            ),
+        ),
+    )
+
+    class RecoveryManager(FakeManager):
+        def switch(self, session_id):
+            raise SessionRecoveryError(report)
+
+    backend = StubBackend()
+    manager = RecoveryManager()
+    app = TuiApp(manager, backend)
+    backend.on_submit(app._submit)
+    current = manager.current
+
+    backend.submit("/sessions bad")
+
+    text = _rendered_text(app, backend)
+    assert "incompatible_version" in text
+    assert "请升级客户端后迁移" in text
+    assert manager.current is current
+
+
+def test_degraded_session_hydration_reports_warning_and_keeps_input_available():
+    app, _, manager = _make_app()
+    manager.current.recovery_report = SessionRecoveryReport(
+        manager.current.session_id,
+        "degraded",
+        (
+            RecoveryDiagnostic(
+                "compaction_cut_missing",
+                "压缩切点消息不存在",
+                "恢复回退为有效历史",
+                "必要时重新压缩",
+            ),
+        ),
+        valid_message_count=1,
+        skipped_record_count=0,
+    )
+
+    app._hydrate_current_session()
+
+    text = "\n".join(app.model.transcript.all_lines(120))
+    assert "degraded" in text
+    assert "compaction_cut_missing" in text
 
 
 def test_sessions_archive_and_unarchive_keep_commands_read_only_to_model():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from codeagent.core.contracts.messages import Message, new_id
 
@@ -14,13 +14,62 @@ __all__ = [
     "CURRENT_VERSION",
     "CompactionEntry",
     "CompactionState",
+    "RecoveryDiagnostic",
+    "RecoveryStatus",
     "SessionQuery",
+    "SessionRecoveryReport",
     "SessionRef",
     "SessionStore",
     "UsageStats",
 ]
 
 SESSION_STATUSES = frozenset({"idle", "running", "completed", "failed", "cancelled"})
+RecoveryStatus = Literal["healthy", "degraded", "unavailable"]
+
+
+@dataclass(frozen=True)
+class RecoveryDiagnostic:
+    """One stable, user-actionable explanation from session recovery."""
+
+    code: str
+    message: str
+    impact: str
+    action: str
+
+    def to_dict(self) -> dict[str, str]:
+        """Return a JSON-safe diagnostic representation."""
+        return {
+            "code": self.code,
+            "message": self.message,
+            "impact": self.impact,
+            "action": self.action,
+        }
+
+
+@dataclass(frozen=True)
+class SessionRecoveryReport:
+    """Structured outcome of inspecting or restoring one session."""
+
+    session_id: str
+    status: RecoveryStatus
+    diagnostics: tuple[RecoveryDiagnostic, ...] = ()
+    valid_message_count: int = 0
+    skipped_record_count: int = 0
+
+    @property
+    def can_continue(self) -> bool:
+        """Whether the report permits activating the session."""
+        return self.status != "unavailable"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe report representation."""
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "diagnostics": [item.to_dict() for item in self.diagnostics],
+            "valid_message_count": self.valid_message_count,
+            "skipped_record_count": self.skipped_record_count,
+        }
 
 @dataclass(frozen=True)
 class UsageStats:
@@ -172,6 +221,8 @@ class SessionStore(Protocol):
     def get(self, session_id: str) -> SessionRef | None: ...
 
     def list(self, query: SessionQuery | None = None) -> list[SessionRef]: ...
+
+    def recovery_report(self, session_id: str) -> SessionRecoveryReport: ...
 
     def archive(self, session_id: str, *, archived: bool = True) -> None: ...
 

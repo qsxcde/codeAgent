@@ -26,6 +26,8 @@ class JsonlReadingMixin:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(entry, dict):
+                        continue
                     if not header_seen:
                         _validate_header(entry, path)
                         header_seen = True
@@ -37,11 +39,15 @@ class JsonlReadingMixin:
         path = self._path(session_id)
         if not path.exists():
             raise ValueError(f"会话不存在: {session_id}")
-        return [
-            _dict_to_message(entry)
-            for entry in self._iter_entries(path)
-            if entry.get("type") == "message"
-        ]
+        messages: list[Message] = []
+        for entry in self._iter_entries(path):
+            if entry.get("type") != "message":
+                continue
+            try:
+                messages.append(_dict_to_message(entry))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return messages
 
     def load_context(self, session_id: str) -> CompactionState:
         path = self._path(session_id)
@@ -66,7 +72,7 @@ class JsonlReadingMixin:
     def _latest_compaction(self, path: Path) -> dict[str, Any] | None:
         latest = None
         for entry in self._iter_entries(path):
-            if entry.get("type") == "compaction":
+            if entry.get("type") == "compaction" and _valid_compaction(entry):
                 latest = entry
         return latest
 
@@ -83,7 +89,10 @@ class JsonlReadingMixin:
             if not cut_found and entry.get("id") == first_kept_entry_id:
                 cut_found = True
             if cut_found:
-                messages.append(_dict_to_message(entry))
+                try:
+                    messages.append(_dict_to_message(entry))
+                except (KeyError, TypeError, ValueError):
+                    continue
         return messages, cut_found
 
     def _scan(self, path: Path) -> tuple[dict[str, Any], str, str, str, str, str, bool]:
@@ -120,3 +129,12 @@ class JsonlReadingMixin:
 
 
 __all__ = ["JsonlReadingMixin"]
+
+
+def _valid_compaction(entry: dict[str, Any]) -> bool:
+    return (
+        isinstance(entry.get("id"), str)
+        and isinstance(entry.get("firstKeptEntryId"), str)
+        and isinstance(entry.get("summary"), str)
+        and isinstance(entry.get("details"), dict)
+    )

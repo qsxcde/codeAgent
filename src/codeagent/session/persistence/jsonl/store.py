@@ -10,6 +10,7 @@ from codeagent.session.persistence.codec import _now as _codec_now
 from codeagent.session.persistence.jsonl.forking import JsonlForkingMixin
 from codeagent.session.persistence.jsonl.indexing import JsonlIndexingMixin
 from codeagent.session.persistence.jsonl.reading import JsonlReadingMixin
+from codeagent.session.persistence.jsonl.recovery import JsonlRecoveryMixin
 from codeagent.session.persistence.jsonl.writing import JsonlWritingMixin
 from codeagent.session.persistence.locking import path_lock
 
@@ -17,6 +18,7 @@ from codeagent.session.persistence.locking import path_lock
 class JsonFileStore(
     JsonlIndexingMixin,
     JsonlReadingMixin,
+    JsonlRecoveryMixin,
     JsonlWritingMixin,
     JsonlForkingMixin,
 ):

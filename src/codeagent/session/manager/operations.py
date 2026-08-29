@@ -12,7 +12,14 @@ from codeagent.core.contracts.ports import ApprovalPolicy
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.compaction.summarizer import Summarizer
 from codeagent.session.contracts import SessionCloser
-from codeagent.session.persistence.models import SessionQuery, SessionRef, SessionStore
+from codeagent.session.persistence.errors import SessionRecoveryError
+from codeagent.session.persistence.models import (
+    RecoveryDiagnostic,
+    SessionQuery,
+    SessionRecoveryReport,
+    SessionRef,
+    SessionStore,
+)
 from codeagent.session.persistence.codec import normalize_title
 from codeagent.session.runtime.state import RunPhase
 
@@ -57,8 +64,37 @@ class SessionManagerOperations:
         self._ensure_session_exists(session_id)
         return self._adopt(session_id)
 
+    def recovery_report(self, session_id: str) -> SessionRecoveryReport:
+        """Inspect one persisted session without switching or running it."""
+        if self._store is None:
+            return SessionRecoveryReport(
+                session_id,
+                "unavailable",
+                (
+                    RecoveryDiagnostic(
+                        "persistence_unavailable",
+                        "当前未配置会话存储",
+                        "无法读取恢复数据",
+                        "请使用已配置持久化的运行方式，或新建会话",
+                    ),
+                ),
+            )
+        reporter = getattr(self._store, "recovery_report", None)
+        if not callable(reporter):
+            return SessionRecoveryReport(session_id, "healthy")
+        return reporter(session_id)
+
     def _ensure_session_exists(self, session_id: str) -> None:
-        if self._store is not None and self._store.get(session_id) is None:
+        if self._store is None:
+            return
+        try:
+            exists = self._store.get(session_id)
+        except (OSError, ValueError) as exc:
+            report = self.recovery_report(session_id)
+            if not report.can_continue:
+                raise SessionRecoveryError(report) from exc
+            raise
+        if exists is None:
             raise ValueError(f"会话不存在: {session_id}")
 
     def continue_recent(self) -> AgentSession:

@@ -4,7 +4,7 @@
 
 当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
-当前验收基线（2026-08-29）：`uv run pytest -q` **1348 passed**（macOS，31.21s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
+当前验收基线（2026-08-30）：`uv run pytest -q` **1427 passed**（macOS，33.41s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
 
 ## 项目介绍
 
@@ -19,10 +19,10 @@
 
 ### 当前能力(v0.3.0)
 
-- **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频"思考中"提示、人类可读的工具摘要及可展开 edit/write 意图差异、model/effort/cwd 状态栏、斜杠命令体系(含 `/provider` `/model` `/effort` `/login` `/skills` `/mcp` `/sessions` `/sessions search` `/sessions filter` `/sessions archive` `/sessions archived` `/sessions delete ... confirm` `/tree` `/tools` `/status` `/quit`)与模糊补全 / 选择器、Markdown 渲染、Esc 运行中打断 / 空闲退出并打印完整文档。
+- **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频"思考中"提示、人类可读的工具摘要及可展开 edit/write 意图差异、model/effort/cwd 状态栏、斜杠命令体系(含 `/provider` `/model` `/effort` `/login` `/skills` `/mcp` `/sessions` `/sessions search` `/sessions filter` `/sessions archive` `/sessions archived` `/sessions recovery` `/sessions delete ... confirm` `/tree` `/tools` `/status` `/quit`)与模糊补全 / 选择器、Markdown 渲染、Esc 运行中打断 / 空闲退出并打印完整文档。
 - **Headless CLI**(默认形态):`--prompt` 一次性输入或 stdin 逐行读取,事件聚合输出最终回复。
 - **自研编排引擎**:`core/agent.py` 的纯内存 `Agent` 外壳与 `core/orchestration/loop.py` 的 `run_agent_loop`/`run_agent_loop_continue` 驱动 ReAct（模型→工具→继续/结束）；Session 只负责持久化、压缩和会话事件，零 langgraph/langchain 依赖。
-- **会话层**:`SessionStore`(JSONL 树形,重启可恢复,含用量累计)+ `SessionManager`(create / switch / fork / dispose / query / archive / delete)+ 手动与预算驱动的上下文压缩;成功轮次才落盘,失败/取消内存回滚;`abort` / `steer` / `followup`;`/tree` 和 `/sessions list` 提供分叉树导航,`/sessions search` 与 `/sessions filter` 提供只读定位,归档/删除命令提供安全整理。
+- **会话层**:`SessionStore`(JSONL 树形,重启可恢复,含用量累计)+ `SessionManager`(create / switch / fork / dispose / query / archive / delete / recovery_report)+ 手动与预算驱动的上下文压缩;成功轮次才落盘,失败/取消内存回滚;`abort` / `steer` / `followup`;`/tree` 和 `/sessions list` 提供分叉树导航,`/sessions search` 与 `/sessions filter` 提供只读定位,归档/删除命令提供安全整理,损坏/不兼容会话提供局部恢复与可操作诊断。
 - **安全确认环**:执行前 `ApprovalPolicy`(bash 危险命令黑名单 + 语义级检测 + 文件访问边界三档 deny/ask/allow);headless 缺省 fail closed。
 - **模型配置层**:每 provider 一个文件(配置 + 工厂自包含),内置模型目录 + `models.json` 按 id upsert 合并,支持思考强度(`model:effort`)与运行时热切换(/provider /model /effort /login)。
 - **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可按用户配置接入 `tools/list` / `tools/call` 工具，并以 `mcp__<server>__<tool>` 命名空间化和分组预算控制提示词膨胀。
@@ -103,7 +103,7 @@ uv run codeagent --tui
 | `/provider` `/model` `/effort` | 热切换模型配置(选择器 + 模糊补全) |
 | `/login` | 配置/保存 provider API key(写回 `~/.codeagent/.env` 并热切换) |
 | `/skills` | 列出可用技能;`/skills <name>` 手动加载并立即触发一轮回复 |
-| `/sessions` `/sessions search` `/sessions filter` `/sessions archive` `/sessions archived` `/sessions delete ... confirm` `/fork` | 会话列表、搜索筛选、归档删除与切换 / 分支会话(JSONL 树形) |
+| `/sessions` `/sessions search` `/sessions filter` `/sessions archive` `/sessions archived` `/sessions recovery` `/sessions delete ... confirm` `/fork` | 会话列表、搜索筛选、恢复诊断、归档删除与切换 / 分支会话(JSONL 树形) |
 | `Esc`(运行中) | 打断当前回复(RUN_CANCELLED 回状态栏);敏感命令按确认条放行/拒绝 |
 | `Esc`(空闲) | 退出,并打印本次会话完整文档 |
 | 点击工具调用块 | 折叠 / 展开;edit/write 显示红绿意图差异,其它工具显示完整结果 |

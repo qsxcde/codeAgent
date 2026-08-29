@@ -2,6 +2,12 @@
 
 from tests.session.behavior.fixtures import *  # noqa: F401,F403
 
+import json
+
+import pytest
+
+from codeagent.session.persistence import JsonFileStore, SessionRecoveryError
+
 
 async def test_followup_continues_history():
     """结束后续跑:followup 在既有历史之上再跑一轮,上下文连续。"""
@@ -97,3 +103,52 @@ async def test_session_context_transform_is_model_only_and_does_not_change_histo
     assert seen
     assert any(message.content == "memory-only" for message in seen[0])
     assert all(message.content != "memory-only" for message in sess.history)
+
+
+def test_agent_session_exposes_degraded_report_and_valid_history(tmp_path):
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    store.append_message("s1", Message(role="user", content="有效历史"))
+    path = tmp_path / "sessions" / "s1.jsonl"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("not-json\n")
+
+    session = _session(FakeClient(response="继续"), store=store, session_id="s1")
+
+    assert session.recovery_report.status == "degraded"
+    assert session.recovery_report.diagnostics[0].code in {
+        "index_stale",
+        "malformed_record",
+    }
+    assert [message.content for message in session.history] == ["有效历史"]
+
+
+def test_agent_session_keeps_stale_index_diagnostic_after_rebuild(tmp_path):
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    store.append_message("s1", Message(role="user", content="有效历史"))
+    (tmp_path / "sessions" / "s1.index.json").unlink()
+
+    session = _session(FakeClient(response="继续"), store=store, session_id="s1")
+
+    assert session.recovery_report.status == "degraded"
+    assert any(
+        diagnostic.code == "index_missing"
+        for diagnostic in session.recovery_report.diagnostics
+    )
+
+
+def test_agent_session_rejects_incompatible_session_with_typed_report(tmp_path):
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    path = tmp_path / "sessions" / "s1.jsonl"
+    path.write_text(
+        json.dumps({"type": "session", "version": 999, "id": "s1"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SessionRecoveryError) as caught:
+        _session(FakeClient(response="不会调用"), store=store, session_id="s1")
+
+    assert caught.value.report.status == "unavailable"
+    assert caught.value.report.diagnostics[0].code == "incompatible_version"

@@ -100,6 +100,47 @@ def test_continue_flag_appends_to_recent(fake_provider_env, capsys):
     assert [m.content for m in loaded if m.role == "user"][-1] == "继续"
 
 
+def test_session_flag_reports_incompatible_recovery_and_returns_nonzero(
+    fake_provider_env, capsys
+):
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.session.persistence import JsonFileStore
+
+    store = JsonFileStore(CONFIG_DIR / "sessions")
+    store.create("bad")
+    path = CONFIG_DIR / "sessions" / "bad.jsonl"
+    path.write_text('{"type":"session","version":999,"id":"bad"}\n', encoding="utf-8")
+
+    assert main(["--session", "bad", "--prompt", "不会调用"]) == 2
+
+    error = capsys.readouterr().err
+    assert "unavailable" in error
+    assert "incompatible_version" in error
+    assert "升级客户端" in error
+
+
+def test_session_flag_shows_degraded_recovery_before_continuing(
+    fake_provider_env, capsys
+):
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.core.contracts.messages import Message
+    from codeagent.session.persistence import JsonFileStore
+
+    store = JsonFileStore(CONFIG_DIR / "sessions")
+    store.create("degraded")
+    store.append_message("degraded", Message(role="user", content="旧消息"))
+    path = CONFIG_DIR / "sessions" / "degraded.jsonl"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("not-json\n")
+
+    assert main(["--session", "degraded", "--prompt", "继续"]) == 0
+
+    captured = capsys.readouterr()
+    assert "degraded" in captured.err
+    assert "malformed_record" in captured.err
+    assert "你: 继续" in captured.out
+
+
 # -- 执行前安全策略(security-permissions)--------------------------------------
 
 

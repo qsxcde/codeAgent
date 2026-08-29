@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from codeagent.app.errors.reporting import report_unexpected_error
+from codeagent.app.session_recovery import format_recovery_report
 from ..state.model import TuiModel
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.context.diagnostics import ContextDiagnostics
@@ -65,6 +66,7 @@ class SessionRestoreMixin:
                 return
             self.model.hydrate_history(history, summary=summary)
         self._sync_context_status()
+        self._show_recovery_report(session, include_healthy=False)
         self.model.apply(AgentEvent(EventType.RESTORE_FINISHED, metadata={"session_id": session_id}))
 
     async def _restore_large_session(self, session: Any) -> None:
@@ -111,6 +113,7 @@ class SessionRestoreMixin:
         self.model.activity_visible = restored.activity_visible
         self.model.activity_frame = restored.activity_frame
         self._sync_context_status()
+        self._show_recovery_report(session, include_healthy=False)
         self.model.apply(
             AgentEvent(
                 EventType.RESTORE_FINISHED,
@@ -118,6 +121,14 @@ class SessionRestoreMixin:
             )
         )
         self._schedule_render()
+
+    def _show_recovery_report(self, session: Any, *, include_healthy: bool) -> None:
+        report = getattr(session, "recovery_report", None)
+        if report is None:
+            return
+        message = format_recovery_report(report, include_healthy=include_healthy)
+        if message:
+            self.model.append_info(message)
 
     def _refresh_skills(self) -> None:
         if self._refresh_skills_callback is None:

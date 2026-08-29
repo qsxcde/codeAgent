@@ -14,8 +14,10 @@ from codeagent.app.headless import (
     _headless_once,
     _print_context_diagnostics,
 )
+from codeagent.app.session_recovery import format_recovery_report
 from codeagent.app.skills.packages.manager import PackageManager
 from codeagent.app.skills.packages.registry import PackageValidationError
+from codeagent.session.persistence.errors import SessionRecoveryError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,23 +66,13 @@ def main(argv: list[str] | None = None) -> int:
         _list_sessions()
         return 0
 
-    manager = None
-    if args.continue_session or args.session:
-        from codeagent.app.config import CONFIG_DIR
-        from codeagent.session.persistence import JsonFileStore
+    session, manager, prepare_status = _prepare_session(args)
+    if prepare_status:
+        return prepare_status
 
-        store = JsonFileStore(CONFIG_DIR / "sessions")
-        manager = container.create_session_manager(
-            store=store, approval_mode="allow" if args.yes else "deny"
-        )
-        if args.session:
-            session = manager.switch(args.session)
-        else:
-            session = manager.continue_recent()
-    else:
-        session = container.create_agent_session(
-            approval_mode="allow" if args.yes else "deny"
-        )
+    recovery_report = getattr(session, "recovery_report", None)
+    if recovery_report is not None and recovery_report.status != "healthy":
+        print(format_recovery_report(recovery_report, include_healthy=False), file=sys.stderr)
 
     try:
         if args.prompt:
@@ -97,6 +89,31 @@ def main(argv: list[str] | None = None) -> int:
             if callable(close_sync):
                 close_sync()
     return 0
+
+
+def _prepare_session(args: argparse.Namespace):
+    """按 CLI 参数创建会话，并把不可恢复错误转换为退出结果。"""
+    if not (args.continue_session or args.session):
+        return (
+            container.create_agent_session(approval_mode="allow" if args.yes else "deny"),
+            None,
+            0,
+        )
+
+    from codeagent.app.config import CONFIG_DIR
+    from codeagent.session.persistence import JsonFileStore
+
+    store = JsonFileStore(CONFIG_DIR / "sessions")
+    manager = container.create_session_manager(
+        store=store, approval_mode="allow" if args.yes else "deny"
+    )
+    try:
+        session = manager.switch(args.session) if args.session else manager.continue_recent()
+    except SessionRecoveryError as exc:
+        print(format_recovery_report(exc.report), file=sys.stderr)
+        manager.close_sync()
+        return None, None, 2
+    return session, manager, 0
 
 
 def _skill_cli(argv: list[str]) -> int:

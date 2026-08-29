@@ -27,7 +27,7 @@ from codeagent.session.constants import (
 from codeagent.session.contracts import SessionCloser
 from codeagent.session.eventing import SessionEventMixin
 from codeagent.session.lifecycle import SessionLifecycleMixin
-from codeagent.session.persistence.models import SessionStore, UsageStats
+from codeagent.session.persistence.models import SessionRecoveryReport, SessionStore, UsageStats
 from codeagent.session.runtime.controller import SessionRuntime
 from codeagent.session.runtime.state import CommitStatus, RunOutcome, SessionBudgetState
 from codeagent.session.compaction_runtime import SessionCompactionMixin
@@ -159,6 +159,11 @@ class AgentSession(
     def context_diagnostics(self) -> ContextDiagnostics:
         """Return the latest runtime-only context diagnostic snapshot."""
         return self._budget_state.diagnostics
+
+    @property
+    def recovery_report(self) -> SessionRecoveryReport:
+        """Return the persistence recovery result captured at construction."""
+        return self._persistence.recovery_report
 
     @property
     def model_id(self) -> str | None:

@@ -6,6 +6,8 @@ import asyncio
 from typing import Any
 
 from codeagent.app.errors.reporting import report_unexpected_error
+from codeagent.app.session_recovery import format_recovery_report
+from codeagent.session.persistence.errors import SessionRecoveryError
 
 
 class SessionActionRunnerMixin:
@@ -32,6 +34,8 @@ class SessionActionRunnerMixin:
         async def run_action() -> None:
             try:
                 session = await method(*args)
+            except SessionRecoveryError as exc:
+                self.model.append_info(format_recovery_report(exc.report))
             except ValueError as exc:
                 self.model.append_info(str(exc))
             except Exception as exc:

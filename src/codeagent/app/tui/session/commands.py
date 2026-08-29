@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shlex
 
+from codeagent.app.session_recovery import format_recovery_report
+from codeagent.session.persistence.errors import SessionRecoveryError
 from ..commands.parser import Command
 from codeagent.session.navigation.tree import SessionNode, build_tree
 from codeagent.session.persistence import SessionQuery
@@ -49,6 +51,8 @@ class SessionCommandsMixin:
             self._cmd_session_filter(cmd)
         elif action == "archived":
             self._show_session_query(SessionQuery(archived=True), "归档会话")
+        elif action == "recovery":
+            self._cmd_session_recovery(cmd)
         elif action in {"archive", "unarchive"}:
             self._cmd_session_archive(cmd, action)
         elif action == "delete":
@@ -81,6 +85,17 @@ class SessionCommandsMixin:
             self.model.append_info(f"{action}失败: {exc}")
             return
         self._show_session_mutation(results, action)
+
+    def _cmd_session_recovery(self, cmd: Command) -> None:
+        if len(cmd.args) != 2:
+            self.model.append_info("用法: /sessions recovery <id>")
+            return
+        try:
+            report = self._manager.recovery_report(cmd.args[1])
+        except (OSError, ValueError) as exc:
+            self.model.append_info(f"恢复诊断失败: {exc}")
+            return
+        self.model.append_info(format_recovery_report(report))
 
     def _cmd_session_delete(self, cmd: Command) -> None:
         session_ids = list(cmd.args[1:])
@@ -131,6 +146,9 @@ class SessionCommandsMixin:
             return
         try:
             session = self._manager.switch(action)
+        except SessionRecoveryError as exc:
+            self.model.append_info(format_recovery_report(exc.report))
+            return
         except ValueError as exc:
             self.model.append_info(str(exc))
             return

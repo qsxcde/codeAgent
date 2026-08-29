@@ -11,8 +11,10 @@ from codeagent.session.persistence.commit import SessionCommitter
 from codeagent.session.persistence.models import (
     CompactionEntry,
     SessionStore,
+    SessionRecoveryReport,
     UsageStats,
 )
+from codeagent.session.persistence.errors import SessionRecoveryError
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,7 @@ class SessionPersistence:
             if store is not None
             else None
         )
+        self._recovery_report: SessionRecoveryReport | None = None
 
     @property
     def persisted(self) -> bool:
@@ -69,19 +72,47 @@ class SessionPersistence:
             return UsageStats()
         return self._store.load_usage(self._session_id)
 
+    @property
+    def recovery_report(self) -> SessionRecoveryReport:
+        """Return the report captured while loading this session."""
+        return self._recovery_report or SessionRecoveryReport(self._session_id, "healthy")
+
     def load(self) -> RestoredSessionState:
         """Load persisted context without creating deferred empty sessions."""
         if self._store is None:
+            self._recovery_report = SessionRecoveryReport(self._session_id, "healthy")
             return RestoredSessionState(True, [], None, None, {}, None)
 
-        store_ref = self._store.get(self._session_id)
-        if store_ref is None and not self._defer_persistence:
+        report = self._recovery_report_for_store()
+        missing = (
+            report.status == "unavailable"
+            and report.diagnostics
+            and report.diagnostics[0].code == "missing_session"
+        )
+        if report.status == "unavailable" and not missing:
+            self._recovery_report = report
+            raise SessionRecoveryError(report)
+        if missing and not self._defer_persistence:
             self._store.create(self._session_id, **self._persistence_options)
             store_ref = self._store.get(self._session_id)
+            report = self._recovery_report_for_store()
+        elif missing:
+            store_ref = None
+        else:
+            try:
+                store_ref = self._store.get(self._session_id)
+            except (OSError, ValueError) as exc:
+                report = self._recovery_report_for_store()
+                self._recovery_report = report
+                raise SessionRecoveryError(report) from exc
         self._persisted = store_ref is not None
         if not self._persisted:
+            self._recovery_report = SessionRecoveryReport(self._session_id, "healthy")
             return RestoredSessionState(False, [], None, None, {}, None)
 
+        self._recovery_report = report
+        if not self._recovery_report.can_continue:
+            raise SessionRecoveryError(self._recovery_report)
         state = self._store.load_context(self._session_id)
         saved_context = self._store.get_meta(self._session_id, "last_context_tokens")
         context_tokens = (
@@ -97,6 +128,15 @@ class SessionPersistence:
             state.details,
             context_tokens,
         )
+
+    def _recovery_report_for_store(self) -> SessionRecoveryReport:
+        """Keep older injected stores usable while the report port rolls out."""
+        if self._store is None:
+            return SessionRecoveryReport(self._session_id, "healthy")
+        reporter = getattr(self._store, "recovery_report", None)
+        if not callable(reporter):
+            return SessionRecoveryReport(self._session_id, "healthy")
+        return reporter(self._session_id)
 
     def ensure_persisted(self) -> None:
         """Create a deferred session header on the first successful write."""

@@ -11,7 +11,13 @@ from codeagent.app.container import ChatModelPort
 from codeagent.core import AgentLoopConfig, EventType
 from codeagent.session import SessionManager
 from codeagent.session.compaction import CompactionPolicyConfig
-from codeagent.session.persistence import CompactionEntry, MemoryStore, SessionQuery
+from codeagent.session.persistence import (
+    CompactionEntry,
+    JsonFileStore,
+    MemoryStore,
+    SessionQuery,
+    SessionRecoveryError,
+)
 from codeagent.session.runtime.state import RunPhase
 
 
@@ -212,6 +218,30 @@ async def test_manager_delete_many_reports_partial_failure_and_running_protectio
     with pytest.raises(ValueError, match="运行中"):
         mgr.delete_many([running.session_id], confirmed=True)
     running._runtime.finish_run(RunPhase.CANCELLED)
+
+
+def test_manager_exposes_recovery_report_for_existing_and_missing_sessions(tmp_path):
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    mgr = _manager(store=store)
+
+    assert mgr.recovery_report("s1").status == "healthy"
+    assert mgr.recovery_report("missing").diagnostics[0].code == "missing_session"
+
+
+def test_manager_switch_rejects_incompatible_session_without_replacing_current(tmp_path):
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("bad")
+    path = tmp_path / "sessions" / "bad.jsonl"
+    path.write_text('{"type":"session","version":999,"id":"bad"}\n', encoding="utf-8")
+    mgr = _manager(store=store)
+    current = mgr.create()
+
+    with pytest.raises(SessionRecoveryError) as caught:
+        mgr.switch("bad")
+
+    assert caught.value.report.diagnostics[0].code == "incompatible_version"
+    assert mgr.current is current
 
 
 def test_manager_passes_compaction_policy_to_adopted_session():

@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from codeagent.core.contracts.messages import Message
-from codeagent.session.persistence.codec import _derive_title, _now
+from codeagent.session.persistence.codec import _now
+from codeagent.session.persistence.memory_metadata import MemoryMetadataMixin
+from codeagent.session.persistence.memory_recovery import MemoryRecoveryMixin
 from codeagent.session.persistence.models import (
     CompactionEntry,
     CompactionState,
@@ -16,7 +18,7 @@ from codeagent.session.persistence.models import (
     UsageStats,
 )
 
-class MemoryStore:
+class MemoryStore(MemoryRecoveryMixin, MemoryMetadataMixin):
     """内存后端(测试 / 一次性 headless 用),零文件系统依赖。"""
 
     def __init__(self) -> None:
@@ -58,6 +60,7 @@ class MemoryStore:
         refs.sort(key=lambda r: (r.last_activity_at or r.timestamp, r.id))
         effective_query = query or SessionQuery()
         return [ref for ref in refs if effective_query.matches(ref)]
+
     def archive(self, session_id: str, *, archived: bool = True) -> None:
         if session_id not in self._sessions:
             raise ValueError(f"会话不存在: {session_id}")
@@ -177,25 +180,6 @@ class MemoryStore:
         self._compactions.append((session_id, entry))
         return entry.id
 
-    def append_model_change(
-        self, session_id: str, *, model: str = "", effort: str = ""
-    ) -> None:
-        """记录配置热切换(内存态,读侧后写覆盖 create 时的 header 值)。"""
-        if session_id not in self._sessions:
-            raise ValueError(f"会话不存在: {session_id}")
-        ref = self._sessions[session_id]
-        self._sessions[session_id] = replace(
-            ref, model=model or ref.model, effort=effort or ref.effort
-        )
-
-    def set_meta(self, session_id: str, key: str, value: Any) -> None:
-        if session_id not in self._sessions:
-            raise ValueError(f"会话不存在: {session_id}")
-        self._meta.setdefault(session_id, {})[key] = value
-
-    def get_meta(self, session_id: str, key: str) -> Any | None:
-        return self._meta.get(session_id, {}).get(key)
-
     def append_usage(
         self, session_id: str, usage: dict[str, int]
     ) -> None:
@@ -273,28 +257,3 @@ class MemoryStore:
             )
         self._messages[new_session_id] = copied
         return ref
-
-    def _ref_with_title(self, session_id: str) -> SessionRef:
-        """返回带派生标题的 SessionRef(get/list 时派生,create 时为空)。"""
-        base = self._sessions[session_id]
-        metadata = self._meta.get(session_id, {})
-        name = metadata.get("name")
-        archived = metadata.get("archived")
-        if type(archived) is not bool:
-            archived = base.archived
-        first_user = next(
-            (m.content for m in self._messages[session_id] if m.role == "user"),
-            "",
-        )
-        return SessionRef(
-            id=base.id,
-            timestamp=base.timestamp,
-            cwd=base.cwd,
-            last_activity_at=base.last_activity_at or base.timestamp,
-            parent_session=base.parent_session,
-            model=base.model,
-            effort=base.effort,
-            title=_derive_title(name or "", first_user),
-            status=base.status,
-            archived=archived,
-        )
