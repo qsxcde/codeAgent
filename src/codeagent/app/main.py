@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     manager = None
     if args.continue_session or args.session:
         from codeagent.app.config import CONFIG_DIR
-        from codeagent.session.persistence.jsonl_store import JsonFileStore
+        from codeagent.session.persistence import JsonFileStore
 
         store = JsonFileStore(CONFIG_DIR / "sessions")
         manager = container.create_session_manager(
@@ -167,7 +167,7 @@ def _skill_cli(argv: list[str]) -> int:
 def _list_sessions() -> None:
     """打印会话列表(标识 / 时间 / 模型 / 标题;无会话时提示)。"""
     from codeagent.app.config import CONFIG_DIR
-    from codeagent.session.persistence.jsonl_store import JsonFileStore
+    from codeagent.session.persistence import JsonFileStore
 
     refs = JsonFileStore(CONFIG_DIR / "sessions").list()
     if not refs:

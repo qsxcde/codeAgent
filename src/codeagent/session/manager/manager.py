@@ -12,8 +12,8 @@ from codeagent.session.compaction.summarizer import Summarizer
 from codeagent.session.constants import DEFAULT_CONTEXT_WINDOW
 from codeagent.session.contracts import SessionCloser
 from codeagent.session.events.bus import EventBus, Subscriber
-from codeagent.session.manager_operations import SessionManagerOperations
-from codeagent.session.manager_registry import SessionManagerRegistry
+from codeagent.session.manager.operations import SessionManagerOperations
+from codeagent.session.manager.registry import SessionManagerRegistry
 from codeagent.session.persistence.models import SessionRef, SessionStore
 from codeagent.session.session import AgentSession
 

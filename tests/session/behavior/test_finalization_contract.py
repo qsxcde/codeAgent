@@ -11,7 +11,7 @@ from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
 from codeagent.core import Agent, AgentContext, AgentLoopConfig, EventType, Message
 from codeagent.session import AgentSession, EventBus
-from codeagent.session.persistence.jsonl_store import JsonFileStore
+from codeagent.session.persistence.jsonl import JsonFileStore
 from codeagent.session.persistence.memory_store import MemoryStore
 from codeagent.session.persistence.models import UsageStats
 from codeagent.session.runtime.state import CommitStatus, RunPhase

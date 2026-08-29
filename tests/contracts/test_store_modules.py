@@ -17,7 +17,7 @@ from codeagent.session.persistence import (
 )
 from codeagent.session.persistence.codec import _dict_to_message, _message_to_dict
 from codeagent.session.persistence.index import SessionIndex
-from codeagent.session.persistence.jsonl_store import JsonFileStore as JsonlStore
+from codeagent.session.persistence.jsonl import JsonFileStore as JsonlStore
 from codeagent.session.persistence.memory_store import MemoryStore as InMemoryStore
 from codeagent.session.persistence.models import SessionRef as PersistenceSessionRef
 from codeagent.session.persistence.protocol import SessionStore as PersistenceSessionStore

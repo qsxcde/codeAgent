@@ -160,7 +160,7 @@ def test_legacy_file_without_activity_uses_creation_timestamp(tmp_path):
 
 def test_message_activity_timestamp_survives_reopen(tmp_path, monkeypatch):
     """消息活动时间写入 JSONL 并可在索引失效后重建。"""
-    from codeagent.session.persistence import jsonl_store
+    from codeagent.session.persistence.jsonl import store as jsonl_store
 
     clock = iter(
         (
@@ -195,4 +195,3 @@ def test_unknown_entry_types_ignored(tmp_path):
     assert store.get("s1").title == "hi"
     assert store.load_messages("s1")[0].content == "hi"
     assert store.get_meta("s1", "name") is None
-

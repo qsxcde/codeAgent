@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from codeagent.core.contracts.messages import Message
-from codeagent.session.persistence.jsonl_store import JsonFileStore
+from codeagent.session.persistence.jsonl import JsonFileStore
 from codeagent.session.persistence.memory_store import MemoryStore
 
 
@@ -47,7 +47,7 @@ def test_store_activity_timestamp_contract(store, monkeypatch):
         )
     )
     module = (
-        "codeagent.session.persistence.jsonl_store"
+        "codeagent.session.persistence.jsonl.store"
         if isinstance(store, JsonFileStore)
         else "codeagent.session.persistence.memory_store"
     )
@@ -72,7 +72,7 @@ def test_store_recent_activity_sort_contract(store, monkeypatch):
         )
     )
     module = (
-        "codeagent.session.persistence.jsonl_store"
+        "codeagent.session.persistence.jsonl.store"
         if isinstance(store, JsonFileStore)
         else "codeagent.session.persistence.memory_store"
     )

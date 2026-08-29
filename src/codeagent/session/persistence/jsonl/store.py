@@ -7,10 +7,10 @@ from pathlib import Path
 
 from codeagent.session.persistence.index import SessionIndex
 from codeagent.session.persistence.codec import _now as _codec_now
-from codeagent.session.persistence.jsonl_forking import JsonlForkingMixin
-from codeagent.session.persistence.jsonl_indexing import JsonlIndexingMixin
-from codeagent.session.persistence.jsonl_reading import JsonlReadingMixin
-from codeagent.session.persistence.jsonl_writing import JsonlWritingMixin
+from codeagent.session.persistence.jsonl.forking import JsonlForkingMixin
+from codeagent.session.persistence.jsonl.indexing import JsonlIndexingMixin
+from codeagent.session.persistence.jsonl.reading import JsonlReadingMixin
+from codeagent.session.persistence.jsonl.writing import JsonlWritingMixin
 from codeagent.session.persistence.locking import path_lock
 
 

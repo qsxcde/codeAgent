@@ -122,8 +122,9 @@ codeagent/
 │   │
 │   ├── session/                      # [Session + Runtime]  ← Pi 核心增量 ✅ 已落地
 │   │   ├── session.py                #   AgentSession: run / subscribe / abort / steer / followup
-│   │   ├── manager.py                #   SessionManager: create / switch / fork / dispose
-│   │   ├── persistence/              #   JSONL/MemoryStore、索引、锁、记录模型
+│   │   ├── manager/                  #   SessionManager 外观、操作、注册表
+│   │   ├── persistence/              #   通用协议、记录、锁、提交协调
+│   │   │   └── jsonl/                #   JSONL store、读取、写入、索引、分叉
 │   │   ├── runtime/                  #   运行控制、确认、事件映射、错误策略
 │   │   ├── compaction/               #   上下文压缩策略、摘要和详情
 │   │   ├── events/                    #   事件总线

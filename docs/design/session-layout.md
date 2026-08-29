@@ -7,7 +7,8 @@
 | 能力 | 规范入口 |
 |---|---|
 | 事件总线 | `codeagent.session.events` |
-| 持久化后端、协议、记录和索引 | `codeagent.session.persistence` |
+| 持久化协议、记录、内存后端和提交协调 | `codeagent.session.persistence` |
+| JSONL 文件后端 | `codeagent.session.persistence.jsonl` |
 | 会话树和分支导航 | `codeagent.session.navigation` |
 | 运行控制、状态、确认和事件映射 | `codeagent.session.runtime` |
 | 压缩 | `codeagent.session.compaction` |
@@ -24,7 +25,12 @@
 | `codeagent.session.bus` | `codeagent.session.events` |
 | `codeagent.session.store` | `codeagent.session.persistence` |
 | `codeagent.session.memory_store` | `codeagent.session.persistence.memory_store` |
-| `codeagent.session.json_file_store` | `codeagent.session.persistence.jsonl_store` |
+| `codeagent.session.json_file_store` | `codeagent.session.persistence.jsonl` |
+| `codeagent.session.persistence.jsonl_store` | `codeagent.session.persistence.jsonl` |
+| `codeagent.session.persistence.jsonl_reading` | `codeagent.session.persistence.jsonl.reading` |
+| `codeagent.session.persistence.jsonl_writing` | `codeagent.session.persistence.jsonl.writing` |
+| `codeagent.session.persistence.jsonl_indexing` | `codeagent.session.persistence.jsonl.indexing` |
+| `codeagent.session.persistence.jsonl_forking` | `codeagent.session.persistence.jsonl.forking` |
 | `codeagent.session.store_codec` | `codeagent.session.persistence.codec` |
 | `codeagent.session.store_index` | `codeagent.session.persistence.index` |
 | `codeagent.session.store_models` | `codeagent.session.persistence.models` |
