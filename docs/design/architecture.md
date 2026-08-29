@@ -52,7 +52,7 @@
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
- - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1506 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
+ - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1522 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
  - TUI 性能验收:`benchmark/` 使用 schema v2 的固定离线 fixture 测量提交首帧、首 token、帧 p50/p95、控制延迟、峰值 Python 分配和协调器的 dropped/over-budget 计数；`compare_benchmark.py` 只在 schema、平台、Python、视口和 fixture 一致时比较，`update_tui_baseline.py` 负责生成受约束的 Linux/Python 3.12 候选基线。
 
 **v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
@@ -109,6 +109,7 @@ codeagent/
 │   │   │   └── registry.py           #     ModelRegistry 两遍解析(精确 id → 别名)
 │   │   ├── transport/                #   OpenAI 兼容传输层
 │   │   │   ├── sse.py                 #     SSEParser(thinking/usage 全量透传)
+│   │   │   ├── retry.py               #     有界重试次数与退避策略
 │   │   │   └── openai_compat.py      #     OpenAICompatClient(httpx,重试/流式)
 │   │   ├── errors.py                  #   Provider 错误分类与安全诊断
 │   │   └── providers/                #   每 provider 一个文件,配置+工厂自包含
@@ -148,7 +149,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按行为域分包,1506 passed(2026-08-30)
+└── tests/                            # 按行为域分包,1522 passed(2026-08-30)
     ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
     ├── contracts/                    # AI、core、session、tools 边界契约
     ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为
@@ -174,7 +175,7 @@ codeagent/
 | `app/tui/session/` | 会话命令、异步动作、对话协调、快照恢复和恢复诊断展示 | 恢复按成本后台化，并校验当前 session，丢弃过期结果；不可恢复目标不替换当前 transcript |
 | `app/tui/presentation/` | blocks、组件、Markdown、状态、输出和主题 | 纯终端表现层不 import Textual |
 | `app/tui/adapters/textual/` | 当前唯一 Textual 引擎实现 | 只能依赖 TUI 端口和纯表现数据 |
-| `ai/` | 模型基础设施:模型契约、provider、transport、catalog | 不 import 应用、工具、编排 |
+| `ai/` | 模型基础设施:模型契约、provider、transport、catalog、错误分类 | 不 import 应用、工具、编排；模型重试只包围完整模型请求 |
 | `core/` | 纯内存 Agent Runtime:上下文、循环、工具执行、生命周期状态与事件 | 不 import config / ai / tools / session |
 | `session/` | AgentSession 外壳、事件适配、持久化、分支与压缩 | 不 import ai / tools / config |
 | `tools/` | 工具层:原子工具 + 注册表 + 安全分类器 + 能力探测 + 共享设施 | 不 import 模型、编排;`shared/` 只被 tools 内部使用 |

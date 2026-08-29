@@ -26,6 +26,11 @@ from codeagent.ai.model.types import (
     ToolCall,
     ToolDefinition,
 )
+from codeagent.ai.transport.retry import (
+    DEFAULT_MAX_RETRIES,
+    retry_delay,
+    validate_max_retries,
+)
 from codeagent.ai.transport.streaming import OpenAICompatStreamingMixin
 
 
@@ -53,7 +58,7 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout: float | httpx.Timeout | None = None,
-        max_retries: int = 3,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         parsed_url = urlsplit(base_url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
@@ -97,7 +102,7 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
             # float: 向后兼容(全部操作同一超时)
             self._timeout = httpx.Timeout(timeout)
             self._stream_timeout = self._timeout
-        self._max_retries = max_retries
+        self._max_retries = validate_max_retries(max_retries)
         self._default_tools: tuple[ToolDefinition, ...] = ()
         #: 复用的底层 HTTP 客户端(懒创建,提供 aclose 释放);连接/TLS 复用(M6)。
         self._client: httpx.AsyncClient | None = None
@@ -119,6 +124,10 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
     @property
     def max_tokens(self) -> int | None:
         return self._max_tokens
+
+    @property
+    def max_retries(self) -> int:
+        return self._max_retries
 
     def _get_client(self) -> httpx.AsyncClient:
         """懒创建单一 AsyncClient(供 generate/stream 复用)。"""
@@ -215,7 +224,9 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
                 )
                 if attempt == self._max_retries or not classified.retryable:
                     raise classified from exc
-                await asyncio.sleep(min(2 ** attempt, 10.0))
+                await asyncio.sleep(
+                    retry_delay(attempt, retry_after=classified.retry_after)
+                )
 
         tool_calls: list[ToolCall] = []
         choice = (data.get("choices") or [{}])[0]

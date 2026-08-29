@@ -16,6 +16,7 @@ from codeagent.ai.model.types import (
     ToolDefinition,
 )
 from codeagent.ai.transport.sse import SSEParser
+from codeagent.ai.transport.retry import retry_delay
 
 
 class OpenAICompatStreamingMixin:
@@ -99,7 +100,9 @@ class OpenAICompatStreamingMixin:
                 )
                 if yielded or not classified.retryable or attempt == self._max_retries:
                     raise classified from exc
-                await asyncio.sleep(min(2**attempt, 10.0))
+                await asyncio.sleep(
+                    retry_delay(attempt, retry_after=classified.retry_after)
+                )
 
     async def _stream_attempt(
         self,

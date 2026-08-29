@@ -8,6 +8,17 @@ from codeagent.core.contracts.errors import ContextPreparationError
 from codeagent.core.orchestration.loop import RecursionLimitError
 from codeagent.session.runtime.state import RunPhase, RuntimeFailure
 
+_PROVIDER_ERROR_CODES = {
+    "network": "model_network",
+    "timeout": "model_timeout",
+    "rate_limit": "model_rate_limit",
+    "authentication": "model_auth",
+    "invalid_request": "model_invalid_request",
+    "unsupported_parameter": "model_unsupported_parameter",
+    "server": "model_server",
+    "unknown": "model_error",
+}
+
 
 def classify_error(
     exc: BaseException,
@@ -21,12 +32,17 @@ def classify_error(
     phase_value = phase.value if isinstance(phase, RunPhase) else str(phase)
     code = _error_code(exc, phase_value)
     budget = _budget_metadata(exc)
-    retryable = (
-        code
-        in {"model_auth", "model_network", "model_timeout", "model_rate_limit", "model_error"}
-        and side_effect_state == "none"
-        and not cleanup_uncertain
+    provider_retryable = (
+        _provider_retryable(exc)
+        if phase_value == RunPhase.MODEL_WAIT.value
+        else None
     )
+    retryable = (
+        provider_retryable
+        if provider_retryable is not None
+        else code
+        in {"model_auth", "model_network", "model_timeout", "model_rate_limit", "model_error"}
+    ) and side_effect_state == "none" and not cleanup_uncertain
     return RuntimeFailure(
         code=code,
         message=friendly_error(exc) if isinstance(exc, Exception) else str(exc),
@@ -57,6 +73,9 @@ def _error_code(exc: BaseException, phase: str) -> str:
         return "persistence_error"
     if phase == "compaction":
         return "compaction_failed"
+    provider_kind = _provider_kind(exc)
+    if provider_kind is not None and phase == RunPhase.MODEL_WAIT.value:
+        return _PROVIDER_ERROR_CODES[provider_kind]
     try:
         import httpx
     except ImportError:  # pragma: no cover - project dependency
@@ -75,6 +94,19 @@ def _error_code(exc: BaseException, phase: str) -> str:
     if isinstance(exc, asyncio.CancelledError):
         return "cancelled"
     return "model_error" if phase == RunPhase.MODEL_WAIT.value else "runtime_error"
+
+
+def _provider_kind(exc: BaseException) -> str | None:
+    """Read the AI error contract without making session depend on ``ai``."""
+    kind = getattr(exc, "kind", None)
+    return kind if isinstance(kind, str) and kind in _PROVIDER_ERROR_CODES else None
+
+
+def _provider_retryable(exc: BaseException) -> bool | None:
+    if _provider_kind(exc) is None:
+        return None
+    value = getattr(exc, "retryable", False)
+    return value if isinstance(value, bool) else False
 
 
 def _budget_metadata(exc: BaseException) -> dict[str, object]:
@@ -112,6 +144,22 @@ def friendly_error(exc: Exception) -> str:
     """Return the existing user-facing session error message."""
     if isinstance(exc, RecursionLimitError):
         return exc.friendly
+    provider_kind = _provider_kind(exc)
+    if provider_kind is not None:
+        detail = str(getattr(exc, "detail", exc))
+        labels = {
+            "authentication": "认证失败",
+            "rate_limit": "请求过于频繁",
+            "timeout": "请求超时",
+            "network": "无法连接模型服务",
+            "server": "模型服务暂时不可用",
+            "invalid_request": "模型请求无效",
+            "unsupported_parameter": "模型不支持请求参数",
+            "unknown": "模型请求失败",
+        }
+        status = getattr(exc, "status_code", None)
+        suffix = f"(HTTP {status})" if isinstance(status, int) else ""
+        return f"{labels[provider_kind]}{suffix}:{detail}"
     try:
         import httpx
     except ImportError:  # pragma: no cover - project dependency
