@@ -64,6 +64,7 @@ class TuiRenderCoordinator:
         self.frame_scheduler = FrameScheduler(target_fps=target_fps)
         self.resize_debouncer = ResizeDebouncer(self.schedule_render)
         self.render_pending = False
+        self._render_handle: asyncio.Handle | None = None
         self.activity_task: asyncio.Task[None] | None = None
 
     def schedule_render(self) -> None:
@@ -84,13 +85,24 @@ class TuiRenderCoordinator:
                 else 0.0
             )
             self.render_pending = True
-            loop.call_later(delay, self.flush_render)
+            self._render_handle = loop.call_later(delay, self.flush_render)
             return
         self.render_pending = True
-        loop.call_soon(self.flush_render)
+        self._render_handle = loop.call_soon(self.flush_render)
+
+    def flush_render_now(self) -> None:
+        """立即提交一帧,供必须先于异步任务启动的 UI 状态使用。"""
+        if self._render_handle is not None:
+            self._render_handle.cancel()
+            self._render_handle = None
+        self.render_pending = False
+        self.flush_render()
 
     def flush_render(self) -> None:
         """将模型当前视口和状态栏提交到 backend。"""
+        handle, self._render_handle = self._render_handle, None
+        if handle is not None:
+            handle.cancel()
         self.render_pending = False
         if self._before_render is not None:
             self._before_render()

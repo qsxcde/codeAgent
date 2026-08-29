@@ -170,6 +170,8 @@ class ToolCallBlock(Component):
         summary = completed.get(self.name, f"Ran {self.name}")
         if self.output_buffer is not None and self.output_buffer.truncated:
             summary += f" · {self.output_buffer.diagnostic}"
+        elif self.output_buffer is not None and self.execution_status == "unknown":
+            summary += f" · {self.output_buffer.diagnostic}"
         elif self.output_buffer is not None:
             summary += _structured_output_suffix(self.output_buffer.metadata, path)
         return summary

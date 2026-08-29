@@ -123,14 +123,28 @@ class TuiConversationCoordinator:
         if session is None:
             return
         selected_mode = mode or self._task_mode
-        self.model.append_pending_user(text)
         self._task_active = True
-        supervisor = TaskSupervisor(
-            session,
-            cwd=self.model.status.cwd or ".",
-            base_policy=getattr(session, "policy", None),
-            event_sink=self._on_task_event,
-        )
+        self.model.append_pending_user(text)
+        try:
+            self._flush_render_now()
+            supervisor = TaskSupervisor(
+                session,
+                cwd=self.model.status.cwd or ".",
+                base_policy=getattr(session, "policy", None),
+                event_sink=self._on_task_event,
+            )
+        except Exception as exc:
+            self.model.clear_pending_user(text)
+            self._task_active = False
+            self.model.apply(
+                AgentEvent(
+                    EventType.ERROR,
+                    payload=report_unexpected_error("任务启动", exc),
+                    metadata={"error_code": "tui_task_start_error"},
+                )
+            )
+            self._schedule_render()
+            return
         self._task_supervisor = supervisor
 
         async def _run() -> None:
@@ -151,6 +165,7 @@ class TuiConversationCoordinator:
                     )
                 )
             finally:
+                self.model.clear_pending_user(text)
                 if self._task_supervisor is supervisor:
                     self._task_active = False
                     self._task_supervisor = None

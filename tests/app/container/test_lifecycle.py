@@ -176,3 +176,31 @@ def test_rebuild_config_closes_realized_previous_runtime():
     assert len(clients) == 2
     assert clients[0].closed == 1
     assert clients[1].closed == 0
+
+
+async def test_tui_rebuild_rebinds_policy_for_existing_session():
+    """异步热切换后,已有会话的审批策略必须绑定到新 runtime。"""
+    from codeagent.ai.providers.fake import FakeClient
+    from codeagent.app.container import create_tui_app
+
+    clients: list[FakeClient] = []
+
+    def make_client(*args, **kwargs):
+        client = FakeClient(response="测试回复")
+        clients.append(client)
+        return client
+
+    with patch(
+        "codeagent.app.composition.model.selection.create_llm",
+        side_effect=make_client,
+    ):
+        app = create_tui_app(provider="fake", backend=_StubBackend())
+        _ = app._manager.tools
+        await app._rebuild_ports_async("fake", "fake-model:high", None)
+
+        decision = app._manager.current.policy.decide(
+            "bash", {"command": "git push"}
+        )
+
+    assert decision.action == "ask"
+    assert len(clients) == 2

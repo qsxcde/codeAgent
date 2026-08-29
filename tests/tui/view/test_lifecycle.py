@@ -74,6 +74,93 @@ async def test_submit_echoes_user_before_async_conversation_starts():
     await (_run())
 
 
+async def test_submit_renders_preparing_frame_before_session_run():
+    """普通提交的首帧必须先于真实 session.run。"""
+    app, backend, manager = _make_app()
+    run_observations: list[tuple[str, int]] = []
+    original_run = manager.current.run
+
+    def observe_run(text: str, **kwargs):
+        run_observations.append((text, len(backend.renders)))
+        return original_run(text)
+
+    manager.current.run = observe_run
+    backend.submit("首帧反馈")
+
+    try:
+        assert backend.renders
+        first_frame = "\n".join(rich_to_plain(backend.renders[0]))
+        first_status = "".join(span.text for span in backend.statuses[0])
+        assert "首帧反馈" in first_frame
+        assert "准备任务" in first_status
+        assert run_observations == []
+    finally:
+        await _wait_for_conversation(app)
+
+    assert run_observations
+    assert run_observations[0][0] == "首帧反馈"
+    assert run_observations[0][1] >= 1
+
+
+async def test_submit_failure_before_session_start_clears_pending_marker(monkeypatch):
+    """真实会话尚未开始就失败时,后续提交不能继承旧的去重标记。"""
+    app, backend, _ = _make_app()
+
+    async def fail_before_session_start(*args, **kwargs):
+        raise RuntimeError("model initialization unavailable")
+
+    monkeypatch.setattr(TaskSupervisor, "run", fail_before_session_start)
+    backend.submit("初始化失败")
+    await _wait_for_conversation(app)
+
+    assert app.model.running is False
+    assert app.model._pending_user_prompts == []
+    assert "任务执行失败，请查看日志。" in "\n".join(app.model.transcript.all_lines(120))
+
+
+def test_submit_task_creation_failure_clears_preparing_state(monkeypatch):
+    """任务监督器创建失败时,提交不会留下不可取消的准备态。"""
+    app, backend, _ = _make_app()
+
+    def fail_to_create(*args, **kwargs):
+        raise RuntimeError("task supervisor unavailable")
+
+    monkeypatch.setattr("codeagent.app.tui.session.conversation.TaskSupervisor", fail_to_create)
+    backend.submit("创建失败")
+
+    assert app.model.running is False
+    assert app.model.activity_visible is False
+    assert app.model._pending_user_prompts == []
+    assert "任务启动失败，请查看日志。" in "\n".join(app.model.transcript.all_lines(120))
+
+
+async def test_cancel_before_session_start_clears_preparing_state(monkeypatch):
+    """真实会话尚未发出开始事件就取消时,准备态必须回到空闲。"""
+    app, backend, manager = _make_app()
+    started = asyncio.Event()
+    hold = asyncio.Event()
+
+    async def skip_baseline(self, mode):
+        return None
+
+    async def blocked_run(text: str, **kwargs):
+        started.set()
+        await hold.wait()
+
+    monkeypatch.setattr(TaskSupervisor, "_capture_baseline", skip_baseline)
+    manager.current.run = blocked_run
+    backend.submit("取消准备")
+    await started.wait()
+
+    backend.interrupt()
+    await _wait_for_conversation(app)
+
+    assert manager.current.aborted is True
+    assert app.model.running is False
+    assert app.model.activity_visible is False
+    assert app.model._pending_user_prompts == []
+
+
 async def test_unexpected_task_failure_is_rendered_instead_of_becoming_orphaned(
     monkeypatch,
 ):

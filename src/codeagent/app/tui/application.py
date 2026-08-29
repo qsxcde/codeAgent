@@ -287,6 +287,9 @@ class TuiApp(
     def _flush_render(self) -> None:
         self._render_coordinator.flush_render()
 
+    def _flush_render_now(self) -> None:
+        self._render_coordinator.flush_render_now()
+
     def _transcript_width(self) -> int:
         width, _ = self._backend.transcript_size()
         return width or _DEFAULT_EXIT_WIDTH

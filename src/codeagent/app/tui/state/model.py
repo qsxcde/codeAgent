@@ -112,10 +112,28 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
         self.transcript.append(block)
 
     def append_pending_user(self, text: str) -> None:
-        """立即显示待启动会话的用户消息，并等待启动事件去重。"""
+        """立即显示待启动会话的用户消息，并进入 TUI 准备态。"""
         content = _visible_user_content(text)
         self.transcript.append(UserBlock(content))
         self._pending_user_prompts.append(content)
+        self.running = True
+        self.activity_visible = True
+        self.activity_frame = 0
+        self.status.set_task_status("planning", message="准备任务")
+
+    def clear_pending_user(self, text: str) -> bool:
+        """清理未进入真实会话的预回显标记,保留已经显示的用户消息。"""
+        content = _visible_user_content(text)
+        try:
+            self._pending_user_prompts.remove(content)
+        except ValueError:
+            return False
+        if not self._pending_user_prompts:
+            self.running = False
+            self.activity_visible = False
+            if self.status.task_phase == "planning":
+                self.status.set_task_status("")
+        return True
 
     def page_output(self, delta: int, call_id: str | None = None) -> bool:
         """切换工具输出页，只改变视图游标。"""

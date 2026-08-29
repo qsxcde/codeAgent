@@ -148,6 +148,58 @@ def test_tui_model_restores_structured_tool_output_state():
     assert block.output_buffer.metadata.total_bytes == 100
 
 
+def test_tui_model_restores_summary_and_nonrecoverable_tool_diagnostic():
+    """恢复投影只显示逻辑历史，并明确标记无 artifact 的不完整结果。"""
+    from codeagent.core.contracts.messages import OutputCompleteness, ToolOutputMetadata
+
+    model = TuiModel()
+    call = ToolCall(id="call-1", name="read", args={"file_path": "a.py"})
+    model.hydrate_history(
+        [
+            Message(role="user", content="保留的问题"),
+            Message(role="assistant", tool_calls=[call]),
+            Message(
+                role="tool",
+                content="preview",
+                tool_call_id="call-1",
+                tool_output=ToolOutputMetadata(
+                    completeness=OutputCompleteness.INCOMPLETE,
+                    total_bytes=100,
+                    shown_bytes=7,
+                    total_lines=10,
+                    shown_lines=1,
+                    truncated_by="artifact_unavailable",
+                    source="structured",
+                ),
+            ),
+        ],
+        summary="已摘要的问题",
+    )
+
+    plain = "\n".join(rich_to_plain(model.transcript.all_rich(120)))
+    assert plain.count("上下文摘要") == 1
+    assert "已摘要的问题" in plain
+    assert "保留的问题" in plain
+    assert "不完整" in plain and "无法恢复" in plain
+
+
+def test_tui_model_marks_legacy_tool_result_completeness_unknown():
+    """旧 JSONL 缺失 metadata 时，恢复视图不可把结果伪装成完整。"""
+    model = TuiModel()
+    call = ToolCall(id="call-legacy", name="read", args={"file_path": "old.py"})
+    model.hydrate_history(
+        [
+            Message(role="assistant", tool_calls=[call]),
+            Message(role="tool", content="legacy preview", tool_call_id="call-legacy"),
+        ]
+    )
+
+    block = next(block for block in model.transcript.blocks if isinstance(block, ToolCallBlock))
+    plain = "\n".join(rich_to_plain(model.transcript.all_rich(120)))
+    assert block.execution_status == "unknown"
+    assert "完整性未知" in plain
+
+
 def test_tui_model_deduplicates_optimistic_user_echo_on_session_start():
     model = TuiModel()
     model.append_pending_user("即时问题")
@@ -161,6 +213,32 @@ def test_tui_model_deduplicates_optimistic_user_echo_on_session_start():
     assert [block.prompt for block in model.transcript.blocks if isinstance(block, UserBlock)] == [
         "即时问题"
     ]
+
+
+def test_tui_model_marks_pending_submission_as_preparing():
+    """提交预回显同时进入可见准备态,但不伪造 runtime 事件。"""
+    model = TuiModel()
+
+    model.append_pending_user("准备中的问题")
+
+    assert model.running is True
+    assert model.activity_visible is True
+    assert model.status.task_phase == "planning"
+    assert model.status.task_message == "准备任务"
+    assert model.runtime.phase == RuntimePhase.IDLE
+
+
+def test_tui_model_clears_pending_submission_marker_after_terminal_cleanup():
+    """任务未收到真实开始事件时,终态清理只移除去重标记并保留消息。"""
+    model = TuiModel()
+    model.append_pending_user("尚未开始")
+
+    model.clear_pending_user("尚未开始")
+
+    assert [block.prompt for block in model.transcript.blocks if isinstance(block, UserBlock)] == [
+        "尚未开始"
+    ]
+    assert model._pending_user_prompts == []
 
 
 def test_tui_hides_manual_skill_markdown_but_keeps_loaded_label():

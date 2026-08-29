@@ -8,6 +8,7 @@ from collections.abc import Awaitable
 from typing import Any
 
 from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.ports import ApprovalPolicy
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.contracts import SessionCloser
 
@@ -69,8 +70,15 @@ class SessionLifecycleMixin:
     def followup(self, text: str, recursion_limit: int | None = None) -> Awaitable[None]:
         return self.run(text, recursion_limit=recursion_limit)
 
-    def replace_config(self, config: AgentLoopConfig) -> None:
+    def replace_config(
+        self,
+        config: AgentLoopConfig,
+        *,
+        policy: ApprovalPolicy | None = None,
+    ) -> None:
         self._config = config
+        if policy is not None:
+            self._policy = policy
         model_window = getattr(getattr(config, "model", None), "context_window", None)
         if type(model_window) is int and model_window > 0:
             self._context_window = model_window

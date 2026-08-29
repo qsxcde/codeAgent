@@ -3,8 +3,11 @@
 import asyncio
 
 from codeagent.app.tui.presentation.primitives import Component, RichLine, Span
+from codeagent.app.tui.rendering.coordinator import TuiRenderCoordinator
 from codeagent.app.tui.rendering.scheduler import FrameScheduler, ResizeDebouncer
+from codeagent.app.tui.state.model import TuiModel
 from codeagent.app.tui.state.transcript import Transcript
+from tests.fixtures.tui import FakeBackend
 
 
 class CountingComponent(Component):
@@ -92,3 +95,27 @@ async def test_resize_debouncer_runs_once_after_burst() -> None:
         assert calls == ["resize"]
 
     await (scenario())
+
+
+async def test_immediate_flush_cancels_already_queued_frame() -> None:
+    """提交屏障立即刷新后,旧的 call_soon 帧不会再次覆盖或重复提交。"""
+    backend = FakeBackend()
+    coordinator = TuiRenderCoordinator(TuiModel(), backend)
+    coordinator.schedule_render()
+
+    coordinator.flush_render_now()
+    await asyncio.sleep(0)
+
+    assert len(backend.renders) == 1
+
+
+async def test_direct_flush_cancels_already_queued_frame() -> None:
+    """普通直接 flush 也不会遗留已经排队的回调。"""
+    backend = FakeBackend()
+    coordinator = TuiRenderCoordinator(TuiModel(), backend)
+    coordinator.schedule_render()
+
+    coordinator.flush_render()
+    await asyncio.sleep(0)
+
+    assert len(backend.renders) == 1

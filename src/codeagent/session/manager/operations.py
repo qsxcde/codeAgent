@@ -112,7 +112,7 @@ class SessionManagerOperations:
                 raise ValueError("context_window must be positive")
             self._context_window = context_window
         for session in self._sessions.values():
-            session.replace_config(config)
+            session.replace_config(config, policy=policy)
             if context_window is not None:
                 session.set_context_window(context_window)
             session.update_persistence_options(model=model, effort=effort)

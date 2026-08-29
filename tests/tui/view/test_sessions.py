@@ -62,6 +62,28 @@ async def test_large_restore_drops_result_after_session_switch(monkeypatch):
     assert not any("old-" in line for line in app.model.transcript.all_lines(80))
 
 
+async def test_restore_failure_keeps_current_tui_usable(monkeypatch):
+    """恢复失败显示诊断，同时允许当前会话继续接收输入。"""
+    app, _, manager = _make_app()
+    session = manager.current
+    session.history = [Message(role="user", content=f"old-{i}") for i in range(1001)]
+
+    async def fail_to_thread(fn, *args):
+        raise OSError("snapshot unavailable")
+
+    monkeypatch.setattr(asyncio, "to_thread", fail_to_thread)
+    await app._restore_large_session(session)
+
+    assert app.model.runtime.error_code == "restore_failed"
+    assert app.model.running is False
+    assert "恢复会话失败" in "\n".join(app.model.transcript.all_lines(120))
+
+    monkeypatch.undo()
+    app._submit("继续输入")
+    await _wait_for_conversation(app)
+    assert manager.current.run_texts == ["继续输入"]
+
+
 
 def test_fork_command_dispatches_and_feedback():
     """/fork → manager.fork(缺省最近用户消息),反馈含新会话 id 与原会话保留提示。"""
@@ -274,4 +296,3 @@ def test_sessions_list_shows_tree_indentation():
     branch_ref = refs[-1]
     assert root_ref.title in text
     assert branch_ref.title in text
-
