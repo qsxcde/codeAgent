@@ -154,11 +154,6 @@ class TuiApp(
         self._schedule_render()
 
     # -- 确认交互(security-permissions)-------------------------------------
-
-
-
-
-
     def _exit(self) -> None:
         """Schedule async shutdown from the synchronous backend callback."""
         try:
@@ -188,8 +183,6 @@ class TuiApp(
         return task
 
     # -- 事件 → 渲染 -------------------------------------------------------
-
-
     def _event_buffer_flush(self) -> None:
         self._event_buffer.flush()
 
@@ -207,6 +200,17 @@ class TuiApp(
     def _on_event(self, event: Any) -> None:
         if self._shutdown_complete or self._shutdown_started:
             return
+        if getattr(event, "type", None) in {
+            EventType.TEXT_DELTA,
+            EventType.AGENT_MESSAGE,
+            EventType.TOOL_CALL,
+            EventType.CONFIRMATION_REQUESTED,
+            EventType.TURN_END,
+            EventType.ERROR,
+            EventType.RUN_CANCELLED,
+        }:
+            # 停止低频活动动画不需要等待正文归约,避免旧动画任务占用下一轮 loop。
+            self._stop_activity_timer()
         self._event_buffer.push(event)
         self._schedule_render()
 
@@ -217,6 +221,7 @@ class TuiApp(
         self._shutdown_started = True
         self._accepting_input = False
         self._stop_activity_timer()
+        self._render_coordinator.cancel_pending_render()
         self._clear_confirmation()
 
         tasks = [
@@ -270,7 +275,6 @@ class TuiApp(
         width = self._transcript_width()
         self._backend.exit_document(self.model.transcript.iter_lines(width))
         self._shutdown_complete = True
-
 
     def _sync_activity_timer(self) -> None:
         self._render_coordinator.sync_activity_timer()

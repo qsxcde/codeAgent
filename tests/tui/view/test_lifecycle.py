@@ -231,6 +231,18 @@ def test_interrupt_running_aborts():
     assert manager.current.aborted is True
 
 
+def test_interrupt_running_schedules_cancel_feedback_without_waiting_for_terminal_event():
+    """Esc 触发 abort 后立即安排一帧,不等待会话终态事件才刷新 UI。"""
+    app, backend, manager = _make_app()
+    app.model.running = True
+    before = len(backend.renders)
+
+    backend.interrupt()
+
+    assert manager.current.aborted is True
+    assert len(backend.renders) == before + 1
+
+
 
 def test_interrupt_idle_prompts_quit_hint():
     """空闲 Esc → 提示「按 Ctrl+C 退出」,不再直接退出(收尾补丁:退出键位拆分)。"""
@@ -292,7 +304,10 @@ async def test_render_coalescing():
         manager.current._emit(AgentEvent(EventType.TEXT_DELTA, payload="a"))
         manager.current._emit(AgentEvent(EventType.TEXT_DELTA, payload="b"))
         manager.current._emit(AgentEvent(EventType.TEXT_DELTA, payload="c"))
-        await asyncio.sleep(0)
+        for _ in range(10):
+            if len(backend.renders) - before >= 1:
+                break
+            await asyncio.sleep(0)
         assert len(backend.renders) - before == 1
 
     await (_run())

@@ -28,6 +28,7 @@ from ..theme import (
 )
 
 _MAX_ARG_SUMMARY = 60
+_SUMMARY_SCAN_CHARS = _MAX_ARG_SUMMARY * 4
 
 
 def _tool_path(args: dict[str, Any]) -> str:
@@ -35,7 +36,7 @@ def _tool_path(args: dict[str, Any]) -> str:
 
 
 def _summarize_result(name: str, result: str) -> str | None:
-    first = next((line.strip() for line in result.splitlines() if line.strip()), "") or result.strip()
+    first = _first_nonempty_line(result)
     if not first:
         return None
     if name == "bash":
@@ -51,6 +52,23 @@ def _summarize_result(name: str, result: str) -> str | None:
         if match:
             return f"{match.group(1)} 处"
     return _truncate(first, _MAX_ARG_SUMMARY)
+
+
+def _first_nonempty_line(result: str) -> str:
+    """Find a bounded summary line without materializing all output lines."""
+    start = 0
+    while start < len(result):
+        newline = result.find("\n", start)
+        carriage = result.find("\r", start)
+        ends = [position for position in (newline, carriage) if position >= 0]
+        end = min(ends) if ends else len(result)
+        candidate = result[start : min(end, start + _SUMMARY_SCAN_CHARS)].strip()
+        if candidate:
+            return candidate
+        if end >= len(result):
+            break
+        start = end + 1
+    return ""
 
 
 class ToolCallBlock(Component):
@@ -151,9 +169,13 @@ class ToolCallBlock(Component):
             }
             return f"{labels.get(self.execution_status, 'Failed')} {self.name}"
         if self.name == "bash":
-            result = _summarize_result(self.name, self.result)
+            output = self.output_buffer.metadata if self.output_buffer is not None else None
+            result = (
+                None
+                if output is not None and output.source != "legacy" and output.exit_code is not None
+                else _summarize_result(self.name, self.result)
+            )
             if self.output_buffer is not None:
-                output = self.output_buffer.metadata
                 if output.exit_code is not None:
                     duration = (
                         f" · {output.duration_ms / 1000:.1f}s"

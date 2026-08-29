@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from codeagent.app.tui.presentation.blocks import AssistantBlock, Component, ToolCallBlock
+from codeagent.app.tui.presentation.md_renderer import MAX_MD_RENDER_LEN
 from codeagent.app.tui.rendering.coordinator import TuiEventBuffer
 from codeagent.app.tui.state.transcript import Transcript
 from codeagent.core.contracts.events import AgentEvent, EventType
@@ -79,6 +80,76 @@ def test_adjacent_stream_deltas_flush_at_frame_boundary_without_crossing_structu
     ]
 
 
+def test_stream_buffer_flushes_large_batches_without_losing_text():
+    """高频小增量达到批次上限时分段归约,不让单个 payload 无界增长。"""
+    applied: list[tuple[str, object]] = []
+    buffer = TuiEventBuffer(lambda event: applied.append((event.type, event.payload)))
+
+    total = TuiEventBuffer.MAX_PENDING_CHARS * 2 + 17
+    for _ in range(total):
+        buffer.push(AgentEvent(EventType.TEXT_DELTA, "x"))
+    buffer.flush()
+
+    assert len(applied) >= 3
+    assert "".join(str(payload) for _, payload in applied) == "x" * total
+    assert buffer.max_pending_chars <= TuiEventBuffer.MAX_PENDING_CHARS
+
+
+def test_streaming_markdown_parses_only_newly_stable_lines():
+    """连续稳定行只调用 Markdown 渲染器处理新增行和当前尾部。"""
+    calls: list[str] = []
+
+    def renderer(text: str, width: int):
+        calls.append(text)
+        return [[text]]
+
+    block = AssistantBlock(md_renderer=renderer)
+    for index in range(20):
+        block.append_text(f"line {index}\n")
+        block.render(40)
+    block.append_text("tail")
+    block.render(40)
+
+    assert calls == [*(f"line {index}" for index in range(20)), "tail"]
+
+
+def test_collapsed_large_tool_result_uses_metadata_without_scanning_body():
+    """折叠大结果只读取摘要 metadata,不在渲染路径扫描完整正文。"""
+    class _NoScan(str):
+        def splitlines(self, *args, **kwargs):
+            raise AssertionError("collapsed summary scanned the full result")
+
+    block = ToolCallBlock("bash", {"command": "cat large.txt"})
+    block.set_result(
+        "first line\n" + "x" * 200_000,
+        output_metadata={
+            "source": "structured",
+            "completeness": "complete",
+            "total_bytes": 200_010,
+            "total_lines": 2,
+            "shown_lines": 2,
+            "exit_code": 0,
+        },
+    )
+    block.result = _NoScan(block.result)
+
+    lines = block.render(80)
+
+    assert "Ran command" in "".join(span.text for line in lines for span in line)
+
+
+def test_collapsed_legacy_tool_result_remains_compatible():
+    """旧工具结果没有结构化 metadata 时仍能以有限摘要安全渲染。"""
+    block = ToolCallBlock("bash", {"command": "printf ok"})
+    block.set_result("first line\n" + "x" * 100_000)
+
+    lines = block.render(80)
+
+    plain = "".join(span.text for line in lines for span in line)
+    assert "Ran command" in plain
+    assert len(plain) < 1_000
+
+
 def test_restore_cost_counts_large_content_even_when_message_count_is_small():
     from codeagent.app.tui.session.coordinator import TuiSessionCoordinator
     from codeagent.core.contracts.messages import Message
@@ -108,3 +179,46 @@ def test_streaming_markdown_reuses_completed_prefix_and_corrects_at_terminal():
     block.finalize()
     block.render(40)
     assert calls[-1] == "第一行\n第二行"
+
+
+def test_streaming_markdown_terminal_frame_matches_full_render_after_resize():
+    """流式最终帧在换宽后仍与完整 Markdown 基线完全一致。"""
+    body = "# 标题\n- 一项 **粗体**\n\n```python\nprint(1)\n```\n尾部"
+    streamed = AssistantBlock()
+    for start in range(0, len(body), 3):
+        streamed.append_text(body[start : start + 3])
+        streamed.render(40)
+    streamed.finalize()
+
+    baseline = AssistantBlock()
+    baseline.append_text(body)
+    baseline.finalize()
+
+    assert streamed.render(40) == baseline.render(40)
+    assert streamed.render(24) == baseline.render(24)
+
+
+def test_streaming_markdown_empty_and_unclosed_structures_finalize_once():
+    """空正文、未闭合围栏和重复终态都保持可渲染且不重复内容。"""
+    empty = AssistantBlock()
+    empty.append_text("\n")
+    empty.finalize()
+    assert empty.render(40) == []
+
+    unclosed = AssistantBlock()
+    unclosed.append_text("```\nnot closed")
+    assert unclosed.render(40)
+    unclosed.finalize()
+    first = unclosed.render(40)
+    unclosed.finalize()
+    assert unclosed.render(40) == first
+
+
+def test_streaming_markdown_over_threshold_degrades_without_error():
+    """超过 Markdown 解析阈值的活动正文仍可安全渲染。"""
+    block = AssistantBlock()
+    block.append_text("x" * (MAX_MD_RENDER_LEN + 1))
+
+    lines = block.render(80)
+
+    assert lines

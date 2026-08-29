@@ -73,10 +73,12 @@ class TuiConversationCoordinator:
         if self._task_active and self._task_supervisor is not None:
             self._task_supervisor.cancel()
             self.model.append_info("正在取消当前任务")
+            self._schedule_render()
         elif self.model.running:
             session = self._manager.current
             if session is not None:
                 session.abort()
+            self._schedule_render()
         else:
             self.model.append_info("按 Ctrl+C 退出")
 

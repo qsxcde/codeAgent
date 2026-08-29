@@ -18,6 +18,9 @@ from ..presentation.status import StatusBar
 from .transcript import Transcript
 from codeagent.core.contracts.events import AgentEvent
 
+_PROGRESSIVE_BLOCK_THRESHOLD = 32
+_PROGRESSIVE_BODY_THRESHOLD = 4096
+
 
 class TuiModel(ModelHistoryMixin, ModelEventMixin):
     """「事件 → 组件状态」的纯映射(design D3)。
@@ -63,6 +66,28 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
         self.render_stats["frames"] = int(self.render_stats["frames"]) + 1
         self.render_stats["last_render_ms"] = round((self._clock() - started) * 1000, 3)
         return lines
+
+    async def render_progressive(self, width: int, height: int) -> list[RichLine]:
+        """Prepare a frame in cooperative slices owned by the UI loop."""
+        started = self._clock()
+        transient = ActivityBlock(self.activity_frame) if self.activity_visible else None
+        lines = await self.transcript.render_progressive(width, height, transient=transient)
+        self.status.new_output_count = self.transcript.new_output_count
+        self.render_stats["cache_hits"] = self.transcript.cache_hits
+        self.render_stats["cache_misses"] = self.transcript.cache_misses
+        self.render_stats["frames"] = int(self.render_stats["frames"]) + 1
+        self.render_stats["last_render_ms"] = round((self._clock() - started) * 1000, 3)
+        return lines
+
+    def render_requires_cooperation(self) -> bool:
+        """Return whether frame preparation is large enough to yield to input."""
+        blocks = self.transcript.blocks
+        if len(blocks) > _PROGRESSIVE_BLOCK_THRESHOLD:
+            return True
+        return any(
+            int(getattr(block, "body_length", 0)) > _PROGRESSIVE_BODY_THRESHOLD
+            for block in blocks
+        )
 
     def advance_activity(self) -> None:
         if self.activity_visible:

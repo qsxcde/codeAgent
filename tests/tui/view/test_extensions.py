@@ -83,6 +83,8 @@ async def test_large_restore_never_hydrates_live_model_in_worker(monkeypatch):
 
     assert calls
     assert all(getattr(fn, "__self__", None) is not app.model for fn in calls)
+    app._render_coordinator.cancel_pending_render()
+    await asyncio.sleep(0)
 
 
 

@@ -7,9 +7,10 @@ from collections import OrderedDict
 from ..presentation.blocks import Component
 from ..presentation.primitives import RichLine
 from .transcript_layout import TranscriptLayoutMixin
+from .transcript_progressive import ProgressiveTranscriptMixin
 
 
-class Transcript(TranscriptLayoutMixin, Component):
+class Transcript(ProgressiveTranscriptMixin, TranscriptLayoutMixin, Component):
     """聊天区视口:有序子块 + 滚动状态(follow-end)+ 行→块映射(点击命中)。
 
     滚动语义(对应 spec「alt 屏渲染与滚动」):

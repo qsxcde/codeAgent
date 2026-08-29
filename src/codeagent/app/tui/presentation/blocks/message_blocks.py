@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from ..primitives import (
     Component,
@@ -13,6 +16,17 @@ from ..primitives import (
     _wrap,
 )
 from ..theme import ACTIVITY, ASSISTANT_PROMPT, TEXT, USER_BG, USER_PROMPT
+
+
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+@dataclass
+class _StreamLayout:
+    """Incremental Markdown output for one terminal width."""
+
+    stable_units: int = 0
+    lines: list[RichLine] = field(default_factory=list)
 
 
 class UserBlock(Component):
@@ -50,8 +64,13 @@ class AssistantBlock(Component):
         self._md_renderer = md_renderer
         self._thinking_parts: list[str] = []
         self._body_parts: list[str] = []
-        self._stable_markdown_cache: dict[tuple[int, str], list[RichLine]] = {}
+        self._body_length = 0
         self._full_markdown_cache: dict[tuple[int, str], list[RichLine]] = {}
+        self._stream_units: list[str] = []
+        self._stream_pending_parts: list[str] = []
+        self._stream_line_parts: list[str] = []
+        self._stream_in_fence = False
+        self._stream_layouts: dict[int, _StreamLayout] = {}
         self._finalized = False
         self.thinking_started: float | None = None
         self.thinking_ended: float | None = None
@@ -66,6 +85,8 @@ class AssistantBlock(Component):
         if self.thinking_started is not None and self.thinking_ended is None:
             self.thinking_ended = self._clock()
         self._body_parts.append(text)
+        self._body_length += len(text)
+        self._append_stream_text(text)
         self._finalized = False
         self.touch()
 
@@ -75,19 +96,6 @@ class AssistantBlock(Component):
         self._full_markdown_cache.clear()
         self.touch()
 
-    @staticmethod
-    def _stable_prefix(body: str) -> str:
-        end = body.rfind("\n")
-        if end < 0:
-            return ""
-        prefix = body[: end + 1]
-        in_fence = False
-        for line in prefix.splitlines():
-            stripped = line.lstrip()
-            if stripped.startswith("```") or stripped.startswith("~~~"):
-                in_fence = not in_fence
-        return "" if in_fence else prefix
-
     @property
     def thinking(self) -> str:
         return "".join(self._thinking_parts)
@@ -96,30 +104,119 @@ class AssistantBlock(Component):
     def body(self) -> str:
         return "".join(self._body_parts)
 
-    def render(self, width: int) -> list[RichLine]:
-        if not self.body:
-            return []
+    @property
+    def has_body(self) -> bool:
+        """Return whether the block has content without joining all parts."""
+        return self._body_length > 0
+
+    @property
+    def body_length(self) -> int:
+        """Return the accumulated body size without materializing its text."""
+        return self._body_length
+
+    @staticmethod
+    def _without_line_ending(line: str) -> str:
+        return line.removesuffix("\n").removesuffix("\r")
+
+    def _append_stream_text(self, text: str) -> None:
+        """Split newly received text into stable lines and an unstable tail."""
+        for part in text.splitlines(keepends=True):
+            self._stream_line_parts.append(part)
+            if not part.endswith(("\n", "\r")):
+                continue
+            line = "".join(self._stream_line_parts)
+            self._stream_line_parts = []
+            self._append_stream_line(line)
+
+    def _append_stream_line(self, line: str) -> None:
+        """Record one complete line while keeping open fences together."""
+        raw = self._without_line_ending(line)
+        if self._stream_in_fence:
+            self._stream_pending_parts.append(line)
+            if _FENCE_RE.match(raw):
+                self._stream_in_fence = False
+                self._release_stream_pending()
+            return
+        if _FENCE_RE.match(raw):
+            self._stream_in_fence = True
+            self._stream_pending_parts.append(line)
+            return
+        self._stream_units.append(raw)
+
+    def _release_stream_pending(self) -> None:
+        text = "".join(self._stream_pending_parts)
+        self._stream_pending_parts = []
+        self._stream_units.append(self._without_line_ending(text))
+
+    def _stream_render(
+        self, width: int, renderer: Callable[[str, int], list[RichLine]]
+    ) -> list[RichLine]:
+        """Render only new stable units plus the currently unfinished tail."""
         inner = max(1, width - 2)
+        layout = self._stream_layout(inner)
+        while layout.stable_units < len(self._stream_units):
+            unit = self._stream_units[layout.stable_units]
+            layout.lines.extend(renderer(unit, inner) if unit else [[]])
+            layout.stable_units += 1
+        tail = "".join((*self._stream_pending_parts, *self._stream_line_parts))
+        parsed = [*layout.lines, *renderer(tail, inner)] if tail else layout.lines
+        return parsed
+
+    def _stream_layout(self, inner: int) -> _StreamLayout:
+        layout = self._stream_layouts.get(inner)
+        if layout is None:
+            layout = _StreamLayout()
+            self._stream_layouts[inner] = layout
+            while len(self._stream_layouts) > 3:
+                self._stream_layouts.pop(next(iter(self._stream_layouts)))
+        if layout.stable_units > len(self._stream_units):
+            layout = _StreamLayout()
+            self._stream_layouts[inner] = layout
+        return layout
+
+    def _with_prompt(self, parsed: list[RichLine]) -> list[RichLine]:
+        lines: list[RichLine] = []
+        for index, line in enumerate(parsed):
+            prefix = "• " if index == 0 else "  "
+            lines.append([_seg(prefix, fg=ASSISTANT_PROMPT), *line])
+        return lines
+
+    async def render_progressive(self, width: int, *, yield_every: int = 32) -> list[RichLine]:
+        """Prepare active Markdown in bounded units owned by the UI loop."""
+        if self._finalized:
+            return self.render(width)
+        if not self.has_body:
+            return []
         renderer = self._md_renderer
         if renderer is None:
             from codeagent.app.tui.presentation.md_renderer import md_renderer as renderer
-        body = self.body
-        full_key = (inner, body)
-        if self._finalized and full_key in self._full_markdown_cache:
-            return self._full_markdown_cache[full_key]
-        stable = "" if self._finalized else self._stable_prefix(body)
-        if stable:
-            stable_key = (inner, stable)
-            prefix_lines = self._stable_markdown_cache.get(stable_key)
-            if prefix_lines is None:
-                prefix_lines = renderer(stable[:-1], inner)
-                self._stable_markdown_cache[stable_key] = prefix_lines
-                if len(self._stable_markdown_cache) > 8:
-                    self._stable_markdown_cache.pop(next(iter(self._stable_markdown_cache)))
-            tail = body[len(stable) :]
-            parsed = [*prefix_lines, *renderer(tail, inner)] if tail else prefix_lines
-        else:
+        inner = max(1, width - 2)
+        layout = self._stream_layout(inner)
+        for index in range(layout.stable_units, len(self._stream_units)):
+            unit = self._stream_units[index]
+            layout.lines.extend(renderer(unit, inner) if unit else [[]])
+            layout.stable_units += 1
+            if (index + 1) % max(1, yield_every) == 0:
+                await asyncio.sleep(0)
+        tail = "".join((*self._stream_pending_parts, *self._stream_line_parts))
+        parsed = [*layout.lines, *renderer(tail, inner)] if tail else layout.lines
+        return self._with_prompt(parsed)
+
+    def render(self, width: int) -> list[RichLine]:
+        if not self.has_body:
+            return []
+        renderer = self._md_renderer
+        if renderer is None:
+            from codeagent.app.tui.presentation.md_renderer import md_renderer as renderer
+        inner = max(1, width - 2)
+        if self._finalized:
+            body = self.body
+            full_key = (inner, body)
+            if full_key in self._full_markdown_cache:
+                return self._full_markdown_cache[full_key]
             parsed = renderer(body, inner)
+        else:
+            parsed = self._stream_render(width, renderer)
         lines: list[RichLine] = []
         for index, line in enumerate(parsed):
             prefix = "• " if index == 0 else "  "

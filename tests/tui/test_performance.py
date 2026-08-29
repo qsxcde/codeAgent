@@ -12,6 +12,7 @@ from codeagent.app.tui.benchmark.performance import (
 )
 from codeagent.app.tui.state.model import TuiModel
 from codeagent.app.tui.benchmark.benchmark import BenchmarkConfig, build_fixture, run_benchmark
+from tests.tui.performance_helpers import assert_control_latency, assert_frame_budget
 
 
 def test_metric_summary_reports_nearest_rank_percentiles() -> None:
@@ -49,6 +50,11 @@ def test_performance_recorder_uses_injected_clock() -> None:
         pass
 
     assert recorder.samples("render") == [125.0]
+
+
+def test_performance_helpers_use_stable_budget_assertions() -> None:
+    assert_control_latency([5.0, 20.0, 49.0, 50.0])
+    assert_frame_budget([1.0, 10.0, 33.0])
 
 
 def test_performance_recorder_collects_counters_and_peak_memory() -> None:
@@ -141,6 +147,16 @@ def test_run_benchmark_reports_render_metrics() -> None:
     assert result.counters["block_count"] == 3
     assert result.counters["peak_memory_bytes"] > 0
     assert result.environment["os"]
+
+
+def test_benchmark_reports_content_free_streaming_counters() -> None:
+    result = run_benchmark(
+        BenchmarkConfig(scenario="stream", stream_chars=2_000, iterations=1)
+    )
+
+    assert result.counters["event_buffer_flushes"] > 0
+    assert result.counters["max_pending_chars"] <= 4096
+    assert result.counters["dropped_frames"] == 0
 
 
 def test_benchmark_fixture_rendering_is_deterministic() -> None:

@@ -196,7 +196,7 @@ class TranscriptLayoutMixin:
             key = (id(block), width, int(getattr(block, "revision", 0)))
             rendered = self._layout_cache.get(key)
             if rendered is None and key not in self._layout_cache:
-                height = 0 if isinstance(block, AssistantBlock) and not block.body else 1
+                height = 0 if isinstance(block, AssistantBlock) and not block.has_body else 1
                 if height == 0:
                     continue
             else:

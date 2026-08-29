@@ -14,6 +14,7 @@ from codeagent.core.contracts.events import AgentEvent, EventType
 from ..state.model import TuiModel
 from ..presentation.primitives import RichLine
 from ..presentation.md_renderer import md_renderer
+from ..rendering.coordinator import TuiEventBuffer
 from .performance import BenchmarkResult, PerformanceRecorder
 
 
@@ -91,6 +92,7 @@ class TuiBenchmarkFixture:
     stream_text: str
     tool_output: str
     restore_history: list[FixtureMessage]
+    event_buffer: TuiEventBuffer
 
 
 def build_fixture(config: BenchmarkConfig) -> TuiBenchmarkFixture:
@@ -111,6 +113,7 @@ def build_fixture(config: BenchmarkConfig) -> TuiBenchmarkFixture:
         stream_text="x" * config.stream_chars,
         tool_output="t" * config.tool_output_bytes,
         restore_history=restore_history,
+        event_buffer=TuiEventBuffer(model.apply),
     )
 
 
@@ -160,10 +163,12 @@ def _run_scenario(
     if config.scenario == "history":
         _render_frame(fixture, recorder, config)
     elif config.scenario == "stream":
-        fixture.model.apply(AgentEvent(EventType.SESSION_STARTED, "prompt"))
+        fixture.event_buffer.push(AgentEvent(EventType.SESSION_STARTED, "prompt"))
+        fixture.event_buffer.flush()
         for chunk in _stream_chunks(fixture.stream_text):
             with recorder.measure("event_apply_ms"):
-                fixture.model.apply(AgentEvent(EventType.TEXT_DELTA, chunk))
+                fixture.event_buffer.push(AgentEvent(EventType.TEXT_DELTA, chunk))
+                fixture.event_buffer.flush()
             _render_frame(fixture, recorder, config)
         with recorder.measure("markdown_render_ms"):
             md_renderer(fixture.stream_text, max(1, config.width - 2))
@@ -203,6 +208,13 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkResult:
         fixture = build_fixture(config)
         _run_scenario(config, fixture, recorder)
         last_snapshot = fixture.model.performance_snapshot()
+        last_snapshot.update(
+            {
+                "event_buffer_flushes": fixture.event_buffer.flush_count,
+                "max_pending_chars": fixture.event_buffer.max_pending_chars,
+                "dropped_frames": 0,
+            }
+        )
 
     memory_recorder = PerformanceRecorder()
     with memory_recorder.measure_memory():

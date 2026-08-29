@@ -3,6 +3,7 @@
 import asyncio
 
 from codeagent.app.tui.presentation.primitives import Component, RichLine, Span
+from codeagent.app.tui.presentation.blocks import AssistantBlock
 from codeagent.app.tui.rendering.coordinator import TuiRenderCoordinator
 from codeagent.app.tui.rendering.scheduler import FrameScheduler, ResizeDebouncer
 from codeagent.app.tui.state.model import TuiModel
@@ -81,6 +82,106 @@ def test_frame_scheduler_coalesces_requests_and_caps_refresh_rate() -> None:
     scheduler.complete(0.0)
     assert scheduler.request(0.010) is False
     assert scheduler.request(0.034) is True
+
+
+async def test_render_coordinator_exposes_content_free_frame_diagnostics() -> None:
+    """渲染协调器记录帧 generation、耗时和超预算次数,不暴露内容。"""
+    backend = FakeBackend()
+    coordinator = TuiRenderCoordinator(TuiModel(), backend)
+
+    coordinator.schedule_render()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    snapshot = coordinator.performance_snapshot()
+    assert snapshot["render_generation"] == 1
+    assert snapshot["rendered_frames"] == 1
+    assert snapshot["last_frame_ms"] >= 0
+    assert snapshot["over_budget_frames"] in {0, 1}
+    assert "prompt" not in str(snapshot).lower()
+
+
+async def test_large_frame_preparation_yields_to_the_event_loop() -> None:
+    """大布局准备期间先让控制事件获得一次事件循环机会。"""
+    backend = FakeBackend()
+    model = TuiModel()
+    for index in range(200):
+        model.append_info(f"history {index}")
+    coordinator = TuiRenderCoordinator(model, backend)
+    order: list[str] = []
+    original_render = backend.render
+
+    def record_render(lines):
+        order.append("render")
+        original_render(lines)
+
+    backend.render = record_render
+
+    coordinator.schedule_render()
+    asyncio.get_running_loop().call_soon(lambda: order.append("input"))
+    for _ in range(50):
+        if backend.renders:
+            break
+        await asyncio.sleep(0)
+
+    assert order[:2] == ["input", "render"]
+    assert len(backend.renders) == 1
+
+
+async def test_stale_progressive_frame_is_dropped_and_latest_frame_commits() -> None:
+    """准备期间发生新 dirty 事件时,旧帧不提交且最终状态仍会刷新。"""
+    backend = FakeBackend()
+    model = TuiModel()
+    for index in range(200):
+        model.append_info(f"history {index}")
+    invalidated = False
+
+    def invalidate_once() -> None:
+        nonlocal invalidated
+        if not invalidated:
+            invalidated = True
+            coordinator.schedule_render()
+
+    coordinator = TuiRenderCoordinator(model, backend, before_render=invalidate_once)
+    coordinator.schedule_render()
+    for _ in range(80):
+        if backend.renders:
+            break
+        await asyncio.sleep(0)
+
+    snapshot = coordinator.performance_snapshot()
+    assert snapshot["dropped_frames"] >= 1
+    assert len(backend.renders) == 1
+
+
+async def test_long_assistant_frame_yields_before_backend_commit() -> None:
+    """长助手块的 Markdown 准备也必须在提交前让控制事件运行。"""
+    backend = FakeBackend()
+    model = TuiModel()
+    order: list[str] = []
+    calls = 0
+
+    def renderer(text: str, width: int):
+        nonlocal calls
+        calls += 1
+        if calls == 8:
+            asyncio.get_running_loop().call_soon(lambda: order.append("input"))
+        return [[Span(text)]]
+
+    block = AssistantBlock(md_renderer=renderer)
+    block.append_text("".join(f"line {index} " + "x" * 48 + "\n" for index in range(100)))
+    model.transcript.append(block)
+    coordinator = TuiRenderCoordinator(model, backend)
+    original_render = backend.render
+    backend.render = lambda lines: (order.append("render"), original_render(lines))[1]
+
+    coordinator.schedule_render()
+    for _ in range(80):
+        if backend.renders:
+            break
+        await asyncio.sleep(0)
+
+    assert order[:2] == ["input", "render"]
 
 
 async def test_resize_debouncer_runs_once_after_burst() -> None:
