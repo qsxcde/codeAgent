@@ -223,6 +223,10 @@ class AgentSession(
     def _ensure_persisted(self) -> None:
         self._persistence.ensure_persisted()
 
+    def ensure_persisted(self) -> None:
+        """Persist a deferred session header before an explicit metadata edit."""
+        self._ensure_persisted()
+
     def update_persistence_options(self, **options: Any) -> None:
         self._persistence.update_options(**options)
 

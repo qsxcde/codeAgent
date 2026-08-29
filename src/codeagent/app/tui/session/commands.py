@@ -9,6 +9,34 @@ from codeagent.session.navigation.tree import SessionNode, build_tree
 
 
 class SessionCommandsMixin:
+    def _cmd_name(self, cmd: Command) -> None:
+        current = self._manager.current
+        if current is None:
+            self.model.append_info("无法设置会话标题: 当前没有会话")
+            return
+        if not cmd.args and cmd.has_argument_separator:
+            self.model.append_info("设置会话标题失败: 标题不能为空")
+            return
+        if not cmd.args:
+            title = next(
+                (
+                    ref.title
+                    for ref in self._manager.list()
+                    if ref.id == current.session_id
+                ),
+                "",
+            )
+            self.model.append_info(
+                f"当前会话标题: {title or '(无标题)'}\n用法: /name <title>"
+            )
+            return
+        try:
+            title = self._manager.rename(current.session_id, " ".join(cmd.args))
+        except (OSError, ValueError) as exc:
+            self.model.append_info(f"设置会话标题失败: {exc}")
+            return
+        self.model.append_info(f"已设置会话标题: {title}")
+
     def _cmd_sessions(self, cmd: Command) -> None:
         if not cmd.args:
             self._open_inline_picker("sessions")

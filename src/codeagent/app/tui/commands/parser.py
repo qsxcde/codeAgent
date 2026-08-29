@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 __all__ = [
     "CommandSpec",
@@ -45,6 +45,7 @@ class Command:
     name: str
     args: tuple[str, ...] = ()
     raw_args: str = ""
+    has_argument_separator: bool = field(default=False, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -72,14 +73,19 @@ def parse(text: str, registry: Mapping[str, CommandSpec]) -> Command | UnknownCo
         return Literal(text[1:])
     if not text.startswith("/"):
         return Literal(text)
-    name, _, raw_args = text[1:].partition(" ")
+    name, separator, raw_args = text[1:].partition(" ")
     name = name.strip()
     if not name:
         return Literal(text)
     spec = registry.get(name)
     if spec is None:
         return UnknownCommand(name)
-    return Command(name, tuple(raw_args.split()), raw_args.strip())
+    return Command(
+        name,
+        tuple(raw_args.split()),
+        raw_args.strip(),
+        has_argument_separator=bool(separator),
+    )
 
 
 def default_registry() -> dict[str, CommandSpec]:
@@ -94,6 +100,7 @@ def default_registry() -> dict[str, CommandSpec]:
         ),
         "clear": CommandSpec("clear", "清空聊天区"),
         "status": CommandSpec("status", "显示会话状态"),
+        "name": CommandSpec("name", "设置或查看当前会话标题", args=("title...",)),
         "context": CommandSpec("context", "显示上下文预算与治理诊断"),
         "sessions": CommandSpec(
             "sessions",

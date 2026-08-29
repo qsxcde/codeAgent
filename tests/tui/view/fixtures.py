@@ -24,6 +24,7 @@ class FakeSession:
         self.aborted = False
         self.approvals: list[tuple[str, bool]] = []
         self.run_texts: list[str] = []
+        self.title = ""
         # cost-transparency:缺省全零用量(load_usage 空态)。
         self.usage = UsageStats()
         self.history: list[Message] = []
@@ -61,7 +62,7 @@ class FakeRef:
     def __init__(self, session: FakeSession) -> None:
         self.id = session.session_id
         self.timestamp = f"2026-08-21T00:00:00.{len(FakeSession._created):03d}"
-        self.title = f"标题-{session.session_id}"
+        self.title = session.title or f"标题-{session.session_id}"
         self.parent_session = None  # session-tree:树视图读父会话 id
 
 
@@ -73,6 +74,13 @@ class FakeManager:
         self.sessions = [self.current]
         self.tools: list[Any] = []
         self.fork_calls: list[tuple[str, str | None]] = []
+
+    def rename(self, session_id: str, title: str):
+        for session in self.sessions:
+            if session.session_id == session_id:
+                session.title = title
+                return title
+        raise ValueError(f"会话不存在: {session_id}")
 
     def subscribe(self, fn):
         return self.current.subscribe(fn)

@@ -83,6 +83,22 @@ def test_fork_keeps_original_file_untouched(tmp_path):
     assert store.load_messages("s1")  # 原历史完整
 
 
+def test_fork_keeps_title_metadata_and_parent_relation(tmp_path):
+    """重命名后的源会话分叉时保留源标题,父子关系和源文件不变。"""
+    store = JsonFileStore(tmp_path)
+    msgs = _fill_session(store, "s1")
+    store.set_meta("s1", "name", "重构 auth 模块")
+    source = tmp_path / "s1.jsonl"
+    before = source.read_text(encoding="utf-8").splitlines()
+
+    ref = store.fork("s1", msgs[2].id, "s2")
+
+    assert store.get("s1").title == "重构 auth 模块"
+    assert ref.parent_session == "s1"
+    assert store.get("s2").parent_session == "s1"
+    assert source.read_text(encoding="utf-8").splitlines() == before
+
+
 
 def test_fork_validation_errors(tmp_path):
     """分叉点校验:非 user 消息 / 不存在 / 目标已存在 → 明确错误,不产生会话。"""
@@ -142,4 +158,3 @@ def test_fork_before_compaction_boundary_keeps_summary_only(tmp_path):
     state = store.load_context("s2")
     assert state.summary == "摘要1"
     assert state.messages == []  # 全部窗口内容由摘要承载
-

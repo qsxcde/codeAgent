@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,22 @@ from codeagent.session.persistence.models import CURRENT_VERSION
 
 TITLE_MAX = 20
 
+
+def normalize_title(value: object) -> str:
+    """Return a safe single-line title bounded for session list display."""
+    if value is None:
+        return ""
+    text = "".join(
+        " "
+        if character.isspace()
+        else character
+        for character in str(value)
+        if character.isspace() or not unicodedata.category(character).startswith("C")
+    )
+    text = " ".join(text.split())
+    return text if len(text) <= TITLE_MAX else text[:TITLE_MAX] + "…"
+
+
 def _now() -> str:
     """ISO 本地时间(毫秒精度,保证同秒创建的会话列表排序稳定)。"""
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()) + f".{int(time.time() * 1000) % 1000:03d}"
@@ -27,12 +44,8 @@ def _derive_title(name: str, first_user_content: str) -> str:
 
     截断只按字符数,不做语义切分——标题仅用于列表展示。
     """
-    if name:
-        return name
-    text = " ".join(first_user_content.split())
-    if not text:
-        return ""
-    return text if len(text) <= TITLE_MAX else text[:TITLE_MAX] + "…"
+    explicit = normalize_title(name)
+    return explicit or normalize_title(first_user_content)
 
 
 def _message_to_dict(m: Message) -> dict[str, Any]:

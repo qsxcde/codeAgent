@@ -236,6 +236,7 @@ class TuiInteractionCoordinator(TuiCommandDispatcher):
         """
         if not self._accepting_input:
             return
+        raw_text = text
         text = text.strip()
         if not text:
             return
@@ -249,7 +250,9 @@ class TuiInteractionCoordinator(TuiCommandDispatcher):
         if self._login_pending is not None:
             self._submit_login_key(text)
             return
-        parsed = parse(text, _COMMANDS)
+        # Preserve command-only whitespace to distinguish ``/name`` from ``/name   ``.
+        command_text = raw_text.lstrip() if raw_text.lstrip().startswith("/") else text
+        parsed = parse(command_text, _COMMANDS)
         if isinstance(parsed, Literal):
             self._run_conversation(parsed.text, mode=self._task_mode)
         elif isinstance(parsed, UnknownCommand):

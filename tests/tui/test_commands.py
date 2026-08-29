@@ -62,6 +62,7 @@ def test_registry_covers_expected_commands():
         "provider",
         "model",
         "effort",
+        "name",
         "fork",
         "compact",
         "output",

@@ -134,6 +134,58 @@ def test_status_command_shows_session_info():
     assert "deepseek-v4-flash" in text
 
 
+def test_name_command_sets_and_displays_current_title():
+    app, backend, manager = _make_app()
+
+    backend.submit("/name   重构\n auth 模块  ")
+    assert manager.current.title == "重构 auth 模块"
+    assert "已设置会话标题: 重构 auth 模块" in _rendered_text(app, backend)
+
+    backend.submit("/name")
+    text = _rendered_text(app, backend)
+    assert "当前会话标题: 重构 auth 模块" in text
+    assert "/name <title>" in text
+
+    backend.submit("/sessions list")
+    assert "重构 auth 模块" in _rendered_text(app, backend)
+    backend.submit("/tree")
+    assert "重构 auth 模块" in _rendered_text(app, backend)
+
+
+def test_name_command_rejects_blank_without_starting_conversation():
+    app, backend, manager = _make_app()
+    before = list(manager.current.run_texts)
+
+    backend.submit("/name   ")
+
+    assert manager.current.title == ""
+    assert manager.current.run_texts == before
+    assert "标题不能为空" in _rendered_text(app, backend)
+
+
+def test_name_command_reports_storage_failure_without_running_conversation():
+    app, backend, manager = _make_app()
+    before = list(manager.current.run_texts)
+
+    def fail_rename(session_id, title):
+        raise OSError("磁盘不可用")
+
+    manager.rename = fail_rename
+    backend.submit("/name 新标题")
+
+    assert manager.current.run_texts == before
+    assert "设置会话标题失败: 磁盘不可用" in _rendered_text(app, backend)
+
+
+def test_name_command_reports_missing_current_session():
+    app, backend, manager = _make_app()
+    manager.current = None
+
+    backend.submit("/name 新标题")
+
+    assert "无法设置会话标题: 当前没有会话" in _rendered_text(app, backend)
+
+
 
 def test_sessions_list_switch_and_new():
     """/sessions:列表 / <id> 切换 / new 新建 / recent 恢复最近。"""

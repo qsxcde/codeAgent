@@ -45,6 +45,15 @@ def test_memory_store_meta_and_title():
         store.set_meta("ghost", "name", "x")
 
 
+def test_memory_store_normalizes_explicit_title():
+    """MemoryStore 读取显式名称时与文件后端保持相同的展示约束。"""
+    store = MemoryStore()
+    store.create("m1")
+    store.set_meta("m1", "name", "  手动\n标题\t用于测试  ")
+
+    assert store.get("m1").title == "手动 标题 用于测试"
+
+
 
 def test_memory_store_fork_semantics():
     """MemoryStore 与文件后端同语义:切片复制 + parentSession + 校验。"""
@@ -107,4 +116,3 @@ def test_memory_store_usage_aggregate_consistent():
     # 无 usage 记录的会话:全零
     store.create("m2")
     assert store.load_usage("m2").input_tokens == 0
-

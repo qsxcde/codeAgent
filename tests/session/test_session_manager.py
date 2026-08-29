@@ -11,7 +11,7 @@ from codeagent.app.container import ChatModelPort
 from codeagent.core import AgentLoopConfig, EventType
 from codeagent.session import SessionManager
 from codeagent.session.compaction import CompactionPolicyConfig
-from codeagent.session.persistence import MemoryStore
+from codeagent.session.persistence import CompactionEntry, MemoryStore
 
 
 def _manager(client: FakeClient | None = None, store=None, **kwargs) -> SessionManager:
@@ -31,6 +31,71 @@ def test_create_keeps_empty_session_in_memory_only():
     assert mgr.current is a
     assert store.list() == []
     assert store.get(a.session_id) is None
+
+
+def test_manager_rename_persists_normalized_title_without_changing_messages():
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    session = mgr.create()
+
+    async def scenario() -> None:
+        await session.run("原始问题")
+
+    asyncio.run(scenario())
+    before_messages = store.load_messages(session.session_id)
+    before_activity = store.get(session.session_id).last_activity_at
+
+    title = mgr.rename(session.session_id, "  新标题\n用于回归测试  ")
+
+    assert title == "新标题 用于回归测试"
+    assert store.get(session.session_id).title == title
+    assert store.load_messages(session.session_id) == before_messages
+    assert store.get(session.session_id).last_activity_at == before_activity
+
+
+def test_manager_rename_rejects_blank_and_missing_storage():
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    session = mgr.create()
+    with pytest.raises(ValueError, match="标题不能为空"):
+        mgr.rename(session.session_id, " \n\t ")
+
+    without_store = _manager()
+    empty = without_store.create()
+    with pytest.raises(ValueError, match="持久化"):
+        without_store.rename(empty.session_id, "标题")
+
+
+def test_manager_rename_persists_deferred_empty_session():
+    """延迟落盘的当前空会话也可以先命名,之后仍从同一会话继续对话。"""
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    session = mgr.create()
+
+    assert mgr.rename(session.session_id, "预先命名") == "预先命名"
+    assert store.get(session.session_id).title == "预先命名"
+    assert store.load_messages(session.session_id) == []
+
+
+async def test_manager_rename_preserves_compaction_and_fork_relationship():
+    """重命名不改压缩状态,且后续分叉仍以原会话为 parent。"""
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    root = mgr.create()
+    await root.run("根会话")
+    messages = store.load_messages(root.session_id)
+    store.append_compaction(
+        root.session_id,
+        CompactionEntry(summary="根摘要", first_kept_entry_id=messages[0].id),
+    )
+    before_context = store.load_context(root.session_id)
+
+    mgr.rename(root.session_id, "重构根会话")
+    child = mgr.fork(root.session_id, messages[0].id)
+
+    assert store.load_context(root.session_id) == before_context
+    assert store.get(root.session_id).title == "重构根会话"
+    assert store.get(child.session_id).parent_session == root.session_id
 
 
 def test_manager_passes_compaction_policy_to_adopted_session():

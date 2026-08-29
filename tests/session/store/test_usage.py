@@ -71,6 +71,36 @@ def test_title_prefers_explicit_name(tmp_path):
     assert store.get("s1").title == "重构 auth 模块"
 
 
+def test_title_normalizes_explicit_name_to_one_line_and_limit(tmp_path):
+    store = _store(tmp_path)
+    store.create("s1")
+    store.append_message("s1", Message(role="user", content="自动标题"))
+    store.set_meta("s1", "name", "  手动\n标题\t包含很多额外字符用于测试截断更多  ")
+
+    title = store.get("s1").title
+
+    assert "\n" not in title and "\t" not in title
+    assert title == "手动 标题 包含很多额外字符用于测试截断…"
+    assert len(title) == 21
+
+
+def test_explicit_title_survives_restart_and_index_rebuild(tmp_path):
+    """显式标题在重启和索引重建后仍可用于列表展示,且 JSONL 只追加。"""
+    store = _store(tmp_path)
+    store.create("s1")
+    store.append_message("s1", Message(role="user", content="原始主题"))
+    store.set_meta("s1", "name", "  手动\n标题  ")
+    source = tmp_path / "sessions" / "s1.jsonl"
+    before = source.read_text(encoding="utf-8").splitlines()
+
+    restarted = JsonFileStore(tmp_path / "sessions")
+    assert restarted.get("s1").title == "手动 标题"
+
+    (tmp_path / "sessions" / "s1.index.json").unlink()
+    assert restarted.list()[0].title == "手动 标题"
+    assert source.read_text(encoding="utf-8").splitlines() == before
+
+
 
 def test_model_change_entry_overrides_header(tmp_path):
     """model_change entry 追加式写入,读侧后写覆盖 header(热切换持久化)。"""
@@ -142,4 +172,3 @@ def test_json_store_usage_missing_fields_tolerated(tmp_path):
     assert total.input_tokens == 10
     assert total.reasoning_tokens == 0
     assert total.cached_tokens == 0
-

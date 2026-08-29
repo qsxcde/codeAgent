@@ -12,6 +12,7 @@ from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.compaction.summarizer import Summarizer
 from codeagent.session.contracts import SessionCloser
 from codeagent.session.persistence.models import SessionRef, SessionStore
+from codeagent.session.persistence.codec import normalize_title
 
 if TYPE_CHECKING:
     from codeagent.session.session import AgentSession
@@ -61,6 +62,27 @@ class SessionManagerOperations:
     def continue_recent(self) -> AgentSession:
         refs = self.list()
         return self.create() if not refs else self.switch(refs[-1].id)
+
+    def rename(self, session_id: str, title: str) -> str:
+        """Persist a bounded display title without changing session activity."""
+        normalized = normalize_title(title)
+        if not normalized:
+            raise ValueError("标题不能为空")
+        if self._store is None:
+            raise ValueError("设置会话标题需要持久化会话")
+        if self._store.get(session_id) is None:
+            session = self._sessions.get(session_id)
+            ensure_persisted = getattr(session, "ensure_persisted", None)
+            if not callable(ensure_persisted):
+                raise ValueError(f"会话不存在: {session_id}")
+            ensure_persisted()
+            if self._store.get(session_id) is None:
+                raise ValueError(f"会话不存在: {session_id}")
+        self._store.set_meta(session_id, "name", normalized)
+        ref = self._store.get(session_id)
+        if ref is None:  # pragma: no cover - store contract guarantees the session
+            raise ValueError(f"会话不存在: {session_id}")
+        return ref.title
 
     async def continue_recent_async(self) -> AgentSession:
         refs = self.list()
