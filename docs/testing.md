@@ -4,7 +4,7 @@
 
 截至 2026-08-28 应用层包布局变更复核后：
 
-- `uv run pytest -q`：**1427 passed**（2026-08-30，macOS）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试、会话标题重启/分叉回归、会话查询双后端/TUI 回归、归档删除安全回归和恢复诊断回归。
+- `uv run pytest -q`：**1433 passed**（2026-08-30，macOS）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试、会话标题重启/分叉回归、会话查询双后端/TUI 回归、归档删除安全回归、恢复诊断回归和会话列表索引失效隔离回归。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
 - 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 1037 passed，硬下限为 77.9%。
 - package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
@@ -25,6 +25,8 @@
 归档删除回归覆盖双后端可逆归档、默认/归档列表范围、旧索引重建、目标 JSONL 与索引清理、非法 id/符号链接保护、批量全量预检、当前/运行中会话保护、存储失败诊断和 TUI `confirm` 删除入口。
 
 会话恢复诊断回归覆盖健康、坏 JSONL 行、无效消息、缺失/损坏/过期索引、缺失压缩切点、header 缺失、版本不兼容和非法会话 id；同时验证有效历史的局部降级、typed 恢复错误、当前会话保护、TUI `/sessions recovery` 和 CLI `--session` 的可操作提示，以及不会发起模型请求或覆盖原始 JSONL。
+
+会话列表索引回归覆盖多个有效索引命中时列表/搜索/筛选不扫描 JSONL、单个索引缺失/损坏/过期时只重建对应目标、源文件回源失败时隔离损坏会话，以及 `continue_recent` 依据索引选择最近目标并只恢复最终会话。
 
 本次收口会使旧平铺导入路径失效；`tests/contracts/test_app_package_layout.py` 会同时检查旧模块不存在和规范模块可导入。
 

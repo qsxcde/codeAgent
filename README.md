@@ -4,7 +4,7 @@
 
 当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
-当前验收基线（2026-08-30）：`uv run pytest -q` **1427 passed**（macOS，33.41s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
+当前验收基线（2026-08-30）：`uv run pytest -q` **1433 passed**（macOS，33.47s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
 
 ## 项目介绍
 
