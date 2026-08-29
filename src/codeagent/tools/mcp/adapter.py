@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from codeagent.tools.base import AtomicTool
 from codeagent.tools.mcp.client import McpServerClient, McpToolInfo
-from codeagent.tools.shared import DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_head
+from codeagent.tools.shared import OutputPolicy, govern_text
 
 __all__ = ["McpArgs", "McpTool"]
 
@@ -72,24 +72,36 @@ class McpTool(AtomicTool):
         return self._client
 
     def _invoke(self, args: McpArgs) -> str:
-        text = self._client.call_tool(
-            self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout
+        call = getattr(self._client, "call_tool_result", None)
+        result = (
+            call(self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout)
+            if call is not None
+            else self._client.call_tool(
+                self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout
+            )
         )
-        truncated, info = truncate_head(
-            text, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES
+        text = getattr(result, "text", result)
+        extra = getattr(result, "metadata", {})
+        return govern_text(
+            text,
+            OutputPolicy(direction="head"),
+            **extra,
         )
-        if info.truncated:
-            truncated += "\n[输出已截断]"
-        return truncated
 
     async def ainvoke(self, args: McpArgs) -> str:
         """Cancellable async bridge used by the core execution runtime."""
-        text = await self._client.acall_tool(
-            self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout
+        call = getattr(self._client, "acall_tool_result", None)
+        result = (
+            await call(self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout)
+            if call is not None
+            else await self._client.acall_tool(
+                self._info.name, args.model_dump(exclude_none=True), timeout=self._timeout
+            )
         )
-        truncated, info = truncate_head(
-            text, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES
+        text = getattr(result, "text", result)
+        extra = getattr(result, "metadata", {})
+        return govern_text(
+            text,
+            OutputPolicy(direction="head"),
+            **extra,
         )
-        if info.truncated:
-            truncated += "\n[输出已截断]"
-        return truncated

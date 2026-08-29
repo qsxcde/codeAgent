@@ -4,7 +4,11 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from codeagent.core.context.budget import ContextBudgetInput, estimate_context_budget
+from codeagent.core.context.budget import (
+    ContextBudgetInput,
+    estimate_context_budget,
+    govern_tool_messages,
+)
 from codeagent.core.context.model import AgentContext
 from codeagent.core.contracts.messages import Message
 from codeagent.core.contracts.errors import ContextPreparationError
@@ -108,6 +112,113 @@ def test_context_budget_detaches_mutable_input_values():
     definition["parameters"]["properties"]["q"] = {"type": "string"}
 
     assert estimate_context_budget(request) == before
+
+
+def test_govern_tool_messages_crops_to_request_headroom_and_keeps_facts():
+    from codeagent.core.contracts.messages import OutputCompleteness, ToolOutputMetadata
+
+    metadata = ToolOutputMetadata(
+        completeness=OutputCompleteness.COMPLETE,
+        total_bytes=1_000,
+        total_lines=100,
+        shown_bytes=1_000,
+        shown_lines=100,
+        path="README.md",
+    )
+    messages = [
+        Message(role="user", content="u" * 120),
+        Message(
+            role="tool",
+            content="x" * 400,
+            tool_call_id="call-1",
+            tool_output=metadata,
+        ),
+    ]
+    budget = estimate_context_budget(
+        ContextBudgetInput(
+            context_window=100,
+            output_reserve=10,
+            reserve_tokens=10,
+            messages=tuple(messages),
+            window_source="catalog",
+        )
+    )
+
+    governed = govern_tool_messages(messages, budget)
+
+    assert len(governed) == 2
+    result = governed[1]
+    assert len(result.content) < len(messages[1].content)
+    assert result.tool_output is not None
+    assert result.tool_output.truncated_by == "request_budget"
+    assert result.tool_output.completeness == OutputCompleteness.TRUNCATED
+    assert result.tool_output.total_bytes == 1_000
+    assert "README.md" in result.content
+    assert messages[1].content == "x" * 400
+
+
+def test_govern_tool_messages_marks_legacy_result_unknown_when_cropped():
+    messages = [Message(role="tool", content="x" * 400, tool_call_id="call-1")]
+    budget = estimate_context_budget(
+        ContextBudgetInput(
+            context_window=20,
+            output_reserve=10,
+            messages=tuple(messages),
+            window_source="unknown",
+        )
+    )
+
+    result = govern_tool_messages(messages, budget)[0]
+
+    assert result.tool_output is not None
+    assert result.tool_output.source == "budget"
+    assert result.tool_output.completeness == "truncated"
+
+
+def test_govern_tool_messages_keeps_multiple_call_id_facts_independent():
+    from codeagent.core.contracts.messages import OutputCompleteness, ToolOutputMetadata
+
+    first = Message(
+        role="tool",
+        content="a" * 240,
+        tool_call_id="call-a",
+        tool_output=ToolOutputMetadata(
+            completeness=OutputCompleteness.COMPLETE,
+            total_bytes=240,
+            total_lines=1,
+            shown_bytes=240,
+            shown_lines=1,
+            path="a.py",
+        ),
+    )
+    second = Message(
+        role="tool",
+        content="b" * 240,
+        tool_call_id="call-b",
+        tool_output=ToolOutputMetadata(
+            completeness=OutputCompleteness.COMPLETE,
+            total_bytes=240,
+            total_lines=1,
+            shown_bytes=240,
+            shown_lines=1,
+            path="b.py",
+        ),
+    )
+    budget = estimate_context_budget(
+        ContextBudgetInput(
+            context_window=80,
+            output_reserve=10,
+            messages=(first, second),
+            window_source="catalog",
+        )
+    )
+
+    governed = govern_tool_messages([first, second], budget)
+
+    assert [message.tool_call_id for message in governed] == ["call-a", "call-b"]
+    assert governed[0].tool_output.path == "a.py"
+    assert governed[1].tool_output.path == "b.py"
+    assert all(message.tool_output.truncated_by == "request_budget" for message in governed)
 
 
 class _BudgetAwareModel:

@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from codeagent.core.contracts.messages import Message, ToolCall
+from codeagent.core.contracts.messages import (
+    Message,
+    OutputCompleteness,
+    ToolCall,
+    ToolOutputMetadata,
+)
 from codeagent.session.persistence.models import CURRENT_VERSION
 
 TITLE_MAX = 20
@@ -43,6 +49,8 @@ def _message_to_dict(m: Message) -> dict[str, Any]:
         ]
     if m.tool_call_id:
         d["tool_call_id"] = m.tool_call_id
+    if m.tool_output is not None:
+        d["tool_output"] = m.tool_output.to_dict()
     return d
 
 
@@ -57,6 +65,25 @@ def _dict_to_message(d: dict[str, Any]) -> Message:
         tool_call_id=d.get("tool_call_id", ""),
         id=d.get("id", ""),
         parent_id=d.get("parentId"),
+        tool_output=(
+            _restored_tool_metadata(d["tool_output"])
+            if "tool_output" in d
+            else None
+        ),
+    )
+
+
+def _restored_tool_metadata(value: Any) -> ToolOutputMetadata:
+    """Mark discarded output as incomplete when no recovery source remains."""
+    metadata = ToolOutputMetadata.from_dict(value)
+    if metadata.completeness != OutputCompleteness.TRUNCATED:
+        return metadata
+    if metadata.is_recoverable:
+        return metadata
+    return replace(
+        metadata,
+        completeness=OutputCompleteness.INCOMPLETE,
+        source="restored",
     )
 
 

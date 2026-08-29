@@ -6,6 +6,7 @@ import logging
 from pydantic import BaseModel
 
 from codeagent.app.composition.tools.adapter import AgentToolAdapter
+from codeagent.core.contracts.messages import OutputCompleteness, ToolOutputMetadata
 
 
 class _Args(BaseModel):
@@ -33,6 +34,39 @@ class _HookedTool(_LegacyTool):
     async def ainvoke(self, args: _Args, *, signal=None, on_update=None) -> str:
         self.received = (signal, on_update)
         return args.text
+
+
+class _GovernedValue:
+    content = "bounded"
+    status = "ok"
+    error = False
+    cleanup_confirmed = True
+    cleanup_status = "confirmed"
+    cleanup_error = None
+    details = {"kind": "read"}
+    total_bytes = 100
+    total_lines = 10
+    shown_lines = 4
+    truncated_by = "tool_bytes"
+    artifact_path = "/tmp/ignored-by-test"
+    exit_code = 0
+    duration_ms = 8
+    output_truncated = True
+    semantic_success = True
+    output_metadata = ToolOutputMetadata(
+        completeness=OutputCompleteness.TRUNCATED,
+        total_bytes=100,
+        total_lines=10,
+        shown_bytes=40,
+        shown_lines=4,
+        truncated_by="tool_bytes",
+        path="README.md",
+    )
+
+
+class _GovernedTool(_LegacyTool):
+    def invoke(self, args: _Args) -> _GovernedValue:
+        return _GovernedValue()
 
 
 async def test_agent_tool_adapter_exposes_schema_and_async_execute() -> None:
@@ -74,3 +108,20 @@ async def test_agent_tool_adapter_forwards_optional_runtime_hooks() -> None:
 
     assert result.content == "hello"
     assert tool.received == (signal, on_update)
+
+
+async def test_agent_tool_adapter_preserves_structured_result_metadata() -> None:
+    result = await AgentToolAdapter(_GovernedTool()).execute("c1", {"text": "hello"})
+
+    assert result.output_metadata is _GovernedValue.output_metadata
+    assert result.output_metadata.path == "README.md"
+    assert result.details == {"kind": "read"}
+    assert result.total_bytes == 100
+    assert result.shown_lines == 4
+
+
+async def test_agent_tool_adapter_marks_plain_legacy_value_as_unknown() -> None:
+    result = await AgentToolAdapter(_LegacyTool()).execute("c1", {"text": "hello"})
+
+    assert result.output_metadata.completeness == OutputCompleteness.UNKNOWN
+    assert result.output_metadata.source == "legacy"

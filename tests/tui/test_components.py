@@ -117,6 +117,37 @@ def test_tui_model_hydrates_persisted_history():
     assert model.activity_visible is False
 
 
+def test_tui_model_restores_structured_tool_output_state():
+    from codeagent.core.contracts.messages import OutputCompleteness, ToolOutputMetadata
+
+    model = TuiModel()
+    call = ToolCall(id="call-1", name="read", args={"file_path": "a.py"})
+    metadata = ToolOutputMetadata(
+        completeness=OutputCompleteness.TRUNCATED,
+        total_bytes=100,
+        total_lines=20,
+        shown_lines=2,
+        truncated_by="tool_bytes",
+        path="a.py",
+    )
+    model.hydrate_history(
+        [
+            Message(role="assistant", tool_calls=[call]),
+            Message(
+                role="tool",
+                content="preview",
+                tool_call_id="call-1",
+                tool_output=metadata,
+            ),
+        ]
+    )
+
+    block = next(block for block in model.transcript.blocks if isinstance(block, ToolCallBlock))
+    assert block.output_buffer is not None
+    assert block.output_buffer.truncated is True
+    assert block.output_buffer.metadata.total_bytes == 100
+
+
 def test_tui_model_deduplicates_optimistic_user_echo_on_session_start():
     model = TuiModel()
     model.append_pending_user("即时问题")
@@ -257,6 +288,60 @@ def test_tool_call_result_summary():
     other.set_result("第一行\n第二行")
     plain = "".join(s.text for s in other.render(60)[0])
     assert "Ran grep" in plain
+
+
+def test_tool_call_summary_prefers_structured_exit_and_duration():
+    block = ToolCallBlock("bash", {})
+    block.set_result(
+        "arbitrary output",
+        output_metadata={
+            "completeness": "complete",
+            "total_bytes": 15,
+            "total_lines": 1,
+            "shown_lines": 1,
+            "exit_code": 0,
+            "duration_ms": 1_250,
+            "source": "structured",
+        },
+    )
+
+    plain = "".join(span.text for span in block.render(80)[0])
+
+    assert "exit 0 · 1.2s" in plain
+
+
+def test_tool_call_summary_includes_structured_change_and_range_facts():
+    write = ToolCallBlock("write", {"file_path": "a.py", "content": "new"})
+    write.set_result(
+        "arbitrary output",
+        output_metadata={
+            "completeness": "complete",
+            "total_bytes": 3,
+            "shown_bytes": 3,
+            "total_lines": 1,
+            "shown_lines": 1,
+            "change_summary": "wrote 3 bytes",
+            "source": "structured",
+        },
+    )
+    read = ToolCallBlock("read", {"file_path": "a.py"})
+    read.set_result(
+        "arbitrary output",
+        output_metadata={
+            "completeness": "complete",
+            "total_bytes": 30,
+            "shown_bytes": 10,
+            "range_start": 2,
+            "range_end": 4,
+            "source": "structured",
+        },
+    )
+
+    write_plain = "".join(span.text for span in write.render(80)[0])
+    read_plain = "".join(span.text for span in read.render(80)[0])
+    assert "wrote 3 bytes" in write_plain
+    assert "lines 2-4" in read_plain
+    assert "10/30 B" in read_plain
 
 
 def test_edit_tool_expand_shows_intent_diff_with_colored_rows():

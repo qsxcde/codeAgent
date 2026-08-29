@@ -13,7 +13,11 @@ from collections.abc import Callable
 from typing import Any
 
 from codeagent.core.support.awaiting import await_if_needed
-from codeagent.core.context.budget import ContextBudgetInput, estimate_context_budget
+from codeagent.core.context.budget import (
+    ContextBudgetInput,
+    estimate_context_budget,
+    govern_tool_messages,
+)
 from codeagent.core.context.contracts import (
     ContextPreparationRequest,
     ContextToolDefinition,
@@ -43,6 +47,7 @@ def clone_message(message: Message) -> Message:
         tool_call_id=message.tool_call_id,
         id=message.id,
         parent_id=message.parent_id,
+        tool_output=copy.deepcopy(message.tool_output),
     )
 
 
@@ -131,6 +136,11 @@ async def prepare_context(
             prepared = legacy_view
         transformed = [clone_message(message) for message in prepared]
         final_budget = await describe_context_budget(config, transformed)
+        governed = govern_tool_messages(transformed, final_budget)
+        if _message_views_differ(transformed, governed):
+            transformed = governed
+            final_budget = await describe_context_budget(config, transformed)
+            emit(AgentEvent(EventType.CONTEXT_BUDGET, payload=final_budget))
         emit(AgentEvent(EventType.CONTEXT_BUDGET, payload=final_budget))
         return transformed, final_budget
     except ContextPreparationError:
@@ -206,6 +216,13 @@ async def new_model_message(
     )
     emit(AgentEvent(EventType.MESSAGE_END, payload=message))
     return message
+
+
+def _message_views_differ(before: list[Message], after: list[Message]) -> bool:
+    return any(
+        left.content != right.content or left.tool_output != right.tool_output
+        for left, right in zip(before, after)
+    )
 
 
 __all__ = [

@@ -122,6 +122,35 @@ def test_event_mapper_assigns_stable_tool_error_code() -> None:
     assert mapped[0].metadata["error_code"] == "confirmation_rejected"
 
 
+def test_event_mapper_propagates_structured_tool_output_facts() -> None:
+    from codeagent.core.contracts.messages import (
+        OutputCompleteness,
+        ToolOutputMetadata,
+        ToolResult,
+    )
+    from codeagent.session.runtime.event_mapper import EventMapper
+
+    metadata = ToolOutputMetadata(
+        completeness=OutputCompleteness.TRUNCATED,
+        total_bytes=100,
+        total_lines=20,
+        shown_lines=4,
+        truncated_by="tool_bytes",
+        path="README.md",
+    )
+    mapped = EventMapper.map_agent_event(
+        AgentEvent(
+            EventType.TOOL_EXECUTION_END,
+            payload=ToolResult("call-1", "bounded", output_metadata=metadata),
+        )
+    )
+
+    assert len(mapped) == 2
+    assert mapped[0].metadata["output_metadata"] == metadata.to_dict()
+    assert mapped[1].metadata["total_bytes"] == 100
+    assert mapped[1].metadata["truncated_by"] == "tool_bytes"
+
+
 def test_error_policy_preserves_plain_exception_text() -> None:
     from codeagent.session.runtime.error_policy import friendly_error
 

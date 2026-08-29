@@ -143,6 +143,21 @@ def test_mcp_tool_marks_truncated_output():
     assert "[输出已截断]" in result
 
 
+def test_mcp_non_text_content_is_explicitly_reported():
+    from codeagent.tools.mcp.client import _extract_result
+
+    class ImageBlock:
+        type = "image"
+        uri = "resource://image-1"
+        mimeType = "image/png"
+
+    extracted = _extract_result(type("Result", (), {"content": [ImageBlock()]})())
+
+    assert "不支持直接显示" in extracted.text
+    assert extracted.metadata["completeness"] == "unsupported"
+    assert extracted.metadata["unsupported_blocks"][0]["reference"] == "resource://image-1"
+
+
 def test_mcp_tool_error_result():
     """server 错误 → 调用抛错(循环层转为错误结果,不炸会话)。"""
     client = McpServerClient("mock", _spec())

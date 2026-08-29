@@ -51,10 +51,65 @@ def test_output_buffer_marks_unrecoverable_truncation() -> None:
     assert buffer.can_export is False
 
 
+def test_output_buffer_can_export_truncated_result_from_existing_artifact(tmp_path: Path) -> None:
+    artifact = tmp_path / "complete.txt"
+    artifact.write_text("complete artifact", encoding="utf-8")
+    buffer = OutputBuffer(
+        "preview",
+        metadata=OutputMetadata(
+            total_bytes=100,
+            total_lines=10,
+            shown_lines=1,
+            truncated_by="tool_bytes",
+            completeness="truncated",
+            artifact_path=str(artifact),
+            source="structured",
+        ),
+    )
+
+    assert buffer.can_export is True
+    exported = buffer.export(tmp_path / "exported.txt")
+    assert exported.read_text(encoding="utf-8") == "complete artifact"
+
+
 def test_output_buffer_infers_truncation_from_runtime_marker() -> None:
     buffer = OutputBuffer("line-1\n[已截断] 达到上限\n")
 
     assert buffer.truncated is True
+    assert buffer.can_export is False
+
+
+def test_structured_output_metadata_wins_over_conflicting_text_marker() -> None:
+    buffer = OutputBuffer(
+        "[输出已截断] literal content",
+        metadata=OutputMetadata(
+            total_bytes=28,
+            total_lines=1,
+            shown_lines=1,
+            completeness="complete",
+            source="structured",
+        ),
+    )
+
+    assert buffer.truncated is False
+    assert buffer.can_export is True
+
+
+def test_structured_incomplete_output_reports_unavailable_recovery() -> None:
+    buffer = OutputBuffer(
+        "preview",
+        metadata=OutputMetadata(
+            total_bytes=1_000,
+            total_lines=100,
+            shown_lines=2,
+            completeness="incomplete",
+            truncated_by="request_budget",
+            source="structured",
+        ),
+    )
+
+    assert buffer.truncated is True
+    assert "request_budget" in buffer.diagnostic
     assert buffer.can_export is False
 
 

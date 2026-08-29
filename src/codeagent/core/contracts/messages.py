@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .output import OutputCompleteness, ToolOutputMetadata
+
 __all__ = [
     "CleanupStatus",
     "Message",
@@ -134,6 +136,9 @@ class ToolResult:
     duration_ms: int = 0
     output_truncated: bool = False
     semantic_success: bool | None = None
+    #: Structured output facts.  ``None`` is accepted for old callers and is
+    #: materialized from the compatible flat fields during initialization.
+    output_metadata: ToolOutputMetadata | None = None
 
     def __post_init__(self) -> None:
         if not self.cleanup_status:
@@ -150,6 +155,9 @@ class ToolResult:
                 self.status = ToolExecutionStatus.FAILED
             else:
                 self.status = ToolExecutionStatus.OK
+        if self.output_metadata is not None:
+            self._apply_output_metadata(self.output_metadata)
+            return
         if not self.total_bytes:
             self.total_bytes = len(self.content.encode("utf-8"))
         if not self.total_lines:
@@ -172,6 +180,40 @@ class ToolResult:
             self.shown_lines = int(item_marker.group(1))
             self.total_lines = int(item_marker.group(2))
             self.truncated_by = self.truncated_by or "tool"
+        self.output_metadata = ToolOutputMetadata(
+            completeness=(
+                OutputCompleteness.TRUNCATED
+                if self.output_truncated or self.truncated_by
+                else (
+                    OutputCompleteness.COMPLETE
+                    if self.status == ToolExecutionStatus.OK and not self.error
+                    else OutputCompleteness.UNKNOWN
+                )
+            ),
+            total_bytes=self.total_bytes,
+            total_lines=self.total_lines,
+            shown_bytes=len(self.content.encode("utf-8")),
+            shown_lines=self.shown_lines,
+            truncated_by=self.truncated_by,
+            exit_code=self.exit_code,
+            duration_ms=self.duration_ms,
+            artifact_path=self.artifact_path,
+            semantic_success=self.semantic_success,
+            source="derived",
+        )
+
+    def _apply_output_metadata(self, metadata: ToolOutputMetadata) -> None:
+        """Mirror structured facts to legacy flat fields for old consumers."""
+        self.total_bytes = metadata.total_bytes if metadata.total_bytes is not None else self.total_bytes
+        self.total_lines = metadata.total_lines if metadata.total_lines is not None else self.total_lines
+        self.shown_lines = metadata.shown_lines if metadata.shown_lines is not None else self.shown_lines
+        self.truncated_by = metadata.truncated_by
+        self.artifact_path = metadata.artifact_path or self.artifact_path
+        self.exit_code = metadata.exit_code if metadata.exit_code is not None else self.exit_code
+        self.duration_ms = metadata.duration_ms if metadata.duration_ms is not None else self.duration_ms
+        self.output_truncated = metadata.is_truncated
+        if metadata.semantic_success is not None:
+            self.semantic_success = metadata.semantic_success
 
     @property
     def cleanup_uncertain(self) -> bool:
@@ -200,6 +242,7 @@ class Message:
     tool_call_id: str = ""
     id: str = ""
     parent_id: str | None = None
+    tool_output: ToolOutputMetadata | None = None
 
     def __post_init__(self) -> None:
         if not self.id:

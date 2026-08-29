@@ -12,6 +12,7 @@ from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
+    GovernedText,
     resolve_to_cwd,
     truncate_head,
 )
@@ -52,9 +53,22 @@ class ReadTool(AtomicTool):
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             preview = raw[:BINARY_PREVIEW_BYTES].decode("utf-8", errors="replace")
-            return (
+            content = (
                 f"[二进制或非 UTF-8 文件,共 {len(raw)} 字节,仅显示可读前缀]\n"
                 f"{preview}"
+            )
+            return GovernedText(
+                content,
+                {
+                    "completeness": "unsupported",
+                    "total_bytes": len(raw),
+                    "total_lines": len(raw.splitlines()),
+                    "shown_bytes": len(preview.encode("utf-8")),
+                    "shown_lines": len(preview.splitlines()),
+                    "truncated_by": "binary_preview",
+                    "path": str(path),
+                    "source": "tool",
+                },
             )
 
         lines = text.splitlines()
@@ -75,4 +89,22 @@ class ReadTool(AtomicTool):
         parts.append(body)
         if limited or trunc.truncated:
             parts.append(f"[已截断,共 {total} 行,可通过 offset={end} 继续读取]")
-        return "\n".join(parts)
+        content = "\n".join(parts)
+        shown_bytes = len(body.encode("utf-8"))
+        shown_lines = len(body.splitlines())
+        return GovernedText(
+            content,
+            {
+                "completeness": "truncated" if limited or trunc.truncated else "complete",
+                "total_bytes": len(raw),
+                "total_lines": total,
+                "shown_bytes": shown_bytes,
+                "shown_lines": shown_lines,
+                "truncated_by": "tool_lines" if limited else ("tool_bytes" if trunc.truncated else None),
+                "path": str(path),
+                "range_start": start,
+                "range_end": end,
+                "continuation": f"offset={end}" if limited or trunc.truncated else None,
+                "source": "tool",
+            },
+        )

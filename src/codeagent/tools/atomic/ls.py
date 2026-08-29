@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
     DEFAULT_MAX_BYTES,
+    GovernedText,
     resolve_to_cwd,
     truncate_head,
 )
@@ -63,4 +64,18 @@ class LsTool(AtomicTool):
             parts.append(f"[条目超限,仅显示前 {limit} 条(共 {count} 条),可用 limit 调大]")
         if trunc.truncated:
             parts.append("[输出已截断]")
-        return "\n".join(parts)
+        content = "\n".join(parts)
+        return GovernedText(
+            content,
+            {
+                "completeness": "truncated" if count > limit or trunc.truncated else "complete",
+                "total_bytes": len("\n".join(entries).encode("utf-8")),
+                "total_lines": count,
+                "shown_bytes": len("\n".join(shown).encode("utf-8")),
+                "shown_lines": len(shown),
+                "truncated_by": "tool_limit" if count > limit else ("tool_bytes" if trunc.truncated else None),
+                "path": str(dir_path),
+                "continuation": f"limit={limit}" if count > limit else None,
+                "source": "tool",
+            },
+        )

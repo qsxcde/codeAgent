@@ -143,6 +143,24 @@ def test_bash_output_truncated():
     assert "输出已截断" in out
 
 
+def test_bash_output_has_structured_governance_metadata():
+    out = _invoke(BashTool(), command="printf 'x%.0s' $(seq 1 40000)")
+
+    assert out.output_metadata["completeness"] == "truncated"
+    assert out.output_metadata["total_bytes"] > out.output_metadata["shown_bytes"]
+    assert out.output_metadata["exit_code"] == 0
+
+
+def test_bash_metadata_redacts_secret_like_stderr_values(tmp_path):
+    out = _invoke(
+        BashTool(cwd=str(tmp_path)),
+        command="printf 'token=secret-value\\n' >&2",
+    )
+
+    assert "secret-value" not in (out.output_metadata["stderr_summary"] or "")
+    assert "redacted" in (out.output_metadata["stderr_summary"] or "")
+
+
 
 def test_bash_utf8_output_decoded():
     """中文 Windows(locale=cp936) 下 bash 输出的 UTF-8 字节必须正确解码(回归:乱码/UnicodeDecodeError)。"""

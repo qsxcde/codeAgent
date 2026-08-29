@@ -6,7 +6,13 @@ from codeagent.core.context.model import AgentContext
 from codeagent.core.execution.runtime import ToolExecutionRuntime
 from codeagent.core.contracts.events import EventType
 from codeagent.core.orchestration.loop import run_agent_loop, run_agent_loop_continue
-from codeagent.core.contracts.messages import Message, ToolCall, ToolResult
+from codeagent.core.contracts.messages import (
+    Message,
+    OutputCompleteness,
+    ToolCall,
+    ToolOutputMetadata,
+    ToolResult,
+)
 from codeagent.core.contracts.ports import StreamEvent, ToolDecision
 from codeagent.core.orchestration.config import AgentLoopConfig
 
@@ -48,7 +54,19 @@ class _Tool:
 
     async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
         self.calls.append((tool_call_id, arguments))
-        return ToolResult(tool_call_id, "tool result", name=self.name)
+        return ToolResult(
+            tool_call_id,
+            "tool result",
+            name=self.name,
+            output_metadata=ToolOutputMetadata(
+                completeness=OutputCompleteness.COMPLETE,
+                total_bytes=11,
+                total_lines=1,
+                shown_bytes=11,
+                shown_lines=1,
+                path="README.md",
+            ),
+        )
 
 
 class _ConcurrencyTool:
@@ -222,6 +240,22 @@ async def test_new_loop_parallel_emits_completion_order_but_backfills_call_order
         assert [message.content for message in tool_messages] == ["a", "b"]
 
     await (scenario())
+
+
+async def test_tool_message_keeps_structured_output_metadata() -> None:
+    model = _Model(
+        [
+            {"tool_calls": [{"name": "read", "id": "c1", "args": "{}"}]},
+            {"content": "done"},
+        ]
+    )
+    messages = await run_agent_loop(
+        AgentContext(), _config(model, _Tool()), "read"
+    )
+
+    tool_message = next(message for message in messages if message.role == "tool")
+    assert tool_message.tool_output is not None
+    assert tool_message.tool_output.path == "README.md"
 
 
 async def test_new_loop_runtime_timeout_returns_structured_timeout_result():

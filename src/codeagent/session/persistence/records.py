@@ -24,6 +24,7 @@ class MessageRecord(TypedDict, total=False):
     timestamp: str
     tool_calls: list[dict[str, Any]]
     tool_call_id: str
+    tool_output: dict[str, Any]
 
 
 class MetadataRecord(TypedDict):

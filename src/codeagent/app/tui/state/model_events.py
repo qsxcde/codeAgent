@@ -100,7 +100,11 @@ class ModelEventMixin:
             metadata.get("total_bytes") or len(payload_text.encode("utf-8"))
         )
         self.output_stats["lines"] += int(metadata.get("total_lines") or len(payload_text.splitlines()))
-        if metadata.get("truncated_by"):
+        if metadata.get("truncated_by") or metadata.get("completeness") in {
+            "truncated",
+            "incomplete",
+            "unsupported",
+        }:
             self.output_stats["truncated"] += 1
         block = self._take_pending_tool(metadata.get("tool_call_id"))
         if block is not None:

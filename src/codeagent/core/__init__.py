@@ -12,6 +12,7 @@ from codeagent.core.context.budget import (
     DEFAULT_OUTPUT_RESERVE,
     DEFAULT_RESERVE_TOKENS,
     estimate_context_budget,
+    govern_tool_messages,
 )
 from codeagent.core.context.preflight import (
     ContextPreflightConfig,
@@ -48,8 +49,10 @@ from codeagent.core.orchestration.loop import (
 from codeagent.core.contracts.messages import (
     CleanupStatus,
     Message,
+    OutputCompleteness,
     ToolCall,
     ToolExecutionStatus,
+    ToolOutputMetadata,
     ToolResult,
 )
 from codeagent.core.contracts.ports import (
@@ -88,6 +91,7 @@ __all__ = [
     "DEFAULT_RECURSION_LIMIT",
     "EventType",
     "Message",
+    "OutputCompleteness",
     "ModelPort",
     "ModelResponse",
     "OperationRegistry",
@@ -100,9 +104,11 @@ __all__ = [
     "ToolCleanupPort",
     "ToolExecutionRuntime",
     "ToolExecutionStatus",
+    "ToolOutputMetadata",
     "ToolOperation",
     "ToolResult",
     "PreflightStatus",
     "evaluate_context_preflight",
     "estimate_context_budget",
+    "govern_tool_messages",
 ]

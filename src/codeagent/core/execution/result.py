@@ -8,8 +8,10 @@ from codeagent.core.execution.cleanup import CleanupResult
 from codeagent.core.execution.state import ToolOperation
 from codeagent.core.contracts.messages import (
     CleanupStatus,
+    OutputCompleteness,
     ToolCall,
     ToolExecutionStatus,
+    ToolOutputMetadata,
     ToolResult,
 )
 
@@ -31,7 +33,11 @@ def normalize_tool_result(
     exit_code = getattr(output, "exit_code", None)
     duration_ms = int(getattr(output, "duration_ms", 0) or 0)
     truncated = bool(getattr(output, "output_truncated", False))
-    semantic_success = getattr(output, "success", None)
+    semantic_success = getattr(output, "semantic_success", None)
+    if semantic_success is None:
+        semantic_success = getattr(output, "success", None)
+    metadata = _output_metadata(output, content, truncated, semantic_success)
+    details = dict(getattr(output, "details", {}) or {})
 
     if status and status not in (ToolExecutionStatus.OK, "completed"):
         return _failed_result(
@@ -46,6 +52,8 @@ def normalize_tool_result(
             duration_ms,
             truncated,
             semantic_success,
+            metadata,
+            details,
         )
 
     operation.status = ToolExecutionStatus.OK
@@ -62,10 +70,13 @@ def normalize_tool_result(
         operation_id=operation.operation_id,
         cleanup_confirmed=operation.cleanup_confirmed,
         cleanup_status=operation.cleanup_status,
+        cleanup_error=getattr(output, "cleanup_error", None),
+        details=details,
         exit_code=exit_code,
         duration_ms=duration_ms,
         output_truncated=truncated,
         semantic_success=semantic_success,
+        output_metadata=metadata,
     )
     return result, CleanupResult(operation.cleanup_status)
 
@@ -94,6 +105,29 @@ def _default_cleanup(cleanup_confirmed: bool | None) -> str:
     )
 
 
+def _output_metadata(
+    output: Any,
+    content: str,
+    truncated: bool,
+    semantic_success: bool | None,
+) -> ToolOutputMetadata:
+    metadata = getattr(output, "output_metadata", None)
+    if isinstance(metadata, ToolOutputMetadata):
+        return metadata
+    total_bytes = len(content.encode("utf-8"))
+    total_lines = len(content.splitlines())
+    return ToolOutputMetadata(
+        completeness=OutputCompleteness.UNKNOWN,
+        total_bytes=total_bytes,
+        total_lines=total_lines,
+        shown_bytes=total_bytes,
+        shown_lines=total_lines,
+        truncated_by="legacy" if truncated else None,
+        semantic_success=semantic_success,
+        source="legacy",
+    )
+
+
 def _failed_result(
     call: ToolCall,
     tool_name: str,
@@ -106,6 +140,8 @@ def _failed_result(
     duration_ms: int,
     truncated: bool,
     semantic_success: Any,
+    metadata: ToolOutputMetadata,
+    details: dict[str, Any],
 ) -> tuple[ToolResult, CleanupResult]:
     operation.status = str(status)
     operation.cleanup_confirmed = False if cleanup_confirmed is False else cleanup_confirmed
@@ -120,8 +156,11 @@ def _failed_result(
         operation_id=operation.operation_id,
         cleanup_confirmed=cleanup_confirmed,
         cleanup_status=operation.cleanup_status,
+        cleanup_error=getattr(operation, "cleanup_error", None),
+        details=details,
         exit_code=exit_code,
         duration_ms=duration_ms,
         output_truncated=truncated,
         semantic_success=semantic_success,
+        output_metadata=metadata,
     ), cleanup

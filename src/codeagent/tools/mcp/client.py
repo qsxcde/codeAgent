@@ -20,16 +20,25 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 
-__all__ = ["McpServerClient", "McpToolInfo"]
+__all__ = ["McpCallResult", "McpServerClient", "McpToolInfo"]
 
 #: 调用兜底超时(SDK 无显式超时时防无限挂起;会话级 tool_timeout 可覆盖)。
 DEFAULT_CALL_TIMEOUT = 60.0
+
+
+@dataclass(frozen=True)
+class McpCallResult:
+    """Text projection plus explicit facts for non-text MCP content."""
+
+    text: str
+    metadata: dict[str, Any]
 
 
 class McpToolInfo:
@@ -106,10 +115,31 @@ class McpServerClient:
         except concurrent.futures.TimeoutError:
             future.cancel()
             raise TimeoutError(f"MCP 工具 {self._name}:{name} 调用超时({timeout}s)")
-        text = _extract_text(result)
+        extracted = _extract_result(result)
+        text = extracted.text
         if getattr(result, "is_error", False):
             raise RuntimeError(f"MCP 工具 {self._name}:{name} 返回错误: {text}")
         return text
+
+    def call_tool_result(
+        self, name: str, arguments: dict[str, Any] | None, timeout: float | None = None
+    ) -> McpCallResult:
+        """Return a structured MCP result for the concrete tool adapter."""
+        loop = self._loop
+        session = self._session
+        if loop is None or session is None:
+            raise RuntimeError(f"MCP server '{self._name}' 未初始化")
+        timeout = timeout if timeout is not None else DEFAULT_CALL_TIMEOUT
+        future = self.submit_tool(name, arguments, timeout)
+        try:
+            result = future.result(timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError(f"MCP 工具 {self._name}:{name} 调用超时({timeout}s)")
+        extracted = _extract_result(result)
+        if getattr(result, "is_error", False):
+            raise RuntimeError(f"MCP 工具 {self._name}:{name} 返回错误: {extracted.text}")
+        return extracted
 
     def submit_tool(
         self,
@@ -148,10 +178,34 @@ class McpServerClient:
             except (asyncio.CancelledError, asyncio.TimeoutError, concurrent.futures.CancelledError):
                 pass
             raise
-        text = _extract_text(result)
+        extracted = _extract_result(result)
+        text = extracted.text
         if getattr(result, "is_error", False):
             raise RuntimeError(f"MCP 工具 {self._name}:{name} 返回错误: {text}")
         return text
+
+    async def acall_tool_result(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None,
+        timeout: float | None = None,
+    ) -> McpCallResult:
+        """Async structured counterpart used by ``McpTool.ainvoke``."""
+        future = self.submit_tool(name, arguments, timeout)
+        wrapped = asyncio.wrap_future(future)
+        try:
+            result = await wrapped
+        except asyncio.CancelledError:
+            future.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(wrapped), timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, concurrent.futures.CancelledError):
+                pass
+            raise
+        extracted = _extract_result(result)
+        if getattr(result, "is_error", False):
+            raise RuntimeError(f"MCP 工具 {self._name}:{name} 返回错误: {extracted.text}")
+        return extracted
 
     def close(self) -> None:
         """停止后台循环并等待线程退出(会话/子进程随 async with 收尾)。
@@ -204,8 +258,14 @@ class McpServerClient:
 
 
 def _extract_text(result: Any) -> str:
-    """从 ``CallToolResult.content`` 提取文本(TextContent 块拼接)。"""
+    """兼容旧调用方的文本投影。"""
+    return _extract_result(result).text
+
+
+def _extract_result(result: Any) -> McpCallResult:
+    """Extract text and explicit diagnostics for every MCP content block."""
     parts: list[str] = []
+    unsupported: list[dict[str, Any]] = []
     for block in getattr(result, "content", []) or []:
         if isinstance(block, TextContent):
             parts.append(block.text)
@@ -213,4 +273,35 @@ def _extract_text(result: Any) -> str:
             text = getattr(block, "text", None)
             if isinstance(text, str):
                 parts.append(text)
-    return "\n".join(parts).strip()
+                continue
+            block_type = str(getattr(block, "type", type(block).__name__))
+            reference = getattr(block, "uri", None) or getattr(block, "url", None)
+            unsupported.append(
+                {
+                    "type": block_type,
+                    "reference": str(reference) if reference else None,
+                    "mime_type": getattr(block, "mimeType", None)
+                    or getattr(block, "mime_type", None),
+                }
+            )
+    text = "\n".join(parts).strip()
+    if unsupported:
+        suffix = "\n".join(
+            f"[MCP 内容不支持直接显示: {item['type']}"
+            + (f",引用={item['reference']}" if item["reference"] else "")
+            + "]"
+            for item in unsupported
+        )
+        text = f"{text}\n{suffix}" if text else suffix
+    return McpCallResult(
+        text,
+        {
+            "completeness": "unsupported" if unsupported else "complete",
+            "unsupported_blocks": unsupported,
+            "artifact_ref": next(
+                (item["reference"] for item in unsupported if item["reference"]),
+                None,
+            ),
+            "source": "mcp",
+        },
+    )

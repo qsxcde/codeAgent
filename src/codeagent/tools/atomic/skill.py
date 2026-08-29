@@ -17,6 +17,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
+from codeagent.tools.shared import OutputPolicy, govern_text
 
 __all__ = ["SkillArgs", "SkillTool"]
 
@@ -42,4 +43,4 @@ class SkillTool(AtomicTool):
         if block is None:
             names = ", ".join(sorted(self._skills))
             return f"技能不存在: {args.name}\n可用技能: {names or '(无)'}"
-        return block
+        return govern_text(block, OutputPolicy(direction="head"), source="tool")

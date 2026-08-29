@@ -130,6 +130,41 @@ async def test_persistence_failure_rolls_back_messages_and_usage(tmp_path, store
     ] == "persistence_error"
 
 
+@pytest.mark.parametrize("store_kind", ("memory", "jsonl"))
+def test_turn_rollback_does_not_persist_governed_tool_metadata(tmp_path, store_kind):
+    """A transaction failure removes tool content and its structured facts."""
+    if store_kind == "memory":
+        store = _FailingUsageMemoryStore()
+    else:
+        store = _FailingUsageJsonStore(tmp_path / "sessions")
+    from codeagent.core.contracts.messages import OutputCompleteness, ToolOutputMetadata
+
+    store.create("rollback")
+    tool = Message(
+        role="tool",
+        content="preview",
+        tool_call_id="call-1",
+        tool_output=ToolOutputMetadata(
+            completeness=OutputCompleteness.TRUNCATED,
+            total_bytes=500,
+            total_lines=50,
+            shown_bytes=20,
+            shown_lines=2,
+            truncated_by="tool_bytes",
+        ),
+    )
+
+    with pytest.raises(OSError, match="usage write failed"):
+        store.commit_turn(
+            "rollback",
+            [tool],
+            UsageStats(input_tokens=1),
+            context_tokens=1,
+        )
+
+    assert store.load_messages("rollback") == []
+
+
 class _FailingSummarizer:
     async def summarize(self, messages, prev_summary):
         raise RuntimeError("summary failed")

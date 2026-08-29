@@ -6,6 +6,9 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from codeagent.core.contracts.messages import ToolOutputMetadata
 
 __all__ = ["OutputMetadata", "OutputBuffer"]
 
@@ -19,6 +22,49 @@ class OutputMetadata:
     shown_lines: int = 0
     truncated_by: str | None = None
     artifact_path: str | None = None
+    completeness: str | None = None
+    shown_bytes: int | None = None
+    path: str | None = None
+    range_start: int | None = None
+    range_end: int | None = None
+    exit_code: int | None = None
+    duration_ms: int | None = None
+    stderr_summary: str | None = None
+    change_summary: str | None = None
+    artifact_ref: str | None = None
+    continuation: str | None = None
+    semantic_success: bool | None = None
+    source: str = "legacy"
+    unsupported_blocks: tuple[dict[str, Any], ...] = ()
+
+    @classmethod
+    def from_value(cls, value: ToolOutputMetadata | dict[str, Any]) -> "OutputMetadata":
+        """Convert the core or event representation to a TUI snapshot."""
+        if isinstance(value, ToolOutputMetadata):
+            data = value.to_dict()
+        else:
+            data = dict(value)
+        return cls(
+            total_bytes=data.get("total_bytes") or 0,
+            total_lines=data.get("total_lines") or 0,
+            shown_lines=data.get("shown_lines") or 0,
+            truncated_by=data.get("truncated_by"),
+            artifact_path=data.get("artifact_path"),
+            completeness=data.get("completeness"),
+            shown_bytes=data.get("shown_bytes"),
+            path=data.get("path"),
+            range_start=data.get("range_start"),
+            range_end=data.get("range_end"),
+            exit_code=data.get("exit_code"),
+            duration_ms=data.get("duration_ms"),
+            stderr_summary=data.get("stderr_summary"),
+            change_summary=data.get("change_summary"),
+            artifact_ref=data.get("artifact_ref"),
+            continuation=data.get("continuation"),
+            semantic_success=data.get("semantic_success"),
+            source=str(data.get("source") or "structured"),
+            unsupported_blocks=tuple(data.get("unsupported_blocks") or ()),
+        )
 
 
 class OutputBuffer:
@@ -32,41 +78,24 @@ class OutputBuffer:
         page_size: int = 40,
     ) -> None:
         self.content = content
-        base_metadata = metadata or OutputMetadata(
-            total_bytes=len(content.encode("utf-8")),
-            total_lines=len(content.splitlines()),
-            shown_lines=len(content.splitlines()),
+        base_metadata = (
+            OutputMetadata.from_value(metadata)
+            if isinstance(metadata, (ToolOutputMetadata, dict))
+            else metadata
         )
-        inferred = _infer_truncation_marker(content)
-        line_marker = re.search(r"\[(\d+)-(\d+)/(\d+)\s*行\]", content)
-        item_marker = re.search(
-            r"仅显示前\s*(\d+)\s*条.*?共\s*(\d+)\s*条", content
-        )
-        shown_lines = base_metadata.shown_lines
-        total_lines = base_metadata.total_lines
-        if line_marker is not None:
-            shown_lines = int(line_marker.group(2))
-            total_lines = int(line_marker.group(3))
-            if shown_lines < total_lines:
-                inferred = inferred or "tool"
-        elif item_marker is not None:
-            shown_lines = int(item_marker.group(1))
-            total_lines = int(item_marker.group(2))
-            if shown_lines < total_lines:
-                inferred = inferred or "tool"
-        if (
-            base_metadata.truncated_by is None
-            and inferred is not None
-            or shown_lines != base_metadata.shown_lines
-            or total_lines != base_metadata.total_lines
-        ):
+        if base_metadata is None:
             base_metadata = OutputMetadata(
-                total_bytes=base_metadata.total_bytes,
-                total_lines=total_lines,
-                shown_lines=shown_lines,
-                truncated_by=base_metadata.truncated_by or inferred,
-                artifact_path=base_metadata.artifact_path,
+                total_bytes=len(content.encode("utf-8")),
+                total_lines=len(content.splitlines()),
+                shown_lines=len(content.splitlines()),
             )
+        authoritative = (
+            metadata is not None
+            and base_metadata.source != "legacy"
+            and base_metadata.completeness is not None
+        )
+        if not authoritative:
+            base_metadata = _infer_legacy_metadata(content, base_metadata)
         self.metadata = base_metadata
         self.page_size = max(1, page_size)
         self.page = 1
@@ -78,12 +107,20 @@ class OutputBuffer:
 
     @property
     def truncated(self) -> bool:
+        if self.metadata.completeness is not None:
+            return self.metadata.completeness in {
+                "truncated",
+                "incomplete",
+                "unsupported",
+            }
         return self.metadata.truncated_by is not None
 
     @property
     def can_export(self) -> bool:
         """只有原始输出未在工具层丢弃时才允许导出。"""
-        return not self.truncated
+        return not self.truncated or bool(
+            self.metadata.artifact_path and Path(self.metadata.artifact_path).is_file()
+        )
 
     @property
     def page_count(self) -> int:
@@ -108,10 +145,19 @@ class OutputBuffer:
     @property
     def diagnostic(self) -> str:
         if not self.truncated:
-            return f"{self.range_label} · {self.metadata.total_bytes} B"
+            if self.metadata.completeness == "unknown":
+                return f"{self.range_label} · 完整性未知"
+            shown = self.metadata.shown_bytes
+            size = (
+                f"{shown}/{self.metadata.total_bytes} B"
+                if shown is not None
+                else f"{self.metadata.total_bytes} B"
+            )
+            return f"{self.range_label} · {size}"
+        recovery = "可通过 artifact 恢复" if self.metadata.artifact_path else "无法恢复"
         return (
             f"{self.range_label} · {self.metadata.total_bytes} B · "
-            f"不完整(工具层按 {self.metadata.truncated_by} 截断,无法恢复)"
+            f"不完整(按 {self.metadata.truncated_by or self.metadata.completeness} 截断,{recovery})"
         )
 
     def head_tail_preview(self, head: int = 12, tail: int = 12) -> list[str]:
@@ -140,7 +186,11 @@ class OutputBuffer:
             raise ValueError("原始输出已在工具层截断,无法恢复或导出")
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(self.content, encoding="utf-8")
+        source = Path(self.metadata.artifact_path) if self.truncated else None
+        if source is not None and source.is_file() and source.resolve() != target.resolve():
+            target.write_bytes(source.read_bytes())
+        else:
+            target.write_text(self.content, encoding="utf-8")
         self.artifact_path = str(target)
         return target
 
@@ -159,3 +209,44 @@ def _infer_truncation_marker(content: str) -> str | None:
     if re.search(r"(?:输出)?已截断|达到(?:字节|行数)?上限|条目超限", content):
         return "tool"
     return None
+
+
+def _infer_legacy_metadata(content: str, base: OutputMetadata) -> OutputMetadata:
+    """Infer old marker semantics only when no structured snapshot exists."""
+    inferred = _infer_truncation_marker(content)
+    line_marker = re.search(r"\[(\d+)-(\d+)/(\d+)\s*行\]", content)
+    item_marker = re.search(r"仅显示前\s*(\d+)\s*条.*?共\s*(\d+)\s*条", content)
+    shown_lines = base.shown_lines
+    total_lines = base.total_lines
+    if line_marker is not None:
+        shown_lines = int(line_marker.group(2))
+        total_lines = int(line_marker.group(3))
+        if shown_lines < total_lines:
+            inferred = inferred or "tool"
+    elif item_marker is not None:
+        shown_lines = int(item_marker.group(1))
+        total_lines = int(item_marker.group(2))
+        if shown_lines < total_lines:
+            inferred = inferred or "tool"
+    if inferred is None and shown_lines == base.shown_lines and total_lines == base.total_lines:
+        return base
+    return OutputMetadata(
+        total_bytes=base.total_bytes,
+        total_lines=total_lines,
+        shown_lines=shown_lines,
+        truncated_by=base.truncated_by or inferred,
+        artifact_path=base.artifact_path,
+        completeness="truncated" if base.truncated_by or inferred else base.completeness,
+        shown_bytes=base.shown_bytes,
+        path=base.path,
+        range_start=base.range_start,
+        range_end=base.range_end,
+        exit_code=base.exit_code,
+        duration_ms=base.duration_ms,
+        stderr_summary=base.stderr_summary,
+        change_summary=base.change_summary,
+        artifact_ref=base.artifact_ref,
+        continuation=base.continuation,
+        semantic_success=base.semantic_success,
+        source="legacy",
+    )

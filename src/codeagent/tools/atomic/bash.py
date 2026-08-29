@@ -11,6 +11,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -22,7 +23,7 @@ from codeagent.tools.security.bash_rules import (
     _dangerous_intent,
 )
 from codeagent.tools.security.shell_parse import last_segment_first_token
-from codeagent.tools.shared import DEFAULT_MAX_LINES, truncate_tail
+from codeagent.tools.shared import GovernedText, DEFAULT_MAX_LINES, redact_metadata_text
 
 __all__ = [
     "BashTool",
@@ -45,6 +46,7 @@ class BashInvocationResult:
     duration_ms: int = 0
     output_truncated: bool = False
     success: bool | None = None
+    output_metadata: dict[str, Any] | None = None
 
     @property
     def cleanup_uncertain(self) -> bool:
@@ -123,19 +125,14 @@ class BashTool(AtomicTool):
                     str(self._cwd or Path.cwd()),
                     self._bash_env(),
                     timeout,
+                    max_output_bytes=MAX_OUTPUT_CHARS,
+                    max_output_lines=DEFAULT_MAX_LINES,
+                    output_direction="tail",
                 )
             )
         except OSError as exc:
             raise ValueError(f"命令执行失败: {exc}") from exc
-        return self._format_result(
-            command,
-            timeout,
-            result.returncode,
-            result.stdout,
-            result.stderr,
-            result.timed_out,
-            time.monotonic() - started,
-        )
+        return self._format_result(command, timeout, result, time.monotonic() - started)
 
     async def ainvoke(self, args: BashArgs) -> BashInvocationResult:
         """可取消的异步路径；取消时由 ProcessRunner 负责清理进程树。"""
@@ -149,19 +146,14 @@ class BashTool(AtomicTool):
                     str(self._cwd or Path.cwd()),
                     self._bash_env(),
                     timeout,
+                    max_output_bytes=MAX_OUTPUT_CHARS,
+                    max_output_lines=DEFAULT_MAX_LINES,
+                    output_direction="tail",
                 )
             )
         except OSError as exc:
             raise ValueError(f"命令执行失败: {exc}") from exc
-        content = self._format_result(
-            command,
-            timeout,
-            result.returncode,
-            result.stdout,
-            result.stderr,
-            result.timed_out,
-            time.monotonic() - started,
-        )
+        content = self._format_result(command, timeout, result, time.monotonic() - started)
         duration = round((time.monotonic() - started) * 1000)
         if result.timed_out:
             status = "timed_out" if result.cleanup_confirmed else "cleanup_uncertain"
@@ -177,39 +169,73 @@ class BashTool(AtomicTool):
             duration_ms=duration,
             output_truncated=TRUNCATION_MARKER in content,
             success=success,
+            output_metadata=content.output_metadata,
         )
 
     def _format_result(
         self,
         command: str,
         timeout: int,
-        returncode: int,
-        stdout: str,
-        stderr: str,
-        timed_out: bool,
+        result,
         elapsed: float,
-    ) -> str:
-        if timed_out:
-            return f"[命令超时(>{timeout}s),已终止]\n命令: {command}\n{stdout}{stderr}"
+    ) -> GovernedText:
+        stdout = result.stdout
+        stderr = result.stderr
+        stdout_stats = _stream_stats(result, "stdout", stdout)
+        stderr_stats = _stream_stats(result, "stderr", stderr)
+        truncated = bool(stdout_stats[4] or stderr_stats[4])
+        reason = _truncation_reason(stdout_stats, stderr_stats)
+        output_metadata = {
+            "completeness": "incomplete" if result.timed_out else ("truncated" if truncated else "complete"),
+            "total_bytes": stdout_stats[0] + stderr_stats[0],
+            "total_lines": stdout_stats[1] + stderr_stats[1],
+            "shown_bytes": stdout_stats[2] + stderr_stats[2],
+            "shown_lines": stdout_stats[3] + stderr_stats[3],
+            "truncated_by": "timeout" if result.timed_out else reason,
+            "exit_code": result.returncode,
+            "duration_ms": round(elapsed * 1000),
+            "stderr_summary": redact_metadata_text(stderr[:1000]) if stderr else None,
+            "semantic_success": None if result.timed_out else _semantically_ok(result.returncode, command),
+            "source": "tool",
+        }
+        stdout = stdout + TRUNCATION_MARKER if stdout_stats[4] else stdout
+        stderr = stderr + TRUNCATION_MARKER if stderr_stats[4] else stderr
+        if result.timed_out:
+            return GovernedText(
+                f"[命令超时(>{timeout}s),已终止]\n命令: {command}\n{stdout}{stderr}",
+                output_metadata,
+            )
 
-        stdout_t, out_truncated = truncate_tail(
-            stdout, max_lines=DEFAULT_MAX_LINES, max_bytes=MAX_OUTPUT_CHARS
-        )
-        stderr_t, err_truncated = truncate_tail(
-            stderr, max_lines=DEFAULT_MAX_LINES, max_bytes=MAX_OUTPUT_CHARS
-        )
-        if out_truncated.truncated:
-            stdout_t += TRUNCATION_MARKER
-        if err_truncated.truncated:
-            stderr_t += TRUNCATION_MARKER
-
-        if not _semantically_ok(returncode, command):
-            header = f"退出码: {returncode}(命令失败,耗时 {elapsed:.1f}s)"
+        if not _semantically_ok(result.returncode, command):
+            header = f"退出码: {result.returncode}(命令失败,耗时 {elapsed:.1f}s)"
         else:
-            header = f"退出码: {returncode}(耗时 {elapsed:.1f}s)"
-        if stderr_t.strip():
-            return f"{header}\nstdout:\n{stdout_t}\nstderr:\n{stderr_t}"
-        return f"{header}\nstdout:\n{stdout_t}"
+            header = f"退出码: {result.returncode}(耗时 {elapsed:.1f}s)"
+        if stderr.strip():
+            content = f"{header}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        else:
+            content = f"{header}\nstdout:\n{stdout}"
+        return GovernedText(content, output_metadata)
 
     def _bash_env(self) -> dict[str, str]:
         return bash_env()
+
+
+def _stream_stats(result: Any, name: str, content: str) -> tuple[int, int, int, int, bool]:
+    """Read ProcessResult statistics with a compatibility fallback."""
+    value = len(content.encode("utf-8"))
+    lines = len(content.splitlines())
+    prefix = f"{name}_"
+    total_bytes = int(getattr(result, prefix + "total_bytes", 0) or value)
+    total_lines = int(getattr(result, prefix + "total_lines", 0) or lines)
+    shown_bytes = int(getattr(result, prefix + "shown_bytes", 0) or value)
+    shown_lines = int(getattr(result, prefix + "shown_lines", 0) or lines)
+    truncated = bool(getattr(result, prefix + "truncated", False))
+    return total_bytes, total_lines, shown_bytes, shown_lines, truncated
+
+
+def _truncation_reason(*stats: tuple[int, int, int, int, bool]) -> str | None:
+    if any(item[4] and item[0] > item[2] for item in stats):
+        return "tool_bytes"
+    if any(item[4] and item[1] > item[3] for item in stats):
+        return "tool_lines"
+    return None

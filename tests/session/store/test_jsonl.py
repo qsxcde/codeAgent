@@ -56,6 +56,90 @@ def test_load_messages_roundtrip_with_parent_chain(tmp_path):
     assert loaded[0].id == user.id
 
 
+def test_tool_output_metadata_roundtrips_without_raw_unbounded_payload(tmp_path):
+    from codeagent.core.contracts.messages import OutputCompleteness, ToolOutputMetadata
+
+    store = _store(tmp_path)
+    store.create("s1")
+    metadata = ToolOutputMetadata(
+        completeness=OutputCompleteness.TRUNCATED,
+        total_bytes=100_000,
+        total_lines=10_000,
+        shown_bytes=100,
+        shown_lines=10,
+        truncated_by="tool_bytes",
+        path="README.md",
+        artifact_ref="artifact-1",
+    )
+    tool = Message(
+        role="tool",
+        content="bounded preview",
+        tool_call_id="c1",
+        tool_output=metadata,
+    )
+    store.append_message("s1", tool)
+
+    loaded = store.load_messages("s1")[0]
+    record = json.loads((tmp_path / "sessions" / "s1.jsonl").read_text().splitlines()[-1])
+
+    assert loaded.tool_output == metadata
+    assert record["tool_output"]["total_bytes"] == 100_000
+    assert "raw" not in record["tool_output"]
+
+
+def test_unrecoverable_truncation_is_incomplete_after_restore(tmp_path):
+    from codeagent.core.contracts.messages import OutputCompleteness, ToolOutputMetadata
+
+    store = _store(tmp_path)
+    store.create("s1")
+    store.append_message(
+        "s1",
+        Message(
+            role="tool",
+            content="bounded preview",
+            tool_call_id="c1",
+            tool_output=ToolOutputMetadata(
+                completeness=OutputCompleteness.TRUNCATED,
+                total_bytes=100_000,
+                total_lines=10_000,
+                shown_bytes=100,
+                shown_lines=10,
+                truncated_by="tool_bytes",
+            ),
+        ),
+    )
+
+    restored = store.load_messages("s1")[0].tool_output
+
+    assert restored is not None
+    assert restored.completeness == OutputCompleteness.INCOMPLETE
+    assert restored.source == "restored"
+
+
+def test_legacy_tool_message_has_no_false_complete_metadata(tmp_path):
+    store = _store(tmp_path)
+    store.create("s1")
+    path = tmp_path / "sessions" / "s1.jsonl"
+    path.write_text(
+        path.read_text()
+        + json.dumps(
+            {
+                "type": "message",
+                "id": "m1",
+                "parentId": None,
+                "role": "tool",
+                "content": "[输出已截断]",
+                "tool_call_id": "c1",
+            }
+        )
+        + "\n"
+    )
+
+    loaded = store.load_messages("s1")[0]
+
+    assert loaded.tool_output is None
+
+
 
 def test_version_mismatch_rejected(tmp_path):
     store = _store(tmp_path)

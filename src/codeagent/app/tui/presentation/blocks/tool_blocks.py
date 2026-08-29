@@ -77,7 +77,7 @@ class ToolCallBlock(Component):
         output_metadata: dict[str, Any] | None = None,
     ) -> None:
         self.result = result
-        metadata = output_metadata or {}
+        metadata = output_metadata or {"completeness": "unknown", "source": "legacy"}
         self.output_buffer = OutputBuffer(
             result,
             metadata=OutputMetadata(
@@ -86,6 +86,19 @@ class ToolCallBlock(Component):
                 shown_lines=int(metadata.get("shown_lines") or len(result.splitlines())),
                 truncated_by=metadata.get("truncated_by"),
                 artifact_path=metadata.get("artifact_path"),
+                completeness=metadata.get("completeness"),
+                shown_bytes=metadata.get("shown_bytes"),
+                path=metadata.get("path"),
+                range_start=metadata.get("range_start"),
+                range_end=metadata.get("range_end"),
+                exit_code=metadata.get("exit_code"),
+                duration_ms=metadata.get("duration_ms"),
+                stderr_summary=metadata.get("stderr_summary"),
+                change_summary=metadata.get("change_summary"),
+                artifact_ref=metadata.get("artifact_ref"),
+                continuation=metadata.get("continuation"),
+                semantic_success=metadata.get("semantic_success"),
+                source=str(metadata.get("source") or ("structured" if metadata else "legacy")),
             ),
             page_size=int(metadata.get("page_size") or 40),
         )
@@ -139,6 +152,15 @@ class ToolCallBlock(Component):
             return f"{labels.get(self.execution_status, 'Failed')} {self.name}"
         if self.name == "bash":
             result = _summarize_result(self.name, self.result)
+            if self.output_buffer is not None:
+                output = self.output_buffer.metadata
+                if output.exit_code is not None:
+                    duration = (
+                        f" · {output.duration_ms / 1000:.1f}s"
+                        if output.duration_ms is not None
+                        else ""
+                    )
+                    result = f"exit {output.exit_code}{duration}"
             suffix = ""
             if self.output_buffer is not None and (
                 self.output_buffer.truncated or self.output_buffer.metadata.total_bytes > 4000
@@ -148,8 +170,9 @@ class ToolCallBlock(Component):
         summary = completed.get(self.name, f"Ran {self.name}")
         if self.output_buffer is not None and self.output_buffer.truncated:
             summary += f" · {self.output_buffer.diagnostic}"
+        elif self.output_buffer is not None:
+            summary += _structured_output_suffix(self.output_buffer.metadata, path)
         return summary
-
     def _edit_summary(self, path: str) -> str:
         old = str(self.args.get("old_string", "")).splitlines()
         new = str(self.args.get("new_string", "")).splitlines()
@@ -185,7 +208,6 @@ class ToolCallBlock(Component):
                 lines.append([_seg(f"{marker} {_truncate(value, max(1, width - 2))}", fg=TEXT, bg=bg)])
                 emitted += 1
         return lines
-
     def render(self, width: int) -> list[RichLine]:
         icon, icon_tag = {"pending": ("·", DIM), "done": ("✓", SUCCESS), "error": ("✗", ERROR)}[
             self.status
@@ -215,3 +237,24 @@ class ToolCallBlock(Component):
                 else:
                     lines.extend(_wrap_rich(self.result, width, fg=TOOL_OUTPUT))
         return lines
+
+
+def _structured_output_suffix(metadata: OutputMetadata, argument_path: str) -> str:
+    """Show structured facts without parsing or copying result text."""
+    if metadata.source == "legacy" or metadata.completeness is None:
+        return ""
+    facts: list[str] = []
+    if metadata.path and metadata.path != argument_path:
+        facts.append(metadata.path)
+    if metadata.range_start is not None or metadata.range_end is not None:
+        start = metadata.range_start if metadata.range_start is not None else "?"
+        end = metadata.range_end if metadata.range_end is not None else "?"
+        facts.append(f"lines {start}-{end}")
+    if metadata.total_bytes is not None:
+        shown = metadata.shown_bytes if metadata.shown_bytes is not None else "?"
+        facts.append(f"{shown}/{metadata.total_bytes} B")
+    if metadata.change_summary:
+        facts.append(metadata.change_summary)
+    if metadata.continuation:
+        facts.append("可继续")
+    return f" · {' · '.join(facts)}" if facts else ""

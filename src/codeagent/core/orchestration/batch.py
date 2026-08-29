@@ -63,6 +63,7 @@ async def execute_tool_batch(
 
 
 def _emit_tool_end(result: ToolResult, emit: Callable[[AgentEvent], Any]) -> None:
+    output_metadata = result.output_metadata.to_dict()
     emit(
         AgentEvent(
             EventType.TOOL_EXECUTION_END,
@@ -76,6 +77,8 @@ def _emit_tool_end(result: ToolResult, emit: Callable[[AgentEvent], Any]) -> Non
                 "cleanup_status": result.cleanup_status,
                 "cleanup_uncertain": result.cleanup_uncertain,
                 "cleanup_error": result.cleanup_error,
+                "output_metadata": output_metadata,
+                **output_metadata,
             },
         )
     )

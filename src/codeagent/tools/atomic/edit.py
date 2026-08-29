@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
+    GovernedText,
     detect_line_ending,
     normalize_to_lf,
     resolve_to_cwd,
@@ -88,4 +89,16 @@ class EditTool(AtomicTool):
             raise ValueError(f"没有写入权限: {path}")
         except OSError as exc:
             raise ValueError(f"写入失败 {path}: {exc}")
-        return f"已替换 {count} 处: {path}"
+        return GovernedText(
+            f"已替换 {count} 处: {path}",
+            {
+                "completeness": "complete",
+                "total_bytes": len(final.encode("utf-8")),
+                "total_lines": len(updated.splitlines()),
+                "shown_bytes": len(final.encode("utf-8")),
+                "shown_lines": len(updated.splitlines()),
+                "path": str(path),
+                "change_summary": f"replaced {count} occurrence(s)",
+                "source": "tool",
+            },
+        )

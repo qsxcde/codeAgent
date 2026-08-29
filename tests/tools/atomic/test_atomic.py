@@ -10,6 +10,18 @@ def test_read_full_file(tmp_path):
     assert "line1" in out and "line3" in out
 
 
+def test_read_result_exposes_path_range_and_completeness(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+    out = _invoke(ReadTool(cwd=str(tmp_path)), file_path="a.txt", offset=1, limit=1)
+
+    assert out.output_metadata["path"] == str(f)
+    assert out.output_metadata["range_start"] == 1
+    assert out.output_metadata["range_end"] == 2
+    assert out.output_metadata["completeness"] == "truncated"
+
+
 
 def test_read_limit_truncates(tmp_path):
     f = tmp_path / "big.txt"
@@ -84,8 +96,10 @@ def test_read_binary_safe(tmp_path):
 
 def test_write_creates_new_file(tmp_path):
     target = tmp_path / "out.txt"
-    _invoke(WriteTool(), file_path=str(target), content="hello")
+    out = _invoke(WriteTool(), file_path=str(target), content="hello")
     assert target.read_text(encoding="utf-8") == "hello"
+    assert out.output_metadata["path"] == str(target)
+    assert out.output_metadata["change_summary"] == "wrote 5 bytes"
 
 
 
@@ -180,6 +194,7 @@ def test_ls_lists_directory_with_dir_suffix(tmp_path):
     assert "a.txt" in out
     assert "sub/" in out
     assert ".hidden" not in out  # 默认不显示隐藏条目
+    assert out.output_metadata["total_lines"] == 2
 
 
 
@@ -281,4 +296,3 @@ def test_parallel_writes_same_file_do_not_lose_updates(tmp_path):
         for fut in futures:
             fut.result()
     assert f.read_text(encoding="utf-8") == "aaa bbb"
-

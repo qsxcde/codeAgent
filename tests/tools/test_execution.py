@@ -32,6 +32,30 @@ def test_process_request_and_result_boundary(tmp_path):
     assert result.cleanup_confirmed is True
 
 
+def test_process_runner_bounds_captured_output_and_reports_totals(tmp_path):
+    try:
+        executable = resolve_bash()
+    except ValueError:
+        pytest.skip("当前平台没有 bash")
+    request = ProcessRequest(
+        executable=executable,
+        command="seq 1 100",
+        cwd=str(tmp_path),
+        env=bash_env(),
+        timeout=5,
+        max_output_bytes=64,
+        max_output_lines=3,
+    )
+
+    result = ProcessRunner().run(request)
+
+    assert "1" in result.stdout and "3" in result.stdout
+    assert "100" not in result.stdout
+    assert result.stdout_total_lines == 100
+    assert result.stdout_total_bytes > result.stdout_shown_bytes
+    assert result.stdout_truncated is True
+
+
 async def test_process_runner_async_uses_same_result_contract(tmp_path):
     try:
         executable = resolve_bash()

@@ -53,7 +53,12 @@ def _append_tool_messages(
     results: list[ToolResult],
 ) -> None:
     messages = [
-        Message(role="tool", content=result.content, tool_call_id=result.tool_call_id)
+        Message(
+            role="tool",
+            content=result.content,
+            tool_call_id=result.tool_call_id,
+            tool_output=result.output_metadata,
+        )
         for result in results
     ]
     working.messages.extend(messages)

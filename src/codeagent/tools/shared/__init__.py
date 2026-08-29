@@ -21,13 +21,23 @@ from codeagent.tools.shared.truncate import (
     truncate_head,
     truncate_tail,
 )
+from codeagent.tools.shared.governance import (
+    GovernedOutput,
+    GovernedText,
+    OutputPolicy,
+    govern_text,
+    redact_metadata_text,
+)
 
 __all__ = [
     "DEFAULT_MAX_BYTES",
     "DEFAULT_MAX_LINES",
     "FsOps",
+    "GovernedOutput",
+    "GovernedText",
     "LocalFsOps",
     "NOISE_DIRS",
+    "OutputPolicy",
     "TruncationResult",
     "detect_line_ending",
     "normalize_path",
@@ -38,5 +48,7 @@ __all__ = [
     "strip_bom",
     "truncate_head",
     "truncate_tail",
+    "govern_text",
+    "redact_metadata_text",
     "with_path_lock",
 ]

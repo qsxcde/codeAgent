@@ -21,6 +21,7 @@ from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
+    GovernedText,
     resolve_to_cwd,
     truncate_head,
 )
@@ -221,4 +222,18 @@ class GrepTool(AtomicTool):
             parts.append(f"[达到匹配上限 {limit},可调大 limit 查看更多]")
         if trunc.truncated:
             parts.append("[输出已截断]")
-        return "\n".join(parts)
+        content = "\n".join(parts)
+        reason = "tool_limit" if limit_hit else ("tool_bytes" if trunc.truncated else None)
+        return GovernedText(
+            content,
+            {
+                "completeness": "truncated" if reason else "complete",
+                "total_bytes": len(body.encode("utf-8")),
+                "total_lines": len(lines),
+                "shown_bytes": len(body.encode("utf-8")),
+                "shown_lines": len(body.splitlines()),
+                "truncated_by": reason,
+                "continuation": f"limit={args.limit or DEFAULT_LIMIT}" if limit_hit else None,
+                "source": "tool",
+            },
+        )

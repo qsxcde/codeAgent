@@ -20,6 +20,7 @@ from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
+    GovernedText,
     resolve_to_cwd,
     truncate_head,
 )
@@ -138,4 +139,19 @@ class FindTool(AtomicTool):
             parts.append(f"[结果达到上限 {limit},可调大 limit 查看更多]")
         if trunc.truncated:
             parts.append("[输出已截断]")
-        return "\n".join(parts)
+        content = "\n".join(parts)
+        reason = "tool_limit" if len(results) >= limit else ("tool_bytes" if trunc.truncated else None)
+        return GovernedText(
+            content,
+            {
+                "completeness": "truncated" if reason else "complete",
+                "total_bytes": len("\n".join(results).encode("utf-8")),
+                "total_lines": len(results),
+                "shown_bytes": len("\n".join(results).encode("utf-8")),
+                "shown_lines": len(results),
+                "truncated_by": reason,
+                "continuation": f"limit={limit}" if reason else None,
+                "path": str(resolve_to_cwd(args.path or ".", self._cwd)),
+                "source": "tool",
+            },
+        )

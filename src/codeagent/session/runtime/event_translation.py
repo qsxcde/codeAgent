@@ -135,6 +135,11 @@ class EventMapper:
                 "cleanup_error": getattr(result, "cleanup_error", None),
             }
         )
+        output_metadata = getattr(result, "output_metadata", None)
+        if output_metadata is not None:
+            output_fields = output_metadata.to_dict()
+            metadata["output_metadata"] = output_fields
+            metadata.update(output_fields)
         if error_code is not None:
             metadata["error_code"] = error_code
         content = getattr(result, "content", result)

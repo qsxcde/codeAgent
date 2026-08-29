@@ -8,7 +8,12 @@ from typing import Any
 
 from codeagent.ai.model.types import ToolDefinition
 from codeagent.app.errors.reporting import report_unexpected_error
-from codeagent.core.contracts.messages import ToolExecutionStatus, ToolResult
+from codeagent.core.contracts.messages import (
+    OutputCompleteness,
+    ToolExecutionStatus,
+    ToolOutputMetadata,
+    ToolResult,
+)
 from codeagent.core.contracts.ports import AgentTool
 
 from .definitions import tool_definition_for
@@ -88,9 +93,14 @@ def _result_from_value(tool_call_id: str, name: str, value: Any) -> ToolResult:
         return value
     if hasattr(value, "content"):
         status = str(getattr(value, "status", "") or "")
+        semantic_success = getattr(value, "semantic_success", None)
+        if semantic_success is None:
+            semantic_success = getattr(value, "success", None)
+        metadata = _metadata_from_value(value, semantic_success)
         return ToolResult(
             tool_call_id,
             str(getattr(value, "content", "")),
+            details=dict(getattr(value, "details", {}) or {}),
             error=bool(getattr(value, "error", False))
             or status not in {"", ToolExecutionStatus.OK, "completed"},
             name=name,
@@ -101,9 +111,60 @@ def _result_from_value(tool_call_id: str, name: str, value: Any) -> ToolResult:
             exit_code=getattr(value, "exit_code", None),
             duration_ms=int(getattr(value, "duration_ms", 0) or 0),
             output_truncated=bool(getattr(value, "output_truncated", False)),
-            semantic_success=getattr(value, "success", None),
+            semantic_success=semantic_success,
+            output_metadata=metadata,
         )
-    return ToolResult(tool_call_id, str(value), name=name, cleanup_confirmed=True)
+    content = str(value)
+    size = len(content.encode("utf-8"))
+    return ToolResult(
+        tool_call_id,
+        content,
+        name=name,
+        cleanup_confirmed=True,
+        output_metadata=ToolOutputMetadata(
+            completeness=OutputCompleteness.UNKNOWN,
+            total_bytes=size,
+            total_lines=len(content.splitlines()),
+            shown_bytes=size,
+            shown_lines=len(content.splitlines()),
+            source="legacy",
+        ),
+    )
+
+
+def _metadata_from_value(value: Any, semantic_success: bool | None) -> ToolOutputMetadata:
+    existing = getattr(value, "output_metadata", None)
+    if isinstance(existing, ToolOutputMetadata):
+        return existing
+    if isinstance(existing, dict):
+        return ToolOutputMetadata.from_dict(existing)
+    content = str(getattr(value, "content", ""))
+    size = len(content.encode("utf-8"))
+    lines = len(content.splitlines())
+    truncated_by = getattr(value, "truncated_by", None)
+    truncated = bool(getattr(value, "output_truncated", False) or truncated_by)
+    return ToolOutputMetadata(
+        completeness=(
+            OutputCompleteness.TRUNCATED if truncated else OutputCompleteness.UNKNOWN
+        ),
+        total_bytes=int(getattr(value, "total_bytes", 0) or size),
+        total_lines=int(getattr(value, "total_lines", 0) or lines),
+        shown_bytes=int(getattr(value, "shown_bytes", 0) or size),
+        shown_lines=int(getattr(value, "shown_lines", 0) or lines),
+        truncated_by=truncated_by,
+        path=getattr(value, "path", None),
+        range_start=getattr(value, "range_start", None),
+        range_end=getattr(value, "range_end", None),
+        exit_code=getattr(value, "exit_code", None),
+        duration_ms=int(getattr(value, "duration_ms", 0) or 0),
+        stderr_summary=getattr(value, "stderr_summary", None),
+        change_summary=getattr(value, "change_summary", None),
+        artifact_path=getattr(value, "artifact_path", None),
+        artifact_ref=getattr(value, "artifact_ref", None),
+        continuation=getattr(value, "continuation", None),
+        semantic_success=semantic_success,
+        source="adapter",
+    )
 
 
 def _call_with_hooks(method: Any, args: Any, signal: Any, on_update: Any) -> Any:

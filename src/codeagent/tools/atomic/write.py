@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
-from codeagent.tools.shared import resolve_to_cwd, with_path_lock
+from codeagent.tools.shared import GovernedText, resolve_to_cwd, with_path_lock
 
 __all__ = ["WriteTool"]
 
@@ -37,4 +37,16 @@ class WriteTool(AtomicTool):
             raise ValueError(f"没有写入权限: {path}")
         except OSError as exc:
             raise ValueError(f"写入失败 {path}: {exc}")
-        return f"已写入 {path}({len(data)} 字节)"
+        return GovernedText(
+            f"已写入 {path}({len(data)} 字节)",
+            {
+                "completeness": "complete",
+                "total_bytes": len(data),
+                "total_lines": len(args.content.splitlines()),
+                "shown_bytes": len(data),
+                "shown_lines": len(args.content.splitlines()),
+                "path": str(path),
+                "change_summary": f"wrote {len(data)} bytes",
+                "source": "tool",
+            },
+        )

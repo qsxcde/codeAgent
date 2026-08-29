@@ -75,4 +75,9 @@ class ModelHistoryMixin:
                 self._pending_tools_by_id.pop(block.call_id, None)
         if block is not None:
             self._pending_tools.remove(block)
-            block.set_result(content, execution_status="ok")
+            output = getattr(message, "tool_output", None)
+            block.set_result(
+                content,
+                execution_status=("unknown" if output is None else "ok"),
+                output_metadata=output.to_dict() if output is not None else None,
+            )
