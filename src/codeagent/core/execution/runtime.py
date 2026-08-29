@@ -66,6 +66,7 @@ class ToolExecutionRuntime:
         timeout: float | None = None,
         operation_id: str | None = None,
         on_update: Any = None,
+        on_start: Any = None,
     ) -> ToolResult:
         operation = ToolOperation(operation_id or new_id(), call.id, call.name)
         self._registry.register(operation)
@@ -74,6 +75,11 @@ class ToolExecutionRuntime:
                 return self._contract_error(call, operation)
             operation.task = asyncio.current_task()
             async with self._semaphore:
+                operation.status = "running"
+                if on_start is not None:
+                    started = on_start(operation)
+                    if inspect.isawaitable(started):
+                        await started
                 return await self._execute_in_slot(tool, call, operation, timeout, on_update)
         finally:
             self._registry.remove(operation.operation_id)
@@ -120,11 +126,7 @@ class ToolExecutionRuntime:
         operation: ToolOperation,
     ) -> ToolResult:
         cleanup = await self._cleanup_operation(tool, operation)
-        operation.status = (
-            ToolExecutionStatus.TIMED_OUT
-            if cleanup.status in {CleanupStatus.CONFIRMED, CleanupStatus.FAILED}
-            else ToolExecutionStatus.CLEANUP_UNCERTAIN
-        )
+        operation.status = ToolExecutionStatus.TIMED_OUT
         operation.cleanup_confirmed = cleanup.status == CleanupStatus.CONFIRMED
         self._cleanup.record(cleanup)
         label = "已清理" if operation.cleanup_confirmed else "停止等待但后台清理未确认"

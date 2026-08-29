@@ -13,6 +13,7 @@ from ..state.runtime import RuntimePhase, RuntimeSnapshot, phase_label
 from .theme import ACCENT, DIM, STATUS_MODEL, STATUS_PATH, WARNING
 from .status_clock import TaskStatusClock
 from .status_context import render_context_spans
+from .status_tool_counts import render_tool_counts
 
 
 class StatusBar(Component):
@@ -243,6 +244,9 @@ class StatusBar(Component):
                 details.append(phase_label(runtime.phase))
         elif self.runtime_visible and runtime.current_operation:
             details.append(runtime.current_operation)
+        tool_counts = render_tool_counts(runtime.tool_counts)
+        if tool_counts:
+            details.append(tool_counts)
         if runtime.context_stale:
             details.append("上下文同步中")
         if self.new_output_count:

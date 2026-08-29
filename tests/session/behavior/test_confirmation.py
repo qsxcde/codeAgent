@@ -16,6 +16,7 @@ async def test_respond_approval_approves_and_executes():
             e for e in seen if e.type == EventType.CONFIRMATION_REQUESTED
         ).payload
         assert payload["tool"] == "bash" and payload["reason"] == "stub:bash"
+        assert payload["tool_call_id"] == "c1"
         assert not any(e.type == EventType.TOOL_RESULT for e in seen)  # 未响应前不执行
         sess.respond_approval(payload["request_id"], True)
         await task
@@ -133,4 +134,3 @@ async def test_wait_timeout_applies_to_request_registered_without_timer():
     with pytest.raises(ConfirmationTimeoutError):
         await coordinator.wait("late", timeout=0.001)
     assert coordinator.active_request_ids == ()
-

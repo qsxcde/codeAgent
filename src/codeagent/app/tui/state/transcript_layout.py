@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from bisect import bisect_right
-
-from ..presentation.blocks import AssistantBlock, Component
 from ..presentation.primitives import RichLine
 
 
 class TranscriptLayoutMixin:
     """将块布局、缓存和可见窗口算法从 Transcript 容器中分离。"""
 
-    def _cache_lookup(self, block: Component, width: int) -> list[RichLine] | None:
-        key = (id(block), width, int(getattr(block, "revision", 0)))
+    def _cache_key(self, block, width: int) -> tuple[int, int, int]:
+        token = self._layout_index.token_for(block)
+        if token is None:
+            raise ValueError("block is not registered in transcript")
+        return token, width, int(getattr(block, "revision", 0))
+
+    def _cache_lookup(self, block, width: int) -> list[RichLine] | None:
+        key = self._cache_key(block, width)
         if key not in self._layout_cache:
             return None
         rendered = self._layout_cache.pop(key)
@@ -20,26 +23,23 @@ class TranscriptLayoutMixin:
         self.cache_hits += 1
         return rendered
 
-    def _cache_store(self, block: Component, width: int, rendered: list[RichLine]) -> None:
-        block_id = id(block)
-        revision = int(getattr(block, "revision", 0))
-        for key in list(self._layout_cache):
-            if key[0] == block_id and key[2] != revision:
-                del self._layout_cache[key]
-        key = (block_id, width, revision)
+    def _cache_store(self, block, width: int, rendered: list[RichLine]) -> None:
+        key = self._cache_key(block, width)
+        for old_key in list(self._layout_cache):
+            if old_key[0] == key[0] and old_key[2] != key[2]:
+                del self._layout_cache[old_key]
         self._layout_cache.pop(key, None)
         self._layout_cache[key] = rendered
-        same_revision = [
-            item for item in self._layout_cache
-            if item[0] == block_id and item[2] == revision
-        ]
+        same_revision = [item for item in self._layout_cache if item[0] == key[0]]
         while len(same_revision) > self._max_width_variants:
-            old_key = same_revision.pop(0)
-            self._layout_cache.pop(old_key, None)
+            self._layout_cache.pop(same_revision.pop(0), None)
         while len(self._layout_cache) > self._cache_capacity:
             self._layout_cache.popitem(last=False)
+        while self.cache_rows > self._cache_line_capacity and len(self._layout_cache) > 1:
+            self._layout_cache.popitem(last=False)
+        self._layout_index.measure(block, width, rendered, key[2])
 
-    def _render_cached(self, block: Component, width: int) -> list[RichLine]:
+    def _render_cached(self, block, width: int) -> list[RichLine]:
         rendered = self._cache_lookup(block, width)
         if rendered is not None:
             return rendered
@@ -48,37 +48,36 @@ class TranscriptLayoutMixin:
         self.cache_misses += 1
         return rendered
 
-    def _rows(
-        self, width: int, transient: Component | None = None
-    ) -> tuple[list[RichLine], list[Component | None]]:
-        """构造内容行与点击映射；块间空行、瞬态行均不命中点击。"""
+    def _rows(self, width: int, transient=None) -> tuple[list[RichLine], list]:
+        """构造完整内容行与点击映射；退出路径允许有界之外的物化。"""
         rows: list[RichLine] = []
-        owners: list[Component | None] = []
-        persistent: list[tuple[Component, list[RichLine]]] = []
+        owners: list = []
+        cursor = 0
+        first = True
+        self.layout_index = []
+        self._range_starts = []
         for block in self._blocks:
             rendered = self._render_cached(block, width)
-            if rendered:
-                persistent.append((block, rendered))
-        self.layout_index = []
-        cursor = 0
-        for index, (block, rendered) in enumerate(persistent):
-            if index:
+            if not rendered:
+                continue
+            if not first:
                 rows.append([])
                 owners.append(None)
                 cursor += 1
+            first = False
             start = cursor
             rows.extend(rendered)
             owners.extend([block] * len(rendered))
             cursor += len(rendered)
             self.layout_index.append((start, cursor, block))
+            self._range_starts.append(start)
         if transient is not None:
             rendered = transient.render(width)
-            if rendered:
-                if rows:
-                    rows.append([])
-                    owners.append(None)
-                rows.extend(rendered)
-                owners.extend([None] * len(rendered))
+            if rows:
+                rows.append([])
+                owners.append(None)
+            rows.extend(rendered)
+            owners.extend([None] * len(rendered))
         return rows, owners
 
     def all_rich(self, width: int) -> list[RichLine]:
@@ -102,65 +101,55 @@ class TranscriptLayoutMixin:
             for line in rendered:
                 yield "".join(span.text for span in line)
 
-    def render(
-        self, width: int, height: int, transient: Component | None = None
-    ) -> list[RichLine]:
-        """只物化视口及 overscan 范围内的块，维护行到块映射。"""
-        height = max(0, height)
-        if not self.follow and len(self._blocks) > self._last_block_count:
-            self._new_output_count += len(self._blocks) - self._last_block_count
-
-        transient_rendered: list[RichLine] = []
-        entries: list[tuple[Component, int, int, list[RichLine] | None]] = []
-        total = 0
-        start = 0
-        for _ in range(2):
-            entries, total, transient_entry = self._layout_entries(width, transient)
-            max_start = max(0, total - height)
-            if not self.follow and self._scroll_top >= max_start:
-                self.follow = True
-            start = max_start if self.follow else min(self._scroll_top, max_start)
-            self._scroll_top = start
-            window_start = max(0, start - self.overscan)
-            window_end = min(total, start + height + self.overscan)
-            changed = False
-            for block, block_start, block_end, rendered in entries:
-                if rendered is None and block_end > window_start and block_start < window_end:
-                    self._cache_block(block, width)
-                    changed = True
-            if transient_entry is not None:
-                _, transient_start, transient_end, _ = transient_entry
-                if transient_end > window_start and transient_start < window_end:
-                    transient_rendered = transient.render(width) if transient is not None else []
-            if not changed:
-                break
-
-        entries, total, transient_entry = self._layout_entries(width, transient)
-        max_start = max(0, total - height)
-        start = max_start if self.follow else min(self._scroll_top, max_start)
+    def _geometry(self, width: int, height: int, transient_rendered: list[RichLine]):
+        persistent_total = self._layout_index.total_rows(width)
+        transient_height = max(1, len(transient_rendered)) if transient_rendered else 0
+        total = persistent_total
+        if transient_height:
+            total += (1 if persistent_total else 0) + transient_height
+        if not self.follow and self._scroll_top >= max(0, total - height):
+            self.follow = True
+        anchored = self._restore_anchor_start(width, height, total)
+        if anchored is not None:
+            start = anchored
+        else:
+            start = max(0, total - height) if self.follow else min(self._scroll_top, max(0, total - height))
         self._scroll_top = start
+        return persistent_total, total, start
+
+    def _collect_visible(
+        self,
+        width: int,
+        height: int,
+        persistent_total: int,
+        total: int,
+        start: int,
+        transient_rendered: list[RichLine],
+        transient,
+    ) -> list[RichLine]:
         visible_end = start + height
-        visible_pairs: list[tuple[int, RichLine, Component | None]] = []
-        first_entry = max(0, bisect_right(self._range_starts, start) - 1)
-        for entry_index in range(first_entry, len(entries)):
-            block, block_start, block_end, rendered = entries[entry_index]
-            if block_start - 1 >= visible_end and entry_index > first_entry:
-                break
+        entries = self._layout_index.entries_from(width, start, visible_end)
+        visible_pairs: list[tuple[int, RichLine, object | None]] = []
+        self.layout_index = []
+        self._range_starts = []
+        for record, block_start, block_end, has_separator in entries:
+            rendered = self._cache_lookup(record.block, width)
             if rendered is None:
                 continue
-            if entry_index:
+            self.layout_index.append((block_start, block_end, record.block))
+            self._range_starts.append(block_start)
+            if has_separator:
                 separator = block_start - 1
                 if start <= separator < visible_end:
                     visible_pairs.append((separator, [], None))
             for index, line in enumerate(rendered, start=block_start):
                 if start <= index < visible_end:
-                    visible_pairs.append((index, line, block))
-        if transient_entry is not None:
-            _, transient_start, _, _ = transient_entry
-            if entries:
-                separator = transient_start - 1
-                if start <= separator < visible_end:
-                    visible_pairs.append((separator, [], None))
+                    visible_pairs.append((index, line, record.block))
+        if transient is not None and transient_rendered:
+            transient_start = persistent_total + (1 if persistent_total else 0)
+            separator = transient_start - 1
+            if start <= separator < visible_end and persistent_total:
+                visible_pairs.append((separator, [], None))
             for index, line in enumerate(transient_rendered, start=transient_start):
                 if start <= index < visible_end:
                     visible_pairs.append((index, line, None))
@@ -172,49 +161,47 @@ class TranscriptLayoutMixin:
             max(0, start - self.overscan),
             min(total, start + height + self.overscan),
         )
+        self._capture_anchor(width)
+        return visible
+
+    def render(self, width: int, height: int, transient=None) -> list[RichLine]:
+        """只物化视口及 overscan 范围内的块，维护行到块映射。"""
+        height = max(0, height)
+        width = max(1, width)
+        if self._last_width != width and not self.follow:
+            self._restore_anchor = True
+        self._last_width = width
+        if not self.follow and len(self._blocks) > self._last_block_count:
+            self._new_output_count += len(self._blocks) - self._last_block_count
+        transient_rendered = transient.render(width) if transient is not None else []
+        self.layout_stats = {"blocks_inspected": 0, "blocks_materialized": 0, "index_updates": 0}
+        before_updates = self._layout_index.update_count
+        for _ in range(3):
+            persistent_total, total, start = self._geometry(width, height, transient_rendered)
+            window_start = max(0, start - self.overscan)
+            window_end = min(total, start + height + self.overscan)
+            entries = self._layout_index.entries_from(width, window_start, window_end)
+            self.layout_stats["blocks_inspected"] += len(entries)
+            changed = False
+            for record, block_start, block_end, _ in entries:
+                if block_end <= window_start or block_start >= window_end:
+                    continue
+                if self._cache_lookup(record.block, width) is None:
+                    self._cache_block(record.block, width)
+                    self.layout_stats["blocks_materialized"] += 1
+                    changed = True
+            if not changed:
+                break
+        persistent_total, total, start = self._geometry(width, height, transient_rendered)
         self._last_total = total
+        self.layout_stats["index_updates"] = self._layout_index.update_count - before_updates
+        visible = self._collect_visible(
+            width, height, persistent_total, total, start, transient_rendered, transient
+        )
         self._last_block_count = len(self._blocks)
         if self.follow:
             self._new_output_count = 0
         return visible
 
-    def _cache_block(self, block: Component, width: int) -> list[RichLine]:
+    def _cache_block(self, block, width: int) -> list[RichLine]:
         return self._render_cached(block, width)
-
-    def _layout_entries(
-        self, width: int, transient: Component | None
-    ) -> tuple[
-        list[tuple[Component, int, int, list[RichLine] | None]],
-        int,
-        tuple[Component, int, int, list[RichLine] | None] | None,
-    ]:
-        entries: list[tuple[Component, int, int, list[RichLine] | None]] = []
-        cursor = 0
-        self.layout_index = []
-        self._range_starts = []
-        for block in self._blocks:
-            key = (id(block), width, int(getattr(block, "revision", 0)))
-            rendered = self._layout_cache.get(key)
-            if rendered is None and key not in self._layout_cache:
-                height = 0 if isinstance(block, AssistantBlock) and not block.has_body else 1
-                if height == 0:
-                    continue
-            else:
-                if not rendered:
-                    continue
-                height = len(rendered)
-            if entries:
-                cursor += 1
-            block_start = cursor
-            block_end = block_start + height
-            entries.append((block, block_start, block_end, rendered))
-            self.layout_index.append((block_start, block_end, block))
-            cursor = block_end
-        transient_entry = None
-        if transient is not None:
-            if entries:
-                cursor += 1
-            transient_entry = (transient, cursor, cursor + 1, None)
-            cursor += 1
-        self._range_starts = [start for _, start, _, _ in entries]
-        return entries, cursor, transient_entry

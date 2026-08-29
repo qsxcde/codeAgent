@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 
+from codeagent.app.tui.presentation.blocks import AssistantBlock, ToolCallBlock, UserBlock
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.app.tui.benchmark.performance import (
     BenchmarkResult,
@@ -87,16 +88,19 @@ def test_benchmark_fixture_builds_history_and_streaming_inputs() -> None:
     fixture = build_fixture(
         BenchmarkConfig(
             scenario="stream",
-            history_blocks=10,
+            history_blocks=12,
             stream_chars=12,
             tool_output_bytes=32,
         )
     )
 
-    assert len(fixture.model.transcript.blocks) == 10
+    assert len(fixture.model.transcript.blocks) == 12
     assert fixture.stream_text == "x" * 12
     assert fixture.tool_output == "t" * 32
     assert fixture.backend.transcript_size() == (80, 24)
+    assert any(isinstance(block, UserBlock) for block in fixture.model.transcript.blocks)
+    assert any(isinstance(block, AssistantBlock) for block in fixture.model.transcript.blocks)
+    assert any(isinstance(block, ToolCallBlock) for block in fixture.model.transcript.blocks)
 
 
 def test_benchmark_fixture_can_prepare_restore_history() -> None:
@@ -146,6 +150,9 @@ def test_run_benchmark_reports_render_metrics() -> None:
     assert "model_render_ms" in result.metrics
     assert result.counters["block_count"] == 3
     assert result.counters["peak_memory_bytes"] > 0
+    assert result.counters["blocks_inspected"] > 0
+    assert result.counters["cache_rows"] > 0
+    assert result.counters["index_updates"] > 0
     assert result.environment["os"]
 
 

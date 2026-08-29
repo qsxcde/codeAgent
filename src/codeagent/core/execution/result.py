@@ -56,15 +56,13 @@ def normalize_tool_result(
             details,
         )
 
-    operation.status = ToolExecutionStatus.OK
+    operation.status = ToolExecutionStatus.COMPLETED
     operation.cleanup_confirmed = True if cleanup_confirmed is None else cleanup_confirmed
     operation.cleanup_status = cleanup_status or _default_cleanup(cleanup_confirmed)
-    if operation.cleanup_confirmed is False:
-        operation.status = ToolExecutionStatus.CLEANUP_UNCERTAIN
     result = ToolResult(
         call.id,
         content,
-        error=operation.cleanup_confirmed is False,
+        error=bool(getattr(output, "error", False)),
         name=tool_name,
         status=operation.status,
         operation_id=operation.operation_id,

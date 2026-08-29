@@ -46,6 +46,7 @@ class RuntimeSnapshot:
     current_operation: str = ""
     elapsed_ms: int = 0
     tool_counts: dict[str, int] = field(default_factory=dict)
+    tool_states: dict[str, str] = field(default_factory=dict)
     completed_tool_ids: frozenset[str] = field(default_factory=frozenset)
     pending_confirmation: dict[str, Any] | None = None
     retryable: bool = False

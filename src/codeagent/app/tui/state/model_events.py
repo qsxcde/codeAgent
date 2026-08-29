@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from ..presentation.blocks import ErrorBlock, ToolCallBlock, UserBlock, CancelledBlock
+from ..presentation.blocks import ErrorBlock, UserBlock
 from ..presentation.primitives import _visible_user_content
 from .runtime import RuntimePhase
 from codeagent.core.contracts.events import AgentEvent, EventType
+from .model_tools import ToolEventMixin
 
 
 def _token_label(value: object) -> str:
@@ -18,7 +19,7 @@ def _token_label(value: object) -> str:
         return "—"
 
 
-class ModelEventMixin:
+class ModelEventMixin(ToolEventMixin):
     """维护运行态、活动提示、工具块和助手块。"""
 
     def apply(self, event: AgentEvent) -> None:
@@ -40,6 +41,10 @@ class ModelEventMixin:
             EventType.TEXT_DELTA: self._apply_text,
             EventType.AGENT_MESSAGE: self._apply_agent_message,
             EventType.TOOL_CALL: self._apply_tool_call,
+            EventType.TOOL_QUEUED: self._apply_tool_lifecycle,
+            EventType.TOOL_STARTED: self._apply_tool_lifecycle,
+            EventType.TOOL_PROGRESS: self._apply_tool_lifecycle,
+            EventType.TOOL_FINISHED: self._apply_tool_lifecycle,
             EventType.TOOL_RESULT: self._apply_tool_result,
             EventType.CONFIRMATION_REQUESTED: self._apply_confirmation,
             EventType.COMPACTION_FINISHED: self._apply_compaction_finished,
@@ -59,6 +64,8 @@ class ModelEventMixin:
         self._assistant = None
         self._pending_tools.clear()
         self._pending_tools_by_id.clear()
+        self._tool_blocks_by_id.clear()
+        self._result_event_ids.clear()
         self.running = True
         self.activity_visible = True
         self.activity_frame = 0
@@ -75,72 +82,6 @@ class ModelEventMixin:
         assistant = self._ensure_assistant()
         if not assistant.body:
             assistant.append_text(str(event.payload or ""))
-        self.activity_visible = False
-
-    def _apply_tool_call(self, event: AgentEvent) -> None:
-        for call in event.payload or []:
-            name = call.get("name", "?") if isinstance(call, dict) else "?"
-            args = call.get("args", {}) if isinstance(call, dict) else {}
-            if not isinstance(args, dict):
-                args = {}
-            call_id = str(call.get("id")) if isinstance(call, dict) and call.get("id") else None
-            block = ToolCallBlock(name, args, call_id=call_id)
-            self.transcript.append(block)
-            self._pending_tools.append(block)
-            if call_id:
-                self._pending_tools_by_id[call_id] = block
-        self.activity_visible = False
-        self._assistant = None
-
-    def _apply_tool_result(self, event: AgentEvent) -> None:
-        metadata = event.metadata or {}
-        payload_text = str(event.payload or "")
-        self.output_stats["results"] += 1
-        self.output_stats["bytes"] += int(
-            metadata.get("total_bytes") or len(payload_text.encode("utf-8"))
-        )
-        self.output_stats["lines"] += int(metadata.get("total_lines") or len(payload_text.splitlines()))
-        if metadata.get("truncated_by") or metadata.get("completeness") in {
-            "truncated",
-            "incomplete",
-            "unsupported",
-        }:
-            self.output_stats["truncated"] += 1
-        block = self._take_pending_tool(metadata.get("tool_call_id"))
-        if block is not None:
-            if metadata.get("rejected"):
-                block.set_rejected(payload_text)
-            else:
-                block.set_result(
-                    payload_text,
-                    error=bool(metadata.get("error")),
-                    execution_status=str(metadata.get("status") or ""),
-                    output_metadata=metadata,
-                )
-        if not self._pending_tools:
-            self.activity_visible = True
-
-    def _take_pending_tool(self, call_id: object) -> ToolCallBlock | None:
-        block = self._pending_tools_by_id.pop(str(call_id), None) if call_id else None
-        if block is not None:
-            if block in self._pending_tools:
-                self._pending_tools.remove(block)
-            return block
-        if not self._pending_tools:
-            return None
-        block = self._pending_tools.pop(0)
-        if block.call_id:
-            self._pending_tools_by_id.pop(block.call_id, None)
-        return block
-
-    def _apply_confirmation(self, event: AgentEvent) -> None:
-        payload = event.payload or {}
-        call_id = str(payload.get("tool_call_id") or "")
-        block = self._pending_tools_by_id.get(call_id)
-        if block is None and self._pending_tools:
-            block = self._pending_tools[0]
-        if block is not None:
-            block.set_awaiting()
         self.activity_visible = False
 
     def _apply_compaction_finished(self, event: AgentEvent) -> None:
@@ -176,10 +117,5 @@ class ModelEventMixin:
 
     def _apply_error(self, event: AgentEvent) -> None:
         self.transcript.append(ErrorBlock(str(event.payload or "发生错误")))
-        self.running = False
-        self.activity_visible = False
-
-    def _apply_cancelled(self, event: AgentEvent) -> None:
-        self.transcript.append(CancelledBlock())
         self.running = False
         self.activity_visible = False

@@ -18,7 +18,7 @@ class ToolOperation:
     operation_id: str
     call_id: str
     tool_name: str
-    status: str = "running"
+    status: str = "queued"
     cleanup_confirmed: bool | None = None
     task: asyncio.Task[Any] | None = None
     cleanup_status: str = CleanupStatus.NOT_REQUIRED

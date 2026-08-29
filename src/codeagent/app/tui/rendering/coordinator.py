@@ -190,7 +190,11 @@ class TuiRenderCoordinator:
             if render_progressive is None:
                 lines = self.model.render(width, height)
             else:
-                lines = await render_progressive(width, height)
+                lines = await render_progressive(
+                    width,
+                    height,
+                    is_current=lambda: generation == self._render_generation,
+                )
             if generation != self._render_generation:
                 self._dropped_frames += 1
                 return

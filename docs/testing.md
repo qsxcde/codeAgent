@@ -4,7 +4,7 @@
 
 截至 2026-08-28 应用层包布局变更复核后：
 
-- `uv run pytest -q`：**1148 passed**（2026-08-28，macOS，26.81s）。测试数量变化来自测试拆分、边界契约补充、`last_activity_at` 覆盖、发布/性能契约测试和应用包布局契约测试。
+- `uv run pytest -q`：**1348 passed**（2026-08-29，macOS，31.21s）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归，以及应用包布局契约测试。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
 - 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 1037 passed，硬下限为 77.9%。
 - package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
@@ -15,6 +15,8 @@
 ## 应用层包布局
 
 `src/codeagent/app/` 的规范实现按职责归并到 `context/`、`errors/`、`skills/`、`tasks/`、`composition/` 和 `tui/` 子包；`main.py`、`container.py`、`config.py` 保留为根入口。已迁移的根层和 TUI 平铺模块已删除，生产代码和测试必须直接使用具体规范模块。
+
+工具生命周期回归按 `tool_call_id` 验证 queued → running → terminal 的单向归约，覆盖确认、拒绝、超时、取消无结果、清理不确定、迟到/重复结果和输出截断；`TOOL_FINISHED` 只确定执行状态，`TOOL_RESULT` 只补充输出事实。
 
 本次收口会使旧平铺导入路径失效；`tests/contracts/test_app_package_layout.py` 会同时检查旧模块不存在和规范模块可导入。
 
@@ -107,6 +109,17 @@ openspec validate --specs
 uv run python scripts/benchmark_tui.py --scenario stream --blocks 100 --stream-chars 10000 --iterations 3 --output artifacts/tui-benchmark.json
 uv run python scripts/compare_benchmark.py artifacts/tui-stream.json
 uv run python scripts/compare_benchmark.py artifacts/tui-stream.json docs/benchmarks/tui-baseline.json --max-regression 0.20
+
+# 长会话扩展：固定 mixed-shape fixture，观察视口物化和索引扫描是否随历史线性增长
+for blocks in 1000 5000 10000; do
+  uv run python scripts/benchmark_tui.py --scenario history --blocks "$blocks" --iterations 1 \
+    --output "artifacts/tui-history-${blocks}.json"
+done
 ```
+
+长会话结果中的 `blocks_inspected`、`blocks_materialized`、`index_updates`、`cache_entries`、
+`cache_rows` 和 `peak_memory_bytes` 是无内容性能计数器；`metrics` 中的 `frame_total_ms`、
+`model_render_ms` 和 `control_event_latency_ms` 提供 p50/p95。1,000/5,000/10,000 block
+扩展报告用于趋势观察，不与 100 block 的正式 Linux 基线直接比较，也不作为跨机器绝对 SLO。
 
 当前 `quality-fast` 与平台矩阵之间有 25 个兼容性/平台边界测试重复执行；这不影响正确性，但需要后续决定保留边界保护还是调整 marker 分层。覆盖率硬下限当前为 77.9%；性能仍使用 20% 相对回归告警，不启用 `--fail-on-regression`。

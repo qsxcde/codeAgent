@@ -6,8 +6,11 @@ from dataclasses import replace
 from typing import Any
 
 from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.tool_status import ToolLifecycleStatus
 
 from .runtime_state import RuntimePhase, RuntimeSnapshot
+from .runtime_operations import compaction_finished, int_or_none, operation_finished
+from .tool_lifecycle import is_terminal, normalize_status, transition_status
 
 
 def transition(
@@ -26,7 +29,7 @@ def transition(
     if event_type in {EventType.TOOL_QUEUED, EventType.TOOL_STARTED, EventType.TOOL_PROGRESS}:
         return _tool_progress(snapshot, event, metadata)
     if event_type == EventType.CONFIRMATION_REQUESTED:
-        return _confirmation_requested(snapshot, event)
+        return _confirmation_requested(snapshot, event, metadata)
     if event_type in {EventType.TOOL_FINISHED, EventType.TOOL_RESULT}:
         return _tool_finished(snapshot, event, metadata)
     if event_type == EventType.COMPACTION_STARTED:
@@ -37,25 +40,38 @@ def transition(
             compaction_trigger=str(metadata.get("trigger") or "manual"),
             compaction_status="running",
             compaction_reason=str(metadata.get("reason") or ""),
-            compaction_before_tokens=_int_or_none(metadata.get("input_tokens")),
+            compaction_before_tokens=int_or_none(metadata.get("input_tokens")),
             compaction_after_tokens=None,
-            compaction_target_tokens=_int_or_none(metadata.get("target_budget")),
+            compaction_target_tokens=int_or_none(metadata.get("target_budget")),
         )
     if event_type == EventType.COMPACTION_FINISHED:
-        return _compaction_finished(snapshot, metadata)
+        return compaction_finished(snapshot, metadata)
     if event_type == EventType.RESTORE_STARTED:
         return replace(snapshot, phase=RuntimePhase.RESTORING, current_operation="恢复会话", context_stale=True)
     if event_type == EventType.RESTORE_FINISHED:
-        return _operation_finished(
+        return operation_finished(
             snapshot, metadata, "restore_failed", "恢复失败", "会话恢复失败"
         )
     if event_type == EventType.CANCELLING:
         return _simple_phase(snapshot, RuntimePhase.CANCELLING, "取消当前运行")
     if event_type == EventType.RUN_CANCELLED:
+        cancelled_counts, cancelled_states = _cancel_active_tools(
+            snapshot.tool_counts, snapshot.tool_states
+        )
         return replace(
             snapshot,
             phase=RuntimePhase.IDLE,
             current_operation="",
+            tool_counts=cancelled_counts,
+            tool_states=cancelled_states,
+            completed_tool_ids=frozenset(
+                set(snapshot.completed_tool_ids)
+                | {
+                    call_id
+                    for call_id, status in snapshot.tool_states.items()
+                    if status in {"queued", "running", "awaiting_confirmation"}
+                }
+            ),
             side_effect_state=str(metadata.get("side_effect_state") or snapshot.side_effect_state),
             cleanup_uncertain=bool(metadata.get("cleanup_uncertain", snapshot.cleanup_uncertain)),
             pending_confirmation=None,
@@ -75,6 +91,7 @@ def _session_started(snapshot: RuntimeSnapshot) -> RuntimeSnapshot:
         phase=RuntimePhase.WAITING_MODEL,
         current_operation="等待模型响应",
         tool_counts={},
+        tool_states={},
         completed_tool_ids=frozenset(),
         pending_confirmation=None,
         retryable=False,
@@ -103,7 +120,6 @@ def _simple_phase(snapshot: RuntimeSnapshot, phase: str, operation: str) -> Runt
 def _tool_progress(
     snapshot: RuntimeSnapshot, event: AgentEvent, metadata: dict[str, Any]
 ) -> RuntimeSnapshot:
-    counts = dict(snapshot.tool_counts)
     event_type = event.type
     operation = str(
         metadata.get("tool_name")
@@ -112,21 +128,49 @@ def _tool_progress(
         else metadata.get("operation")
         or "工具执行"
     )
-    key = "queued" if event_type == EventType.TOOL_QUEUED else "running"
-    counts[key] = counts.get(key, 0) + 1
-    if event_type == EventType.TOOL_STARTED and counts.get("queued", 0):
-        counts["queued"] -= 1
-    return replace(snapshot, phase=RuntimePhase.TOOL_RUNNING, current_operation=operation, tool_counts=counts)
+    call_id = str(metadata.get("tool_call_id") or "")
+    if event_type == EventType.TOOL_QUEUED:
+        status = ToolLifecycleStatus.QUEUED
+    else:
+        status = ToolLifecycleStatus.RUNNING
+    counts, states, _ = transition_status(
+        snapshot.tool_counts, snapshot.tool_states, call_id, status
+    )
+    return replace(
+        snapshot,
+        phase=RuntimePhase.TOOL_RUNNING,
+        current_operation=operation,
+        tool_counts=counts,
+        tool_states=states,
+    )
 
 
-def _confirmation_requested(snapshot: RuntimeSnapshot, event: AgentEvent) -> RuntimeSnapshot:
-    counts = dict(snapshot.tool_counts)
-    counts["awaiting_confirmation"] = counts.get("awaiting_confirmation", 0) + 1
+def _confirmation_requested(
+    snapshot: RuntimeSnapshot, event: AgentEvent, metadata: dict[str, Any]
+) -> RuntimeSnapshot:
+    call_id = str(
+        (event.payload or {}).get("tool_call_id")
+        if isinstance(event.payload, dict)
+        else metadata.get("tool_call_id") or ""
+    )
+    counts, states, _ = transition_status(
+        snapshot.tool_counts,
+        snapshot.tool_states,
+        call_id,
+        ToolLifecycleStatus.AWAITING_CONFIRMATION,
+    )
+    if not call_id:
+        counts = dict(snapshot.tool_counts)
+        counts[ToolLifecycleStatus.AWAITING_CONFIRMATION] = (
+            counts.get(ToolLifecycleStatus.AWAITING_CONFIRMATION, 0) + 1
+        )
+        states = dict(snapshot.tool_states)
     return replace(
         snapshot,
         phase=RuntimePhase.AWAITING_CONFIRMATION,
         current_operation="等待确认",
         tool_counts=counts,
+        tool_states=states,
         pending_confirmation=dict(event.payload or {}),
     )
 
@@ -134,29 +178,38 @@ def _confirmation_requested(snapshot: RuntimeSnapshot, event: AgentEvent) -> Run
 def _tool_finished(
     snapshot: RuntimeSnapshot, event: AgentEvent, metadata: dict[str, Any]
 ) -> RuntimeSnapshot:
-    counts = dict(snapshot.tool_counts)
     completed_tool_ids = set(snapshot.completed_tool_ids)
-    status = str(metadata.get("status") or "ok")
+    status = normalize_status(metadata.get("status"), ToolLifecycleStatus.COMPLETED)
     tool_call_id = str(metadata.get("tool_call_id") or "")
-    duplicate = event.type == EventType.TOOL_RESULT and bool(tool_call_id) and tool_call_id in completed_tool_ids
-    if not duplicate:
-        if counts.get("running", 0):
-            counts["running"] -= 1
-        key = "completed" if status == "ok" else "failed"
-        counts[key] = counts.get(key, 0) + 1
-        if tool_call_id:
-            completed_tool_ids.add(tool_call_id)
-    cleanup_uncertain = snapshot.cleanup_uncertain or status == "cleanup_uncertain"
+    counts, states, changed = transition_status(
+        snapshot.tool_counts,
+        snapshot.tool_states,
+        tool_call_id,
+        status,
+    )
+    if changed and tool_call_id and is_terminal(status):
+        completed_tool_ids.add(tool_call_id)
+    cleanup_uncertain = snapshot.cleanup_uncertain or bool(
+        metadata.get("cleanup_uncertain")
+    ) or metadata.get("cleanup_status") in {"failed", "uncertain", "unsupported"}
     side_effect_state = snapshot.side_effect_state
-    if status in {"timed_out", "cleanup_uncertain", "cancelled"}:
+    if status in {
+        ToolLifecycleStatus.TIMED_OUT,
+        ToolLifecycleStatus.CLEANUP_UNCERTAIN,
+        ToolLifecycleStatus.CANCELLED,
+    }:
         side_effect_state = "uncertain" if cleanup_uncertain else "possible"
-    elif status not in {"ok", "rejected"}:
+    elif status not in {
+        ToolLifecycleStatus.COMPLETED,
+        ToolLifecycleStatus.REJECTED,
+    }:
         side_effect_state = "possible"
     return replace(
         snapshot,
         phase=RuntimePhase.WAITING_MODEL,
         current_operation="等待后续模型回复",
         tool_counts=counts,
+        tool_states=states,
         completed_tool_ids=frozenset(completed_tool_ids),
         pending_confirmation=None,
         cleanup_uncertain=cleanup_uncertain,
@@ -164,68 +217,24 @@ def _tool_finished(
     )
 
 
-def _operation_finished(
-    snapshot: RuntimeSnapshot,
-    metadata: dict[str, Any],
-    error_code: str,
-    operation: str,
-    error_message: str,
-) -> RuntimeSnapshot:
-    success = metadata.get("success", True)
-    phase = RuntimePhase.IDLE if success else RuntimePhase.ERROR
-    values: dict[str, Any] = {
-        "phase": phase,
-        "current_operation": "" if success else operation,
-        "context_stale": False,
-    }
-    if not success:
-        values.update(
-            error_code=str(metadata.get("error_code") or error_code),
-            error_message=str(metadata.get("error_message") or error_message),
+def _cancel_active_tools(
+    counts: dict[str, int], states: dict[str, str]
+) -> tuple[dict[str, int], dict[str, str]]:
+    updated_counts = dict(counts)
+    updated_states = dict(states)
+    for call_id, status in list(states.items()):
+        if status not in {
+            ToolLifecycleStatus.QUEUED,
+            ToolLifecycleStatus.RUNNING,
+            ToolLifecycleStatus.AWAITING_CONFIRMATION,
+        }:
+            continue
+        updated_counts[status] = max(0, updated_counts.get(status, 0) - 1)
+        updated_counts[ToolLifecycleStatus.CANCELLED] = (
+            updated_counts.get(ToolLifecycleStatus.CANCELLED, 0) + 1
         )
-        if error_code == "compaction_failed":
-            values["retryable"] = bool(metadata.get("retryable", False))
-    return replace(snapshot, **values)
-
-
-def _compaction_finished(
-    snapshot: RuntimeSnapshot,
-    metadata: dict[str, Any],
-) -> RuntimeSnapshot:
-    status = str(
-        metadata.get("status")
-        or ("compacted" if metadata.get("success", True) else "failed")
-    )
-    successful = status in {"compacted", "skipped"}
-    values: dict[str, Any] = {
-        "phase": RuntimePhase.IDLE if successful else RuntimePhase.ERROR,
-        "current_operation": "" if successful else "压缩失败",
-        "context_stale": False,
-        "compaction_trigger": str(
-            metadata.get("trigger") or snapshot.compaction_trigger or "manual"
-        ),
-        "compaction_status": status,
-        "compaction_reason": str(
-            metadata.get("reason_code") or metadata.get("error_code") or ""
-        ),
-        "compaction_before_tokens": _int_or_none(
-            metadata.get("before_input_tokens", snapshot.compaction_before_tokens)
-        ),
-        "compaction_after_tokens": _int_or_none(metadata.get("after_input_tokens")),
-        "compaction_target_tokens": _int_or_none(
-            metadata.get("target_budget", snapshot.compaction_target_tokens)
-        ),
-    }
-    after_tokens = _int_or_none(metadata.get("after_input_tokens"))
-    if after_tokens is not None:
-        values["context_tokens"] = after_tokens
-    if not successful:
-        values.update(
-            error_code=str(metadata.get("error_code") or "compaction_failed"),
-            error_message=str(metadata.get("error_message") or "上下文压缩失败"),
-            retryable=bool(metadata.get("retryable", False)),
-        )
-    return replace(snapshot, **values)
+        updated_states[call_id] = ToolLifecycleStatus.CANCELLED
+    return updated_counts, updated_states
 
 
 def _error(snapshot: RuntimeSnapshot, event: AgentEvent, metadata: dict[str, Any]) -> RuntimeSnapshot:
@@ -252,19 +261,10 @@ def _usage(snapshot: RuntimeSnapshot, event: AgentEvent, metadata: dict[str, Any
     usage = event.payload or {}
     context_window = snapshot.context_window
     if "context_window" in metadata:
-        context_window = _int_or_none(metadata.get("context_window"))
+        context_window = int_or_none(metadata.get("context_window"))
     return replace(
         snapshot,
-        context_tokens=_int_or_none(usage.get("input_tokens")),
+        context_tokens=int_or_none(usage.get("input_tokens")),
         context_window=context_window,
         context_stale=False,
     )
-
-
-def _int_or_none(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None

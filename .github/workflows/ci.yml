@@ -237,6 +237,18 @@ jobs:
             fi
           done
 
+      - name: Run long-session scaling benchmarks
+        run: |
+          for blocks in 1000 5000 10000; do
+            for scenario in history scroll-resize tool-output restore; do
+              uv run python scripts/benchmark_tui.py \
+                --scenario "$scenario" \
+                --blocks "$blocks" \
+                --iterations 1 \
+                --output "artifacts/tui-${scenario}-${blocks}.json"
+            done
+          done
+
       - name: Upload performance artifacts
         if: always()
         uses: actions/upload-artifact@v4

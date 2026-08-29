@@ -13,6 +13,7 @@ from codeagent.core.contracts.events import AgentEvent, EventType
 
 from ..state.model import TuiModel
 from ..presentation.primitives import RichLine
+from ..presentation.blocks import AssistantBlock, ToolCallBlock, UserBlock
 from ..presentation.md_renderer import md_renderer
 from ..rendering.coordinator import TuiEventBuffer
 from .performance import BenchmarkResult, PerformanceRecorder
@@ -98,7 +99,7 @@ class TuiBenchmarkFixture:
 def build_fixture(config: BenchmarkConfig) -> TuiBenchmarkFixture:
     model = TuiModel()
     for index in range(config.history_blocks):
-        model.append_info(f"history block {index}")
+        _append_history_fixture_block(model, index)
 
     restore_history = [
         FixtureMessage(
@@ -115,6 +116,37 @@ def build_fixture(config: BenchmarkConfig) -> TuiBenchmarkFixture:
         restore_history=restore_history,
         event_buffer=TuiEventBuffer(model.apply),
     )
+
+
+def _append_history_fixture_block(model: TuiModel, index: int) -> None:
+    """Append deterministic mixed-shape history for long-session measurements."""
+    if index % 37 == 0:
+        block = AssistantBlock()
+        block.append_text("long assistant line " + "x" * 240 + "\n" + "tail")
+        block.finalize()
+        model.transcript.append(block)
+    elif index % 17 == 0:
+        model.transcript.append(AssistantBlock())
+    elif index % 11 == 0:
+        block = ToolCallBlock("fixture", {}, call_id=f"history-{index}")
+        block.set_result(
+            f"tool line {index}\nsecond line",
+            output_metadata={
+                "source": "structured",
+                "completeness": "complete",
+                "total_bytes": 32,
+                "total_lines": 2,
+                "shown_lines": 2,
+                "exit_code": 0,
+            },
+        )
+        model.transcript.append(block)
+    elif index % 5 == 0:
+        model.transcript.append(UserBlock(f"history user {index}\nsecond line"))
+    elif index % 3 == 0:
+        model.append_info(f"history block {index}\nsecond line")
+    else:
+        model.append_info(f"history block {index}")
 
 
 def environment_metadata() -> dict[str, str]:
@@ -166,7 +198,7 @@ def _run_scenario(
         fixture.event_buffer.push(AgentEvent(EventType.SESSION_STARTED, "prompt"))
         fixture.event_buffer.flush()
         for chunk in _stream_chunks(fixture.stream_text):
-            with recorder.measure("event_apply_ms"):
+            with recorder.measure("event_apply_ms"), recorder.measure("control_event_latency_ms"):
                 fixture.event_buffer.push(AgentEvent(EventType.TEXT_DELTA, chunk))
                 fixture.event_buffer.flush()
             _render_frame(fixture, recorder, config)
@@ -227,6 +259,8 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkResult:
     frames = int(counters.get("frames", 0))
     events = int(counters.get("event_count", 0))
     counters["events_per_frame"] = round(events / frames, 3) if frames else 0.0
+    control = recorder.summaries().get("control_event_latency_ms")
+    counters["control_event_p95_ms"] = control.p95_ms if control is not None else 0.0
     return BenchmarkResult(
         scenario=config.scenario,
         parameters={

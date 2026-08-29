@@ -34,7 +34,7 @@ async def test_atomic_tool_contract_returns_structured_result(tmp_path):
 
     assert result.error is False
     assert "hello" in result.content
-    assert result.status == ToolExecutionStatus.OK
+    assert result.status == ToolExecutionStatus.COMPLETED
 
 
 async def test_agent_tool_contract_preserves_operation_id():

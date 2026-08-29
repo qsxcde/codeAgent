@@ -92,6 +92,7 @@ class SessionExecutionMixin:
                     EventType.CONFIRMATION_REQUESTED,
                     payload={
                         "request_id": request_id,
+                        "tool_call_id": call.id,
                         "tool": call.name,
                         "args": call.args,
                         "reason": decision.reason,

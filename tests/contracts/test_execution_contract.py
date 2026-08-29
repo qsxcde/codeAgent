@@ -32,7 +32,7 @@ async def test_runtime_executes_agent_tool_protocol_and_preserves_operation_id()
 
     assert result.content == "hello"
     assert result.operation_id == "op-1"
-    assert result.status == ToolExecutionStatus.OK
+    assert result.status == ToolExecutionStatus.COMPLETED
     assert result.cleanup_status == "confirmed"
     assert tool.calls[0][0:2] == ("c1", {"text": "hello"})
 
@@ -146,7 +146,7 @@ async def test_runtime_marks_sync_thread_timeout_as_unsupported_cleanup() -> Non
 
     result = await result_task
 
-    assert result.status == ToolExecutionStatus.CLEANUP_UNCERTAIN
+    assert result.status == ToolExecutionStatus.TIMED_OUT
     assert result.cleanup_confirmed is False
     assert result.cleanup_status == "unsupported"
     assert result.cleanup_uncertain is True
@@ -197,5 +197,25 @@ async def test_runtime_honors_explicit_cleanup_status_from_tool_result():
 
     assert result.status == ToolExecutionStatus.TIMED_OUT
     assert result.cleanup_confirmed is False
+    assert result.cleanup_status == "unsupported"
+    assert result.cleanup_uncertain is True
+
+
+async def test_successful_tool_keeps_completed_status_when_cleanup_is_uncertain():
+    class SuccessfulUncertainTool(_AgentTool):
+        async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
+            return ToolResult(
+                tool_call_id,
+                "done",
+                name=self.name,
+                status=ToolExecutionStatus.OK,
+                cleanup_status="unsupported",
+            )
+
+    result = await ToolExecutionRuntime().execute(
+        SuccessfulUncertainTool(), ToolCall("c1", "echo", {}), operation_id="op-1"
+    )
+
+    assert result.status == ToolExecutionStatus.COMPLETED
     assert result.cleanup_status == "unsupported"
     assert result.cleanup_uncertain is True

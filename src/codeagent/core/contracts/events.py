@@ -20,6 +20,7 @@ class EventType:
     MESSAGE_START = "message_start"
     MESSAGE_UPDATE = "message_update"
     MESSAGE_END = "message_end"
+    TOOL_EXECUTION_QUEUED = "tool_execution_queued"
     TOOL_EXECUTION_START = "tool_execution_start"
     TOOL_EXECUTION_UPDATE = "tool_execution_update"
     TOOL_EXECUTION_END = "tool_execution_end"
@@ -75,6 +76,9 @@ class AgentEvent:
     cleanup_uncertain: bool | None = None
     cleanup_status: str | None = None
     side_effect_state: str | None = None
+    status: str | None = None
+    tool_name: str | None = None
+    queue_position: int | None = None
 
     def __repr__(self) -> str:  # pragma: no cover - 仅调试展示
         return f"AgentEvent({self.type}, {self.payload!r})"

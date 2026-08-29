@@ -84,10 +84,11 @@ class OutputBuffer:
             else metadata
         )
         if base_metadata is None:
+            line_count = _count_content_lines(content)
             base_metadata = OutputMetadata(
                 total_bytes=len(content.encode("utf-8")),
-                total_lines=len(content.splitlines()),
-                shown_lines=len(content.splitlines()),
+                total_lines=line_count,
+                shown_lines=line_count,
             )
         authoritative = (
             metadata is not None
@@ -100,6 +101,11 @@ class OutputBuffer:
         self.page_size = max(1, page_size)
         self.page = 1
         self.artifact_path = self.metadata.artifact_path
+        self._page_offsets: dict[int, int] = {1: 0}
+        known_line_count = max(0, int(self.metadata.shown_lines))
+        self._shown_line_count: int | None = (
+            known_line_count if known_line_count or not self.content else None
+        )
 
     @property
     def lines(self) -> list[str]:
@@ -115,6 +121,41 @@ class OutputBuffer:
             }
         return self.metadata.truncated_by is not None
 
+    def _content_line_count(self) -> int:
+        if self._shown_line_count is None:
+            self._shown_line_count = _count_content_lines(self.content)
+        return self._shown_line_count
+
+    def _page_start(self, page: int) -> int:
+        page = max(1, int(page))
+        known_page = max(index for index in self._page_offsets if index <= page)
+        offset = self._page_offsets[known_page]
+        while known_page < page:
+            for _ in range(self.page_size):
+                newline = self.content.find("\n", offset)
+                if newline < 0:
+                    offset = len(self.content)
+                    break
+                offset = newline + 1
+            known_page += 1
+            if offset < len(self.content):
+                self._page_offsets[known_page] = offset
+        return offset
+
+    def _read_page(self, page: int) -> list[str]:
+        """Read one page without materializing all output lines."""
+        offset = self._page_start(page)
+        result: list[str] = []
+        while offset < len(self.content) and len(result) < self.page_size:
+            newline = self.content.find("\n", offset)
+            if newline < 0:
+                result.append(self.content[offset:])
+                break
+            line = self.content[offset:newline]
+            result.append(line[:-1] if line.endswith("\r") else line)
+            offset = newline + 1
+        return result
+
     @property
     def can_export(self) -> bool:
         """只有原始输出未在工具层丢弃时才允许导出。"""
@@ -124,22 +165,21 @@ class OutputBuffer:
 
     @property
     def page_count(self) -> int:
-        return max(1, math.ceil(len(self.lines) / self.page_size))
+        return max(1, math.ceil(self._content_line_count() / self.page_size))
 
     @property
     def visible_lines(self) -> tuple[int, int]:
         start = (self.page - 1) * self.page_size
-        return start + 1, min(len(self.lines), start + self.page_size)
+        return start + 1, min(self._content_line_count(), start + self.page_size)
 
     @property
     def current_page(self) -> list[str]:
-        start = (self.page - 1) * self.page_size
-        return self.lines[start : start + self.page_size]
+        return self._read_page(self.page)
 
     @property
     def range_label(self) -> str:
         start, end = self.visible_lines
-        total = self.metadata.total_lines or len(self.lines)
+        total = self.metadata.total_lines or self._content_line_count()
         return f"行 {start}-{end}/{total}"
 
     @property
@@ -209,6 +249,14 @@ def _infer_truncation_marker(content: str) -> str | None:
     if re.search(r"(?:输出)?已截断|达到(?:字节|行数)?上限|条目超限", content):
         return "tool"
     return None
+
+
+def _count_content_lines(content: str) -> int:
+    """Count line boundaries without constructing a complete line list."""
+    if not content:
+        return 0
+    count = content.count("\n")
+    return count if content.endswith(("\n", "\r")) else count + 1
 
 
 def _infer_legacy_metadata(content: str, base: OutputMetadata) -> OutputMetadata:

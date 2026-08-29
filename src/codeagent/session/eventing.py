@@ -43,6 +43,13 @@ class SessionEventMixin:
                 ),
                 cleanup_status=event.cleanup_status or metadata.get("cleanup_status"),
                 side_effect_state=event.side_effect_state or metadata.get("side_effect_state"),
+                status=event.status or metadata.get("status"),
+                tool_name=event.tool_name or metadata.get("tool_name"),
+                queue_position=(
+                    event.queue_position
+                    if event.queue_position is not None
+                    else metadata.get("queue_position")
+                ),
             )
         )
 

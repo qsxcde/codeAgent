@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import weakref
 from dataclasses import dataclass
+from typing import Callable
 
 from .theme import TEXT
 
@@ -32,6 +34,7 @@ class Component:
 
     def __init__(self) -> None:
         self._revision = 0
+        self._touch_listeners: list[object] = []
 
     @property
     def revision(self) -> int:
@@ -41,6 +44,41 @@ class Component:
     def touch(self) -> None:
         """标记内容发生变化，使 width/revision 缓存失效。"""
         self._revision = self.revision + 1
+        listeners = getattr(self, "_touch_listeners", [])
+        active: list[object] = []
+        for listener_ref in listeners:
+            listener = listener_ref() if isinstance(listener_ref, weakref.ReferenceType) else listener_ref
+            if listener is None:
+                continue
+            active.append(listener_ref)
+            listener(self)
+        self._touch_listeners = active
+
+    def add_touch_listener(self, listener: Callable[["Component"], None]) -> None:
+        """Register a weak listener notified after the component revision changes."""
+        if getattr(listener, "__self__", None) is not None:
+            listener_ref: object = weakref.WeakMethod(listener)  # type: ignore[arg-type]
+        else:
+            try:
+                listener_ref = weakref.ref(listener)
+            except TypeError:
+                listener_ref = listener
+        listeners = getattr(self, "_touch_listeners", [])
+        if not any(
+            item() == listener if isinstance(item, weakref.ReferenceType) else item is listener
+            for item in listeners
+        ):
+            listeners.append(listener_ref)
+        self._touch_listeners = listeners
+
+    def remove_touch_listener(self, listener: Callable[["Component"], None]) -> None:
+        """Remove a previously registered touch listener."""
+        listeners = getattr(self, "_touch_listeners", [])
+        self._touch_listeners = [
+            item
+            for item in listeners
+            if (item() if isinstance(item, weakref.ReferenceType) else item) != listener
+        ]
 
     def render(self, width: int) -> list[RichLine]:
         raise NotImplementedError(f"{type(self).__name__} 未实现 render")

@@ -43,14 +43,14 @@
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
 - `core/` Agent Runtime:根级 `agent.py` 为运行时外壳，`contracts/`、`context/`、`model/`、`execution/`、`orchestration/` 和 `support/` 按职责组织纯内存、全异步实现；模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
-- 事件 11 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
+- 事件按消息、工具生命周期和运行控制分组；工具生命周期包含 `tool_queued / tool_started / tool_progress / tool_finished / tool_result`，core 对应 `tool_execution_queued / tool_execution_start / tool_execution_update / tool_execution_end`，事件通过 `run_id`、`tool_call_id`、`operation_id` 和结构化状态字段关联。
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)。
 - Skills 系统(v0.3 阶段 1~4):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
 - MCP(v0.3 阶段 2):用户级配置发现、工具 schema 适配、权限分类、`/mcp` 可见诊断与分组预算。
 - token 用量透明(v0.3 阶段 3):usage 归一、会话级 append-only 落库、`/status` 与 headless CLI 展示输入 / 输出 / 缓存命中（不做费用估算）。
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
- - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1148 passed**(2026-08-28, macOS);本地质量集为 1037 passed，既有 CI 的 `quality-fast` 为 846 passed，Ubuntu/Windows/macOS 各 114 passed，并已接入 Ruff、release check 和四场景 TUI 性能基线。
+ - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1348 passed**(2026-08-29, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和四场景 TUI 性能基线。
 
 **v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
 
@@ -141,7 +141,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按行为域分包,1148 passed(2026-08-28)
+└── tests/                            # 按行为域分包,1348 passed(2026-08-29)
     ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
     ├── contracts/                    # AI、core、session、tools 边界契约
     ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为
@@ -163,16 +163,21 @@ codeagent/
 | `app/skills/` | SKILL.md 三源发现、提示词、运行时和 Package 生命周期 | 不持有全局服务状态;三源同名遮蔽 个人>项目>内建 |
 | `app/tasks/` | 任务模式、监督、结果和验证工作流 | 验证命令结构化执行且禁止变更型命令 |
 | `app/composition/model/` | AI 客户端端口适配、模型选择和上下文预算 | 仅组合根跨越 `ai`/`core`;规范模块为唯一模型装配入口 |
-| `app/tui/state/` | TUI 事件投影、历史恢复和 Transcript 视口布局 | 不依赖具体 Textual;后端只通过 `TuiBackend` |
+| `app/tui/state/` | TUI 事件投影、工具生命周期归约、历史恢复和 Transcript 增量视口布局 | 不依赖具体 Textual;后端只通过 `TuiBackend` |
 | `app/tui/session/` | 会话命令、异步动作、对话协调和快照恢复 | 恢复按成本后台化，并校验当前 session，丢弃过期结果 |
 | `app/tui/presentation/` | blocks、组件、Markdown、状态、输出和主题 | 纯终端表现层不 import Textual |
 | `app/tui/adapters/textual/` | 当前唯一 Textual 引擎实现 | 只能依赖 TUI 端口和纯表现数据 |
 | `ai/` | 模型基础设施:模型契约、provider、transport、catalog | 不 import 应用、工具、编排 |
-| `core/` | 纯内存 Agent Runtime:上下文、循环、工具执行、生命周期事件 | 不 import config / ai / tools / session |
+| `core/` | 纯内存 Agent Runtime:上下文、循环、工具执行、生命周期状态与事件 | 不 import config / ai / tools / session |
 | `session/` | AgentSession 外壳、事件适配、持久化、分支与压缩 | 不 import ai / tools / config |
 | `tools/` | 工具层:原子工具 + 注册表 + 安全分类器 + 共享设施 | 不 import 模型、编排;`shared/` 只被 tools 内部使用 |
 | `app/tui/` | 交互式终端(应用壳/组件/命令/后端端口) | application 只依赖 TuiBackend 端口;禁止 import textual(具体后端除外) |
 | `resources/` | 技能 / 提示词按需加载 | v0.3 skills 已启用 |
+
+长会话渲染由 `app/tui/state/transcript_index.py` 维护稳定 block token、revision 和按宽度的累计高度，
+`transcript_index_tree.py` 负责固定 chunk 的前缀定位；`transcript_layout.py` 只物化视口及 overscan，
+`transcript_progressive.py` 在相同窗口上协作准备。退出文档仍通过 `iter_lines()` 完整生成，工具结果则由
+`presentation/output.py` 按页读取，避免普通帧为全部历史或完整工具正文建立临时行列表。
 
 应用层生产文件由 `scripts/scale_scan.py` 统一检查：文件不超过 300 行、函数不超过 80 行。
 已迁移的根层、composition 和 TUI 平铺导入路径已删除；生产代码和测试必须使用职责子包中的规范模块，
@@ -250,7 +255,7 @@ class AgentSession:
 - **全异步**:`run()` 为 `async def`,直接驱动 `core/orchestration/loop.py` 的 `run_agent_loop`,把循环内事件经 `EventBus` 分发。
 - **成功才落盘**:本轮工作在局部历史副本上,`self._history` 仅成功时重赋值,store 循环在其后;失败/取消时内存回滚(历史从未被就地修改,回滚是空操作)。
 - **会话历史**:自研 `Message`(role/content/tool_calls/tool_call_id/id/parentId),`id` 用 uuid7;归约按 tool_call_id 归属、按 id 删除。
-- **事件类型(11 类)**:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
+- **事件类型**按生命周期分组：会话/消息事件、工具生命周期事件（排队、开始、进度、结束、结果）、确认与运行控制事件；工具事件保留类型化状态和 metadata 双重兼容字段。
 - **上下文压缩**:`summarizer` 端口(session-compaction),自动/手动触发窗口摘要。
 
 ### 5.4 SessionManager / SessionStore —— 会话生命周期与持久化
@@ -365,7 +370,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | 自研编排(`core/orchestration/loop.py` + `core/contracts/messages.py`) | 2026-08-14 `self-built-orchestration`:自研 ReAct 主循环 + 消息归约替换 langgraph;删除 `ai/bridge`、`core/state.py`、`core/nodes/`;pyproject 移除 langchain-core/langgraph(决策见 blueprint.md) |
 | `core/` 端口(model / tools / policy) | 端口-适配器、编排层独立;`store` 不进端口(会话层负责落盘) |
 | `session/`(session/manager/store/bus/compaction) | Pi 三层协作的 Session + Runtime、会话即状态;JSONL 树形(2026-08-14 格式结论) |
-| `events.py` + `bus.py` | Pi 事件驱动,替代"返回单个 AIMessage";11 类事件 |
+| `events.py` + `bus.py` | Pi 事件驱动,替代"返回单个 AIMessage";消息、工具生命周期和运行控制事件 |
 | `tools/security.py` + `ApprovalPolicy` | 2026-08-15 `security-permissions`:执行前安全策略,ask 确认环 + headless fail closed |
 | `tools/`(AtomicTool + FsOps) | 2026-08-13 工具层 hexagonal 重构(E8):文件系统抽象缝 + cwd 注入 + 并发写锁 |
 | `app/skills/` + `skill` 工具 | 2026-08-19 `skills-system`:三源发现 + 渐进式披露(描述入 prompt,正文经 skill 工具按需获取) |

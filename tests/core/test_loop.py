@@ -205,3 +205,50 @@ async def test_cancelled_sync_tool_publishes_uncertain_cleanup_metadata():
     aborted = next(event for event in events if event.type == EventType.ABORTED)
     assert aborted.metadata["cleanup_status"] == "unsupported"
     assert aborted.metadata["cleanup_uncertain"] is True
+
+
+async def test_cancelled_tool_emits_one_terminal_lifecycle_event():
+    started = asyncio.Event()
+
+    class SlowTool:
+        name = "slow"
+        description = "slow"
+        parameters = {"type": "object"}
+
+        async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
+            started.set()
+            await asyncio.Event().wait()
+            return "late"
+
+    model = FakeClient(
+        steps=[
+            {"content": "", "tool_calls": [{"name": "slow", "args": {}, "id": "c1"}]},
+            {"content": "不会到达"},
+        ]
+    )
+    events: list = []
+    task = asyncio.create_task(
+        run_agent_loop(
+            AgentContext(),
+            AgentLoopConfig(
+                model=ChatModelPort(model),
+                tools=[SlowTool()],
+                tool_runtime=ToolExecutionRuntime(),
+            ),
+            "执行",
+            emit=events.append,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    per_call = [event for event in events if event.tool_call_id == "c1"]
+    assert [event.type for event in per_call] == [
+        EventType.TOOL_EXECUTION_QUEUED,
+        EventType.TOOL_EXECUTION_START,
+        EventType.TOOL_EXECUTION_END,
+    ]
+    assert per_call[-1].status == "cancelled"

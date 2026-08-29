@@ -242,6 +242,79 @@ async def test_new_loop_parallel_emits_completion_order_but_backfills_call_order
     await (scenario())
 
 
+async def test_tool_lifecycle_events_are_correlated_and_queued_before_start() -> None:
+    active_ref = [0, 0]
+    first = _ConcurrencyTool("a", active_ref, delay=0.01)
+    second = _ConcurrencyTool("b", active_ref, delay=0.001)
+    events = []
+
+    await run_agent_loop(
+        AgentContext(),
+        AgentLoopConfig(
+            model=_TwoToolModel(),
+            tools=[first, second],
+            tool_execution="parallel",
+        ),
+        "go",
+        emit=events.append,
+    )
+
+    lifecycle = [
+        event
+        for event in events
+        if event.type
+        in {
+            EventType.TOOL_EXECUTION_QUEUED,
+            EventType.TOOL_EXECUTION_START,
+            EventType.TOOL_EXECUTION_END,
+        }
+    ]
+    assert {event.type for event in lifecycle} == {
+        EventType.TOOL_EXECUTION_QUEUED,
+        EventType.TOOL_EXECUTION_START,
+        EventType.TOOL_EXECUTION_END,
+    }
+    for call_id in ("c0", "c1"):
+        per_call = [event for event in lifecycle if event.tool_call_id == call_id]
+        assert [event.type for event in per_call].count(EventType.TOOL_EXECUTION_QUEUED) == 1
+        assert [event.type for event in per_call].count(EventType.TOOL_EXECUTION_START) == 1
+        assert [event.type for event in per_call].count(EventType.TOOL_EXECUTION_END) == 1
+        operation_ids = {event.operation_id for event in per_call}
+        assert len(operation_ids) == 1
+        assert None not in operation_ids
+        assert all(event.run_id is not None for event in per_call)
+        assert all(event.metadata["status"] for event in per_call)
+
+
+async def test_rejected_tool_keeps_operation_correlation_without_fake_start() -> None:
+    model = _TwoToolModel()
+    events = []
+
+    async def before_tool_call(_call, _context):
+        from codeagent.core.contracts.ports import ToolDecision
+
+        return ToolDecision.block("blocked")
+
+    await run_agent_loop(
+        AgentContext(),
+        AgentLoopConfig(
+            model=model,
+            tools=[_ConcurrencyTool("a", [0, 0])],
+            before_tool_call=before_tool_call,
+        ),
+        "go",
+        emit=events.append,
+    )
+
+    per_call = [event for event in events if event.tool_call_id == "c0"]
+    assert [event.type for event in per_call] == [
+        EventType.TOOL_EXECUTION_QUEUED,
+        EventType.TOOL_EXECUTION_END,
+    ]
+    assert per_call[-1].status == "rejected"
+    assert per_call[0].operation_id == per_call[-1].operation_id
+
+
 async def test_tool_message_keeps_structured_output_metadata() -> None:
     model = _Model(
         [

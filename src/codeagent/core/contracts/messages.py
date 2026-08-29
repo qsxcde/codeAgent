@@ -37,6 +37,7 @@ __all__ = [
 class ToolExecutionStatus:
     """Stable runtime status values shared by core, tools and subscribers."""
 
+    COMPLETED = "completed"
     OK = "ok"
     INVALID_ARGUMENTS = "invalid_arguments"
     FAILED = "failed"
@@ -45,6 +46,7 @@ class ToolExecutionStatus:
     CANCELLED = "cancelled"
     CLEANUP_UNCERTAIN = "cleanup_uncertain"
     ALL = (
+        COMPLETED,
         OK,
         INVALID_ARGUMENTS,
         FAILED,
@@ -154,7 +156,9 @@ class ToolResult:
             elif self.error:
                 self.status = ToolExecutionStatus.FAILED
             else:
-                self.status = ToolExecutionStatus.OK
+                self.status = ToolExecutionStatus.COMPLETED
+        elif self.status == ToolExecutionStatus.OK:
+            self.status = ToolExecutionStatus.COMPLETED
         if self.output_metadata is not None:
             self._apply_output_metadata(self.output_metadata)
             return
@@ -186,7 +190,7 @@ class ToolResult:
                 if self.output_truncated or self.truncated_by
                 else (
                     OutputCompleteness.COMPLETE
-                    if self.status == ToolExecutionStatus.OK and not self.error
+                    if self.status == ToolExecutionStatus.COMPLETED and not self.error
                     else OutputCompleteness.UNKNOWN
                 )
             ),

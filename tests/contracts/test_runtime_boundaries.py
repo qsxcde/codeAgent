@@ -79,6 +79,37 @@ def test_event_mapper_preserves_tool_start_mapping() -> None:
     }
 
 
+def test_event_mapper_maps_core_queue_to_session_queue_with_correlation() -> None:
+    from codeagent.session.runtime.event_mapper import EventMapper
+
+    mapped = EventMapper.map_agent_event(
+        AgentEvent(
+            EventType.TOOL_EXECUTION_QUEUED,
+            payload={"tool_call_id": "call-1", "tool_name": "bash"},
+            metadata={
+                "tool_call_id": "call-1",
+                "tool_name": "bash",
+                "operation_id": "op-1",
+                "status": "queued",
+                "queue_position": 2,
+            },
+            run_id="run-1",
+            tool_call_id="call-1",
+            operation_id="op-1",
+            status="queued",
+            tool_name="bash",
+            queue_position=2,
+        )
+    )
+
+    assert mapped[0].type == EventType.TOOL_QUEUED
+    assert mapped[0].tool_call_id == "call-1"
+    assert mapped[0].operation_id == "op-1"
+    assert mapped[0].status == "queued"
+    assert mapped[0].queue_position == 2
+    assert mapped[0].metadata["run_id"] == "run-1"
+
+
 def test_event_mapper_preserves_structured_runtime_correlation() -> None:
     from codeagent.session.runtime.event_mapper import EventMapper
 
@@ -120,6 +151,35 @@ def test_event_mapper_assigns_stable_tool_error_code() -> None:
 
     assert mapped[0].error_code == "confirmation_rejected"
     assert mapped[0].metadata["error_code"] == "confirmation_rejected"
+
+
+def test_event_mapper_keeps_synthetic_cancellation_terminal_without_result() -> None:
+    from codeagent.core.contracts.messages import CleanupStatus, ToolExecutionStatus, ToolResult
+    from codeagent.session.runtime.event_mapper import EventMapper
+
+    mapped = EventMapper.map_agent_event(
+        AgentEvent(
+            EventType.TOOL_EXECUTION_END,
+            payload=ToolResult(
+                "call-1",
+                "[工具执行已取消]",
+                error=True,
+                name="bash",
+                status=ToolExecutionStatus.CANCELLED,
+                operation_id="op-1",
+                cleanup_status=CleanupStatus.UNCERTAIN,
+            ),
+            metadata={"synthetic_cancelled": True, "run_id": "run-1"},
+        )
+    )
+
+    assert len(mapped) == 1
+    assert mapped[0].type == EventType.TOOL_FINISHED
+    assert mapped[0].tool_call_id == "call-1"
+    assert mapped[0].operation_id == "op-1"
+    assert mapped[0].status == ToolExecutionStatus.CANCELLED
+    assert mapped[0].cleanup_status == CleanupStatus.UNCERTAIN
+    assert mapped[0].metadata["synthetic_cancelled"] is True
 
 
 def test_event_mapper_propagates_structured_tool_output_facts() -> None:

@@ -127,6 +127,7 @@ class Agent:
                     self._config,
                     emit=self._emit,
                     recursion_limit=self._recursion_limit,
+                    run_id=self._run_id,
                 )
             assert run_prompt is not None
             return await run_agent_loop(
@@ -135,6 +136,7 @@ class Agent:
                 run_prompt,
                 emit=self._emit,
                 recursion_limit=self._recursion_limit,
+                run_id=self._run_id,
             )
 
         task = asyncio.current_task()

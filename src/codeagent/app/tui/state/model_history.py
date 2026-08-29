@@ -18,6 +18,8 @@ class ModelHistoryMixin:
         self._assistant = None
         self._pending_tools.clear()
         self._pending_tools_by_id.clear()
+        self._tool_blocks_by_id.clear()
+        self._result_event_ids.clear()
         self._pending_user_prompts.clear()
         self.activity_visible = False
         self.activity_frame = 0
@@ -51,6 +53,7 @@ class ModelHistoryMixin:
             self._pending_tools.append(block)
             if block.call_id:
                 self._pending_tools_by_id[block.call_id] = block
+                self._tool_blocks_by_id[block.call_id] = block
 
     @staticmethod
     def _tool_call_fields(call: Any) -> tuple[str, dict[str, Any], str | None]:

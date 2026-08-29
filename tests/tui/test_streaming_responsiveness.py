@@ -8,7 +8,7 @@ import pytest
 
 from codeagent.app.tui.adapters.textual.backend import TextualBackend
 from codeagent.app.tui.application import TuiApp
-from codeagent.app.tui.presentation.blocks import AssistantBlock
+from codeagent.app.tui.presentation.blocks import AssistantBlock, ToolCallBlock
 from codeagent.core.contracts.events import AgentEvent, EventType
 from tests.tui.view.fixtures import FakeManager, FakeSession
 from tests.tui.performance_helpers import (
@@ -189,3 +189,32 @@ async def test_textual_streaming_handles_scroll_and_confirmation_in_order() -> N
             assert assistant_index < tool_index
         finally:
             await _finish_stream(app, session, stream_task)
+
+
+async def test_textual_long_history_keeps_page_navigation_and_click_mapping() -> None:
+    """长历史下 PageUp/PageDown 和可见工具行点击仍使用当前视口映射。"""
+    session = FakeSession("long-history")
+    manager = FakeManager(session)
+    backend = TextualBackend()
+    app = TuiApp(manager, backend)
+    _wire_app(app, backend)
+    for index in range(1_000):
+        app.model.append_info(f"history {index}")
+    tool = ToolCallBlock("bash", {"command": "echo ok"}, call_id="long-tool")
+    tool.set_result("ok")
+    app.model.transcript.append(tool)
+
+    async with backend._app.run_test(size=(80, 24)) as pilot:
+        app._flush_render_now()
+        await pilot.press("pageup")
+        assert app.model.transcript.follow is False
+        await pilot.press("pagedown")
+        app.model.transcript.scroll_to_bottom()
+        app._flush_render_now()
+        row = next(
+            index
+            for index in range(24)
+            if app.model.transcript.block_at(index) is tool
+        )
+        await pilot.click(backend._app.transcript, offset=(2, row))
+        assert tool.expanded is True

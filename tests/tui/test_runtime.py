@@ -111,6 +111,24 @@ def test_status_bar_prioritizes_runtime_state_and_context() -> None:
     assert "上下文 12.4k / 128k" in plain
 
 
+def test_status_bar_shows_compact_tool_state_aggregate() -> None:
+    status = StatusBar()
+    status.apply_snapshot(
+        RuntimeSnapshot(
+            phase=RuntimePhase.TOOL_RUNNING,
+            current_operation="bash",
+            tool_counts={"queued": 1, "running": 2, "completed": 1, "timed_out": 1},
+        )
+    )
+
+    plain = "".join(span.text for span in status.render(120)[0])
+
+    assert "排1" in plain
+    assert "运2" in plain
+    assert "完1" in plain
+    assert "超1" in plain
+
+
 def test_tui_model_exposes_runtime_snapshot() -> None:
     model = TuiModel(clock=lambda: 7.0)
     model.apply(
@@ -173,6 +191,66 @@ def test_runtime_reducer_does_not_double_count_tool_finish_and_result() -> None:
     )
 
     assert snapshot.tool_counts["completed"] == 1
+
+
+def test_runtime_reducer_progress_does_not_inflate_running_count() -> None:
+    reducer = RuntimeReducer(clock=lambda: 1.0)
+    snapshot = reducer.apply(
+        RuntimeSnapshot(),
+        AgentEvent(EventType.SESSION_STARTED, metadata={"session_id": "s", "run_id": "r"}),
+    )
+    base = {
+        "session_id": "s",
+        "run_id": "r",
+        "tool_call_id": "call-1",
+        "operation_id": "op-1",
+        "tool_name": "bash",
+    }
+
+    snapshot = reducer.apply(
+        snapshot,
+        AgentEvent(EventType.TOOL_QUEUED, metadata={**base, "status": "queued"}),
+    )
+    snapshot = reducer.apply(
+        snapshot,
+        AgentEvent(EventType.TOOL_STARTED, metadata={**base, "status": "running"}),
+    )
+    before_progress = snapshot.tool_counts.copy()
+    snapshot = reducer.apply(
+        snapshot,
+        AgentEvent(EventType.TOOL_PROGRESS, metadata={**base, "status": "running"}),
+    )
+
+    assert snapshot.tool_counts == before_progress == {"queued": 0, "running": 1}
+
+
+def test_runtime_reducer_keeps_non_success_terminal_counts_distinct() -> None:
+    reducer = RuntimeReducer(clock=lambda: 1.0)
+    base_snapshot = reducer.apply(
+        RuntimeSnapshot(),
+        AgentEvent(EventType.SESSION_STARTED, metadata={"session_id": "s", "run_id": "r"}),
+    )
+    statuses = ("failed", "rejected", "timed_out", "cancelled", "cleanup_uncertain")
+
+    for index, status in enumerate(statuses):
+        call = {
+            "session_id": "s",
+            "run_id": "r",
+            "tool_call_id": f"call-{index}",
+            "operation_id": f"op-{index}",
+            "tool_name": "bash",
+        }
+        base_snapshot = reducer.apply(
+            base_snapshot,
+            AgentEvent(EventType.TOOL_STARTED, metadata=call),
+        )
+        base_snapshot = reducer.apply(
+            base_snapshot,
+            AgentEvent(EventType.TOOL_FINISHED, metadata={**call, "status": status}),
+        )
+
+    assert all(base_snapshot.tool_counts[status] == 1 for status in statuses)
+    assert base_snapshot.tool_counts.get("failed", 0) == 1
 
 
 def test_compaction_failure_has_terminal_runtime_state() -> None:

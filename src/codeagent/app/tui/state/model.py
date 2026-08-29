@@ -38,6 +38,8 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
         self._assistant: AssistantBlock | None = None
         self._pending_tools: list[ToolCallBlock] = []
         self._pending_tools_by_id: dict[str, ToolCallBlock] = {}
+        self._tool_blocks_by_id: dict[str, ToolCallBlock] = {}
+        self._result_event_ids: set[str] = set()
         self._pending_user_prompts: list[str] = []
         self.activity_visible = False
         self.activity_frame = 0
@@ -69,11 +71,19 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
         self.render_stats["last_render_ms"] = round((self._clock() - started) * 1000, 3)
         return lines
 
-    async def render_progressive(self, width: int, height: int) -> list[RichLine]:
+    async def render_progressive(
+        self,
+        width: int,
+        height: int,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> list[RichLine]:
         """Prepare a frame in cooperative slices owned by the UI loop."""
         started = self._clock()
         transient = ActivityBlock(self.activity_frame) if self.activity_visible else None
-        lines = await self.transcript.render_progressive(width, height, transient=transient)
+        lines = await self.transcript.render_progressive(
+            width, height, transient=transient, is_current=is_current
+        )
         self.status.new_output_count = self.transcript.new_output_count
         self.render_stats["cache_hits"] = self.transcript.cache_hits
         self.render_stats["cache_misses"] = self.transcript.cache_misses
@@ -83,12 +93,11 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
 
     def render_requires_cooperation(self) -> bool:
         """Return whether frame preparation is large enough to yield to input."""
-        blocks = self.transcript.blocks
-        if len(blocks) > _PROGRESSIVE_BLOCK_THRESHOLD:
+        if self.transcript.block_count > _PROGRESSIVE_BLOCK_THRESHOLD:
             return True
         return any(
             int(getattr(block, "body_length", 0)) > _PROGRESSIVE_BODY_THRESHOLD
-            for block in blocks
+            for block in self.transcript.iter_blocks()
         )
 
     def advance_activity(self) -> None:
@@ -110,13 +119,17 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
         start, end = self.transcript.visible_range
         return {
             "event_count": self._event_count,
-            "block_count": len(self.transcript.blocks),
+            "block_count": self.transcript.block_count,
             "visible_rows": max(0, end - start),
             "visible_start": start,
             "visible_end": end,
             "cache_entries": self.transcript.cache_entries,
+            "cache_rows": self.transcript.cache_rows,
             "cache_hits": self.transcript.cache_hits,
             "cache_misses": self.transcript.cache_misses,
+            "blocks_inspected": self.transcript.layout_stats["blocks_inspected"],
+            "blocks_materialized": self.transcript.layout_stats["blocks_materialized"],
+            "index_updates": self.transcript.layout_stats["index_updates"],
             "frames": int(self.render_stats["frames"]),
         }
 

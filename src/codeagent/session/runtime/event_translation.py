@@ -15,6 +15,7 @@ class EventMapper:
         handlers = {
             EventType.MESSAGE_UPDATE: EventMapper._map_message_update,
             EventType.MESSAGE_END: EventMapper._map_message_end,
+            EventType.TOOL_EXECUTION_QUEUED: EventMapper._map_tool_queued,
             EventType.TOOL_EXECUTION_START: EventMapper._map_tool_start,
             EventType.TOOL_EXECUTION_UPDATE: EventMapper._map_tool_update,
             EventType.TOOL_EXECUTION_END: EventMapper._map_tool_end,
@@ -38,6 +39,9 @@ class EventMapper:
             "cleanup_uncertain",
             "cleanup_status",
             "side_effect_state",
+            "status",
+            "tool_name",
+            "queue_position",
         ):
             value = getattr(source, field_name, None)
             if value is not None:
@@ -52,7 +56,11 @@ class EventMapper:
             tool_call_id=mapped.tool_call_id or source.tool_call_id,
             operation_id=mapped.operation_id or source.operation_id,
             phase=mapped.phase or source.phase,
-            elapsed_ms=mapped.elapsed_ms or source.elapsed_ms,
+            elapsed_ms=(
+                mapped.elapsed_ms
+                if mapped.elapsed_ms is not None
+                else source.elapsed_ms
+            ),
             error_code=mapped.error_code or source.error_code,
             retryable=(mapped.retryable if mapped.retryable is not None else source.retryable),
             cleanup_uncertain=(
@@ -66,6 +74,13 @@ class EventMapper:
                 else source.cleanup_status
             ),
             side_effect_state=mapped.side_effect_state or source.side_effect_state,
+            status=mapped.status or source.status or source_metadata.get("status"),
+            tool_name=mapped.tool_name or source.tool_name or source_metadata.get("tool_name"),
+            queue_position=(
+                mapped.queue_position
+                if mapped.queue_position is not None
+                else source.queue_position
+            ),
         )
 
     @staticmethod
@@ -98,13 +113,38 @@ class EventMapper:
     @staticmethod
     def _map_tool_start(event: AgentEvent) -> list[AgentEvent]:
         payload = event.payload or {}
+        metadata = dict(event.metadata or {})
         mapped = AgentEvent(
             EventType.TOOL_STARTED,
             payload=payload,
             metadata={
-                "tool_call_id": payload.get("tool_call_id"),
-                "tool_name": payload.get("tool_name"),
+                "tool_call_id": payload.get("tool_call_id") or metadata.get("tool_call_id"),
+                "tool_name": payload.get("tool_name") or metadata.get("tool_name"),
             },
+            tool_call_id=payload.get("tool_call_id") or metadata.get("tool_call_id"),
+            operation_id=metadata.get("operation_id"),
+            status=metadata.get("status") or "running",
+            tool_name=payload.get("tool_name") or metadata.get("tool_name"),
+            elapsed_ms=metadata.get("elapsed_ms"),
+        )
+        return [EventMapper._inherit(event, mapped)]
+
+    @staticmethod
+    def _map_tool_queued(event: AgentEvent) -> list[AgentEvent]:
+        payload = event.payload or {}
+        metadata = dict(event.metadata or {})
+        mapped = AgentEvent(
+            EventType.TOOL_QUEUED,
+            payload=payload,
+            metadata={
+                "tool_call_id": payload.get("tool_call_id") or metadata.get("tool_call_id"),
+                "tool_name": payload.get("tool_name") or metadata.get("tool_name"),
+            },
+            tool_call_id=payload.get("tool_call_id") or metadata.get("tool_call_id"),
+            operation_id=metadata.get("operation_id"),
+            status=metadata.get("status") or "queued",
+            tool_name=payload.get("tool_name") or metadata.get("tool_name"),
+            queue_position=metadata.get("queue_position"),
         )
         return [EventMapper._inherit(event, mapped)]
 
@@ -116,7 +156,10 @@ class EventMapper:
     def _map_tool_end(event: AgentEvent) -> list[AgentEvent]:
         result = event.payload
         metadata = dict(event.metadata or {})
-        status = getattr(result, "status", None)
+        tool_call_id = getattr(result, "tool_call_id", None) or metadata.get("tool_call_id")
+        operation_id = getattr(result, "operation_id", None) or metadata.get("operation_id")
+        tool_name = getattr(result, "name", None) or metadata.get("tool_name")
+        status = getattr(result, "status", None) or metadata.get("status") or "completed"
         error_code = {
             "invalid_arguments": "tool_invalid_arguments",
             "failed": "tool_error",
@@ -127,12 +170,16 @@ class EventMapper:
         }.get(status)
         metadata.update(
             {
-                "tool_call_id": getattr(result, "tool_call_id", None),
+                "tool_call_id": tool_call_id,
                 "status": status,
                 "error": getattr(result, "error", False),
                 "cleanup_status": getattr(result, "cleanup_status", None),
                 "cleanup_uncertain": bool(getattr(result, "cleanup_uncertain", False)),
                 "cleanup_error": getattr(result, "cleanup_error", None),
+                "operation_id": operation_id,
+                "tool_name": tool_name,
+                "synthetic_cancelled": bool(metadata.get("synthetic_cancelled")),
+                "rejected": bool(getattr(result, "rejected", False)),
             }
         )
         output_metadata = getattr(result, "output_metadata", None)
@@ -143,28 +190,42 @@ class EventMapper:
         if error_code is not None:
             metadata["error_code"] = error_code
         content = getattr(result, "content", result)
-        return [
+        mapped = [
             EventMapper._inherit(
                 event,
                 AgentEvent(
                     EventType.TOOL_FINISHED,
                     content,
                     metadata=metadata,
-                    error_code=error_code,
-                    cleanup_status=getattr(result, "cleanup_status", None),
-                ),
-            ),
-            EventMapper._inherit(
-                event,
-                AgentEvent(
-                    EventType.TOOL_RESULT,
-                    content,
-                    metadata=metadata,
+                    tool_call_id=tool_call_id,
+                    operation_id=operation_id,
+                    status=status,
+                    tool_name=tool_name,
+                    elapsed_ms=getattr(result, "duration_ms", None),
                     error_code=error_code,
                     cleanup_status=getattr(result, "cleanup_status", None),
                 ),
             ),
         ]
+        if not metadata["synthetic_cancelled"]:
+            mapped.append(
+                EventMapper._inherit(
+                    event,
+                    AgentEvent(
+                        EventType.TOOL_RESULT,
+                        content,
+                        metadata=metadata,
+                        tool_call_id=tool_call_id,
+                        operation_id=operation_id,
+                        status=status,
+                        tool_name=tool_name,
+                        elapsed_ms=getattr(result, "duration_ms", None),
+                        error_code=error_code,
+                        cleanup_status=getattr(result, "cleanup_status", None),
+                    ),
+                )
+            )
+        return mapped
 
 
 class SideEffectObserver:

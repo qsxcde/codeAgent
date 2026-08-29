@@ -767,14 +767,165 @@ def test_model_activity_lifecycle_and_out_of_order_tool_results():
         {"name": "read", "args": {"file_path": "b.py"}, "id": "b"},
     ]))
     assert model.activity_visible is False
+
+
+def test_model_projects_tool_lifecycle_events_by_call_id() -> None:
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {"command": "echo x"}, "id": "c1"}],
+        )
+    )
+    block = next(b for b in model.transcript.blocks if isinstance(b, ToolCallBlock))
+
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_QUEUED,
+            metadata={"tool_call_id": "c1", "tool_name": "bash", "status": "queued"},
+        )
+    )
+    assert block.execution_status == "queued"
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_STARTED,
+            metadata={"tool_call_id": "c1", "tool_name": "bash", "status": "running"},
+        )
+    )
+    assert block.execution_status == "running"
+
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_FINISHED,
+            metadata={
+                "tool_call_id": "c1",
+                "tool_name": "bash",
+                "status": "timed_out",
+                "cleanup_status": "uncertain",
+                "cleanup_uncertain": True,
+            },
+        )
+    )
+    assert block.execution_status == "timed_out"
+    assert block.cleanup_status == "uncertain"
+    assert "Timed out" in "".join(span.text for span in block.render(80)[0])
+
+
+def test_tool_block_keeps_execution_success_separate_from_uncertain_cleanup() -> None:
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {"command": "echo x"}, "id": "c1"}],
+        )
+    )
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_FINISHED,
+            metadata={
+                "tool_call_id": "c1",
+                "status": "completed",
+                "cleanup_status": "uncertain",
+                "cleanup_uncertain": True,
+            },
+        )
+    )
+
+    block = next(b for b in model.transcript.blocks if isinstance(b, ToolCallBlock))
+    assert block.status == "done"
+    assert block.execution_status == "completed"
+    assert "cleanup uncertain" in "".join(span.text for span in block.render(80)[0])
+
+
+def test_tool_block_ignores_late_progress_and_duplicate_result() -> None:
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {}, "id": "c1"}],
+        )
+    )
+    finish = {
+        "tool_call_id": "c1",
+        "status": "timed_out",
+        "cleanup_status": "confirmed",
+    }
+    model.apply(AgentEvent(EventType.TOOL_FINISHED, metadata=finish))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_PROGRESS,
+            payload="late progress",
+            metadata={"tool_call_id": "c1", "status": "running"},
+        )
+    )
+    result = AgentEvent(
+        EventType.TOOL_RESULT,
+        payload="late result",
+        metadata={"tool_call_id": "c1", "status": "completed"},
+    )
+    model.apply(result)
+    model.apply(result)
+
+    block = next(b for b in model.transcript.blocks if isinstance(b, ToolCallBlock))
+    assert block.execution_status == "timed_out"
+    assert block.result == "late result"
+    assert model.output_stats["results"] == 1
+
+
+def test_tool_block_projects_confirmation_state_by_call_id() -> None:
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {"command": "git push"}, "id": "c1"}],
+        )
+    )
+    model.apply(
+        AgentEvent(
+            EventType.CONFIRMATION_REQUESTED,
+            payload={"tool_call_id": "c1", "tool": "bash"},
+        )
+    )
+
+    block = next(b for b in model.transcript.blocks if isinstance(b, ToolCallBlock))
+    assert block.execution_status == "awaiting_confirmation"
+    assert "Awaiting confirmation" in "".join(span.text for span in block.render(80)[0])
+
+
+def test_model_cancellation_closes_active_tool_without_result() -> None:
+    model = TuiModel()
+    model.apply(AgentEvent(EventType.SESSION_STARTED, payload="x"))
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_CALL,
+            payload=[{"name": "bash", "args": {"command": "sleep 1"}, "id": "c1"}],
+        )
+    )
+    model.apply(
+        AgentEvent(
+            EventType.TOOL_STARTED,
+            metadata={"tool_call_id": "c1", "tool_name": "bash", "status": "running"},
+        )
+    )
+    model.apply(
+        AgentEvent(
+            EventType.RUN_CANCELLED,
+            metadata={"cleanup_status": "uncertain", "cleanup_uncertain": True},
+        )
+    )
+
+    block = next(b for b in model.transcript.blocks if isinstance(b, ToolCallBlock))
+    assert block.execution_status == "cancelled"
+    assert block.cleanup_status == "uncertain"
+    assert model._pending_tools == []
     model.apply(AgentEvent(EventType.TOOL_RESULT, payload="result-b", metadata={"tool_call_id": "b"}))
     tools = [block for block in model.transcript.blocks if isinstance(block, ToolCallBlock)]
     assert tools[0].result == "" and tools[1].result == "result-b"
-    assert model.activity_visible is False
-    model.apply(AgentEvent(EventType.TOOL_RESULT, payload="result-a", metadata={"tool_call_id": "a"}))
     assert model.activity_visible is True
-    model.apply(AgentEvent(EventType.TEXT_DELTA, payload="done"))
-    assert model.activity_visible is False
 
 
 def test_palette_covers_all_style_tags():

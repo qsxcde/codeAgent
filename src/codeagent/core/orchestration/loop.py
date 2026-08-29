@@ -15,7 +15,7 @@ from codeagent.core.contracts.errors import (
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.execution.runtime import ToolExecutionRuntime
 from codeagent.core.orchestration.errors import RecursionLimitError
-from codeagent.core.contracts.messages import CleanupStatus, Message
+from codeagent.core.contracts.messages import CleanupStatus, Message, new_id
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.core.orchestration.turn import run_turn
 
@@ -29,19 +29,27 @@ async def _run_agent_loop(
     *,
     emit: Callable[[AgentEvent], Any] | None = None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    run_id: str | None = None,
 ) -> list[Message]:
     emit = emit or (lambda _event: None)
+    run_id = run_id or new_id()
+
+    def publish(event: AgentEvent) -> None:
+        metadata = dict(event.metadata or {})
+        metadata.setdefault("run_id", run_id)
+        emit(replace(event, metadata=metadata, run_id=event.run_id or run_id))
+
     config = _ensure_runtime(config)
     _reset_cleanup_diagnostics(config)
     working, new_messages = _start_context(context, prompt)
-    emit(AgentEvent(EventType.AGENT_START))
+    publish(AgentEvent(EventType.AGENT_START))
     try:
         for iteration in range(max(1, recursion_limit)):
             should_stop = await run_turn(
                 config,
                 iteration,
                 iteration >= max(1, recursion_limit) - 1,
-                emit,
+                publish,
                 working,
                 new_messages,
             )
@@ -50,12 +58,12 @@ async def _run_agent_loop(
         else:
             raise RecursionLimitError()
     except asyncio.CancelledError:
-        emit(AgentEvent(EventType.ABORTED, metadata=_cleanup_metadata(config)))
+        publish(AgentEvent(EventType.ABORTED, metadata=_cleanup_metadata(config)))
         raise
     except Exception as exc:
-        emit(AgentEvent(EventType.ERROR, payload=str(exc), metadata=_error_metadata(exc)))
+        publish(AgentEvent(EventType.ERROR, payload=str(exc), metadata=_error_metadata(exc)))
         raise
-    emit(AgentEvent(EventType.AGENT_END, payload=new_messages))
+    publish(AgentEvent(EventType.AGENT_END, payload=new_messages))
     return new_messages
 
 
@@ -135,10 +143,16 @@ async def run_agent_loop(
     *,
     emit: Callable[[AgentEvent], Any] | None = None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    run_id: str | None = None,
 ) -> list[Message]:
     """Run a new prompt against a copied in-memory context."""
     return await _run_agent_loop(
-        context, config, prompt, emit=emit, recursion_limit=recursion_limit
+        context,
+        config,
+        prompt,
+        emit=emit,
+        recursion_limit=recursion_limit,
+        run_id=run_id,
     )
 
 
@@ -148,11 +162,17 @@ async def run_agent_loop_continue(
     *,
     emit: Callable[[AgentEvent], Any] | None = None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    run_id: str | None = None,
 ) -> list[Message]:
     """Continue from a user/tool-result tail without adding a prompt."""
     context.validate_continue()
     return await _run_agent_loop(
-        context, config, None, emit=emit, recursion_limit=recursion_limit
+        context,
+        config,
+        None,
+        emit=emit,
+        recursion_limit=recursion_limit,
+        run_id=run_id,
     )
 
 

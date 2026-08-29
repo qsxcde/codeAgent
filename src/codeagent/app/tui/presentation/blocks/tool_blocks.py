@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from ..output import OutputBuffer, OutputMetadata
+from .tool_lifecycle import ToolLifecycleMixin
 from ..primitives import (
     Component,
     RichLine,
@@ -71,7 +72,7 @@ def _first_nonempty_line(result: str) -> str:
     return ""
 
 
-class ToolCallBlock(Component):
+class ToolCallBlock(ToolLifecycleMixin, Component):
     """Codex 风格工具摘要与可展开的执行结果/意图差异。"""
 
     def __init__(self, name: str, args: dict[str, Any], call_id: str | None = None) -> None:
@@ -86,59 +87,13 @@ class ToolCallBlock(Component):
         self.awaiting = False
         self.rejected = False
         self.output_buffer: OutputBuffer | None = None
-
-    def set_result(
-        self,
-        result: str,
-        error: bool = False,
-        execution_status: str | None = None,
-        output_metadata: dict[str, Any] | None = None,
-    ) -> None:
-        self.result = result
-        metadata = output_metadata or {"completeness": "unknown", "source": "legacy"}
-        self.output_buffer = OutputBuffer(
-            result,
-            metadata=OutputMetadata(
-                total_bytes=int(metadata.get("total_bytes") or len(result.encode("utf-8"))),
-                total_lines=int(metadata.get("total_lines") or len(result.splitlines())),
-                shown_lines=int(metadata.get("shown_lines") or len(result.splitlines())),
-                truncated_by=metadata.get("truncated_by"),
-                artifact_path=metadata.get("artifact_path"),
-                completeness=metadata.get("completeness"),
-                shown_bytes=metadata.get("shown_bytes"),
-                path=metadata.get("path"),
-                range_start=metadata.get("range_start"),
-                range_end=metadata.get("range_end"),
-                exit_code=metadata.get("exit_code"),
-                duration_ms=metadata.get("duration_ms"),
-                stderr_summary=metadata.get("stderr_summary"),
-                change_summary=metadata.get("change_summary"),
-                artifact_ref=metadata.get("artifact_ref"),
-                continuation=metadata.get("continuation"),
-                semantic_success=metadata.get("semantic_success"),
-                source=str(metadata.get("source") or ("structured" if metadata else "legacy")),
-            ),
-            page_size=int(metadata.get("page_size") or 40),
-        )
-        self.status = "error" if error else "done"
-        if execution_status:
-            self.execution_status = execution_status
-        elif not error:
-            self.execution_status = "ok"
-        self.awaiting = False
-        self.touch()
-
-    def set_awaiting(self) -> None:
-        self.awaiting = True
-        self.touch()
-
-    def set_rejected(self, result: str) -> None:
-        self.result = result
-        self.rejected = True
-        self.status = "error"
-        self.execution_status = "rejected"
-        self.awaiting = False
-        self.touch()
+        self.cleanup_status = "not_required"
+        self.elapsed_ms: int | None = None
+        self.queue_position: int | None = None
+        self.error_code: str | None = None
+        self.progress_text = ""
+        self._result_applied = False
+        self._lifecycle_seen = False
 
     def toggle_expand(self) -> None:
         self.expanded = not self.expanded
@@ -158,6 +113,8 @@ class ToolCallBlock(Component):
             "write": self._write_summary(path),
         }
         if self.status == "pending":
+            if self.execution_status == "queued":
+                return pending.get(self.name, f"Queued {self.name}")
             return pending.get(self.name, f"Running {self.name}")
         if self.status == "error":
             labels = {
@@ -167,7 +124,8 @@ class ToolCallBlock(Component):
                 "cleanup_uncertain": "Cleanup uncertain",
                 "rejected": "Rejected",
             }
-            return f"{labels.get(self.execution_status, 'Failed')} {self.name}"
+            summary = f"{labels.get(self.execution_status, 'Failed')} {self.name}"
+            return summary + self._diagnostic_suffix()
         if self.name == "bash":
             output = self.output_buffer.metadata if self.output_buffer is not None else None
             result = (
@@ -188,7 +146,8 @@ class ToolCallBlock(Component):
                 self.output_buffer.truncated or self.output_buffer.metadata.total_bytes > 4000
             ):
                 suffix = f" · {self.output_buffer.diagnostic}"
-            return f"Ran command ({result or 'completed'}{suffix})"
+            summary = f"Ran command ({result or 'completed'}{suffix})"
+            return summary + self._diagnostic_suffix()
         summary = completed.get(self.name, f"Ran {self.name}")
         if self.output_buffer is not None and self.output_buffer.truncated:
             summary += f" · {self.output_buffer.diagnostic}"
@@ -196,7 +155,20 @@ class ToolCallBlock(Component):
             summary += f" · {self.output_buffer.diagnostic}"
         elif self.output_buffer is not None:
             summary += _structured_output_suffix(self.output_buffer.metadata, path)
-        return summary
+        return summary + self._diagnostic_suffix()
+
+    def _diagnostic_suffix(self) -> str:
+        diagnostics: list[str] = []
+        if self.cleanup_status in {"failed", "uncertain", "unsupported"}:
+            diagnostics.append("cleanup uncertain")
+        if self.elapsed_ms is not None and not (
+            self.output_buffer is not None and self.output_buffer.metadata.duration_ms is not None
+        ):
+            elapsed = f"{self.elapsed_ms / 1000:.1f}s" if self.elapsed_ms >= 1000 else f"{self.elapsed_ms}ms"
+            diagnostics.append(elapsed)
+        if self.progress_text and self.status == "pending":
+            diagnostics.append(self.progress_text)
+        return f" · {' · '.join(diagnostics)}" if diagnostics else ""
     def _edit_summary(self, path: str) -> str:
         old = str(self.args.get("old_string", "")).splitlines()
         new = str(self.args.get("new_string", "")).splitlines()
@@ -242,7 +214,13 @@ class ToolCallBlock(Component):
             summary, summary_tag = f"Awaiting confirmation: {self._summary()}", WARNING
         else:
             summary = self._summary()
-            summary_tag = ERROR if self.status == "error" else ACCENT
+            summary_tag = (
+                WARNING
+                if self.cleanup_status in {"failed", "uncertain", "unsupported"}
+                else ERROR
+                if self.status == "error"
+                else ACCENT
+            )
         lines: list[RichLine] = [[
             _seg("▼" if self.expanded else "▶", fg=DIM),
             _seg(" "),
