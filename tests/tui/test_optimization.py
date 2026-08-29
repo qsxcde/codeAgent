@@ -5,7 +5,7 @@ from __future__ import annotations
 from codeagent.app.tui.presentation.blocks import AssistantBlock, Component, ToolCallBlock
 from codeagent.app.tui.rendering.coordinator import TuiEventBuffer
 from codeagent.app.tui.state.transcript import Transcript
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 class _Block(Component):
@@ -81,7 +81,7 @@ def test_adjacent_stream_deltas_flush_at_frame_boundary_without_crossing_structu
 
 def test_restore_cost_counts_large_content_even_when_message_count_is_small():
     from codeagent.app.tui.session.coordinator import TuiSessionCoordinator
-    from codeagent.core.messages import Message
+    from codeagent.core.contracts.messages import Message
 
     cost = TuiSessionCoordinator._restore_cost(
         [Message(role="assistant", content="x" * 200_000)]

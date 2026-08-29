@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 from codeagent.session.compaction.details import extract_file_ops
 from codeagent.session.compaction.policy import find_cut_point
 from codeagent.session.persistence.models import CompactionEntry

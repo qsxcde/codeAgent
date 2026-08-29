@@ -1,6 +1,6 @@
 """core 消息层测试:uuid7 格式/有序、消息归约(归属/删除/替换)。"""
 
-from codeagent.core.messages import (
+from codeagent.core.contracts.messages import (
     Message,
     new_id,
     remove_by_id,

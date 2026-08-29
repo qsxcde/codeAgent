@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
-from codeagent.core.context import AgentContext
-from codeagent.core.execution import ToolExecutionRuntime
-from codeagent.core.events import EventType
-from codeagent.core.loop import run_agent_loop, run_agent_loop_continue
-from codeagent.core.messages import Message, ToolCall, ToolResult
-from codeagent.core.ports import AgentLoopConfig, StreamEvent, ToolDecision
+from codeagent.core.context.model import AgentContext
+from codeagent.core.execution.runtime import ToolExecutionRuntime
+from codeagent.core.contracts.events import EventType
+from codeagent.core.orchestration.loop import run_agent_loop, run_agent_loop_continue
+from codeagent.core.contracts.messages import Message, ToolCall, ToolResult
+from codeagent.core.contracts.ports import StreamEvent, ToolDecision
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 
 class _Model:

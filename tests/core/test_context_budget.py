@@ -4,12 +4,13 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from codeagent.core.context_budget import ContextBudgetInput, estimate_context_budget
-from codeagent.core.context import AgentContext
-from codeagent.core.messages import Message
-from codeagent.core.errors import ContextPreparationError
-from codeagent.core.ports import AgentLoopConfig, StreamEvent
-from codeagent.core.loop import run_agent_loop
+from codeagent.core.context.budget import ContextBudgetInput, estimate_context_budget
+from codeagent.core.context.model import AgentContext
+from codeagent.core.contracts.messages import Message
+from codeagent.core.contracts.errors import ContextPreparationError
+from codeagent.core.contracts.ports import StreamEvent
+from codeagent.core.orchestration.loop import run_agent_loop
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 
 def test_context_budget_rejects_invalid_window_and_reserve_values():
@@ -136,7 +137,7 @@ class _BudgetAwareModel:
 
 @pytest.mark.asyncio
 async def test_budget_aware_context_preparer_gets_neutral_view_and_keeps_source_context():
-    from codeagent.core.ports import ContextPreparationRequest
+    from codeagent.core.context.contracts import ContextPreparationRequest
 
     model = _BudgetAwareModel()
     source = AgentContext(messages=[Message(role="user", content="history")])
@@ -219,7 +220,7 @@ async def test_context_preparer_receives_neutral_tool_definitions():
     )
 
     assert len(seen[0].tools) == 1
-    from codeagent.core.ports import ContextToolDefinition
+    from codeagent.core.context.contracts import ContextToolDefinition
 
     assert isinstance(seen[0].tools[0], ContextToolDefinition)
     assert seen[0].tools[0].name == "search"

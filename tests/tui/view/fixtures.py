@@ -9,8 +9,8 @@ from codeagent.app.tui.commands.parser import Command
 from codeagent.app.tui.presentation.primitives import rich_to_plain
 from codeagent.app.tui.presentation.status import FooterInfo
 from codeagent.app.tui.application import TuiApp
-from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.messages import Message
+from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.messages import Message
 from codeagent.session.store import UsageStats
 from tests.fixtures.tui import FakeBackend as StubBackend
 

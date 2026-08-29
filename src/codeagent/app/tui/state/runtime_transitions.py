@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 from .runtime_state import RuntimePhase, RuntimeSnapshot
 

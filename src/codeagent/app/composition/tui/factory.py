@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from codeagent.core.context_preflight import ContextPreflightConfig
+from codeagent.core.context.preflight import ContextPreflightConfig
 
 from ..model import selection as model_selection
 from ..prompts import _workspace, agents_sources, skills_view

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from codeagent.ai.providers.fake import FakeClient
-from codeagent.core.events import AgentEvent
+from codeagent.core.contracts.events import AgentEvent
 
 
 @pytest.fixture

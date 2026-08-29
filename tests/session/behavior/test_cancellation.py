@@ -73,6 +73,7 @@ async def test_concurrent_session_close_waits_for_one_shared_close():
 
 
 async def test_session_cancel_propagates_uncertain_sync_tool_cleanup():
+    from codeagent.app.composition.tools.adapter import adapt_tools
     from codeagent.core import ToolExecutionRuntime
 
     started = threading.Event()
@@ -98,7 +99,7 @@ async def test_session_cancel_propagates_uncertain_sync_tool_cleanup():
     sess = AgentSession(
         AgentLoopConfig(
             model=ChatModelPort(model),
-            tools=[BlockingSyncTool()],
+            tools=adapt_tools([BlockingSyncTool()]),
             tool_runtime=ToolExecutionRuntime(),
         ),
         EventBus(),
@@ -162,4 +163,3 @@ async def test_steer_injects_message():
     # 注入消息进入第二轮模型输入(下一轮循环前消费,而非事后追加)
     second_call = model.call_history[1]["messages"]
     assert any("运行中注入" in (m.get("content") or "") for m in second_call)
-

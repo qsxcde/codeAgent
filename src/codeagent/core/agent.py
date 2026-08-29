@@ -8,17 +8,17 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
-from codeagent.core.context import AgentContext
-from codeagent.core.errors import AgentRuntimeError
-from codeagent.core.events import AgentEvent
-from codeagent.core.execution import ToolExecutionRuntime
-from codeagent.core.loop import (
+from codeagent.core.context.model import AgentContext
+from codeagent.core.contracts.errors import AgentRuntimeError
+from codeagent.core.contracts.events import AgentEvent
+from codeagent.core.execution.runtime import ToolExecutionRuntime
+from codeagent.core.orchestration.loop import (
     DEFAULT_RECURSION_LIMIT,
     run_agent_loop,
     run_agent_loop_continue,
 )
-from codeagent.core.messages import Message
-from codeagent.core.ports import AgentLoopConfig
+from codeagent.core.contracts.messages import Message
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 EventListener = Callable[[AgentEvent], Any]
 

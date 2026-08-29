@@ -25,7 +25,7 @@ from .commands.interaction import (
 from .session.coordinator import TuiSessionCoordinator
 from .session.conversation import TuiConversationCoordinator
 from .commands.coordinator import TuiCommandCoordinator
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.app.tasks.modes import TaskMode
 from codeagent.app.tasks.supervisor import TaskSupervisor
 

@@ -36,8 +36,8 @@ from codeagent.app.tui.presentation.theme import (
     USER_PROMPT,
     WARNING,
 )
-from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.messages import Message, ToolCall
+from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.messages import Message, ToolCall
 
 
 class _FakeClock:

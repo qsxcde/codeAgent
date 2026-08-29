@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
-
-from codeagent.core.errors import AgentContinueError
-from codeagent.core.messages import Message
+from codeagent.core.contracts.errors import AgentContinueError
+from codeagent.core.contracts.messages import Message
+from codeagent.core.contracts.ports import AgentTool
 
 __all__ = ["AgentContext"]
 
@@ -17,7 +16,7 @@ class AgentContext:
 
     system_prompt: str = ""
     messages: list[Message] = field(default_factory=list)
-    tools: list[Any] = field(default_factory=list)
+    tools: list[AgentTool] = field(default_factory=list)
 
     def copy(self) -> "AgentContext":
         """Copy the context containers without copying message/tool objects."""

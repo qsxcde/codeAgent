@@ -14,7 +14,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
-from codeagent.core.context_budget import ContextBudgetSnapshot
+from codeagent.core.context.budget import ContextBudgetSnapshot
 
 PreflightStatus = Literal["safe", "near_limit", "over_limit", "uncertain"]
 

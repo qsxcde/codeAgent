@@ -3,9 +3,9 @@
 from pathlib import Path
 
 from codeagent.app.tui.presentation.output import OutputBuffer, OutputMetadata
-from codeagent.core.messages import ToolResult
+from codeagent.core.contracts.messages import ToolResult
 from codeagent.app.tui.state.model import TuiModel
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 def test_tool_result_carries_non_persistent_output_statistics() -> None:
@@ -67,7 +67,7 @@ def test_output_buffer_reads_tool_line_range_marker() -> None:
 
 
 def test_tool_result_infers_common_truncation_markers() -> None:
-    from codeagent.core.messages import ToolResult
+    from codeagent.core.contracts.messages import ToolResult
 
     result = ToolResult("call-1", "head\n… 输出已截断(条目超限) …")
 

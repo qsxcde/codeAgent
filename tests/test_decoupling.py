@@ -109,6 +109,31 @@ def test_core_exports_runtime_contracts_without_legacy_entrypoints() -> None:
     assert not hasattr(core, "run_turn")
 
 
+def test_core_subpackages_do_not_import_the_public_facade() -> None:
+    """Internal core modules must expose dependencies explicitly, not via root re-exports."""
+    violations: list[str] = []
+    for path in sorted((SRC_ROOT / "core").rglob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if "codeagent.core" in _imported_modules(tree):
+            violations.append(_rel(path))
+    assert not violations, f"core 内部模块反向依赖公共 façade: {violations}"
+
+
+def test_core_does_not_probe_legacy_tool_attributes() -> None:
+    """core 只能调用 AgentTool，不得探测历史 schema/invoke 属性。"""
+    legacy_attributes = {"Args", "args_schema", "invoke", "ainvoke", "invoke_async"}
+    violations: list[str] = []
+    core_root = SRC_ROOT / "core"
+    for path in sorted(core_root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in legacy_attributes:
+                violations.append(f"{path.name}:{node.lineno}: .{node.attr}")
+    assert not violations, f"core 探测旧工具属性: {violations}"
+
+
 def test_scan_has_content() -> None:
     """扫描覆盖全部源码文件(防空转:规则写错导致零文件被测)。"""
     rels = [_rel(p) for p in PY_FILES]

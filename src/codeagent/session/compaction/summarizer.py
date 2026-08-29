@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 
 
 class Summarizer(Protocol):

@@ -204,7 +204,7 @@ def test_event_bus_multiple_subscribers():
     a, b = [], []
     bus.subscribe(a.append)
     bus.subscribe(b.append)
-    from codeagent.core.events import AgentEvent
+    from codeagent.core.contracts.events import AgentEvent
 
     bus.emit(AgentEvent("x"))
     assert len(a) == 1 and len(b) == 1
@@ -216,7 +216,7 @@ def test_event_bus_unsubscribe():
     seen: list = []
     unsub = bus.subscribe(seen.append)
     unsub()
-    from codeagent.core.events import AgentEvent
+    from codeagent.core.contracts.events import AgentEvent
 
     bus.emit(AgentEvent("x"))
     assert seen == []
@@ -228,7 +228,7 @@ def test_event_bus_subscriber_exception_does_not_break_others():
     seen: list = []
     bus.subscribe(lambda ev: (_ for _ in ()).throw(RuntimeError("订阅方炸了")))
     bus.subscribe(seen.append)
-    from codeagent.core.events import AgentEvent
+    from codeagent.core.contracts.events import AgentEvent
 
     bus.emit(AgentEvent("x"))
     assert len(seen) == 1
@@ -238,7 +238,7 @@ def test_event_bus_subscriber_exception_does_not_break_others():
 
 def test_event_bus_clear_resets_errors():
     bus = EventBus()
-    from codeagent.core.events import AgentEvent
+    from codeagent.core.contracts.events import AgentEvent
 
     bus.subscribe(lambda ev: (_ for _ in ()).throw(RuntimeError("炸")))
     bus.emit(AgentEvent("x"))

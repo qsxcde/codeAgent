@@ -12,7 +12,7 @@ def test_create_agent_config_returns_config():
 
         mock_llm.return_value = FakeClient(response="测试回复")
         from codeagent.app.container import create_agent_config
-        from codeagent.core.ports import AgentLoopConfig
+        from codeagent.core.orchestration.config import AgentLoopConfig
 
         config = create_agent_config()
     assert isinstance(config, AgentLoopConfig)
@@ -176,7 +176,7 @@ def test_create_agent_config_binds_catalog_window_to_model_budget():
         from codeagent.ai.catalog.spec import ModelSpec
         from codeagent.ai.providers.fake import FakeClient
         from codeagent.app.container import create_agent_config
-        from codeagent.core.messages import Message
+        from codeagent.core.contracts.messages import Message
 
         mock_llm.return_value = FakeClient(response="测试回复")
         registry = ModelRegistry()
@@ -532,14 +532,18 @@ def test_config_append_mcp_tools(tmp_path, monkeypatch):
 
         mock_llm.return_value = FakeClient(response="测试回复")
         from codeagent.app.container import create_agent_config
+        from codeagent.core import AgentTool
 
         ports = create_agent_config()
     names = [t.name for t in ports.tools]
+    assert all(isinstance(tool, AgentTool) for tool in ports.tools)
     assert names[:8] == ["read", "write", "edit", "bash", "grep", "find", "ls", "skill"]
     assert "mcp__mock__echo" in names and "mcp__mock__fail" in names
+    import asyncio
+
     tool = next(t for t in ports.tools if t.name == "mcp__mock__echo")
-    assert "echo:" in tool.invoke(tool.Args(text="hi"))
+    result = asyncio.run(tool.execute("mcp-1", {"text": "hi"}))
+    assert "echo:" in result.content
     from codeagent.tools.mcp.loader import close_mcp_tools
 
     close_mcp_tools(ports.tools)
-

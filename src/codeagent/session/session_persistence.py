@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 from codeagent.session.persistence.commit import SessionCommitter
 from codeagent.session.persistence.models import (
     CompactionEntry,

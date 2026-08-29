@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from codeagent.core.context_budget import ContextBudgetSnapshot
-from codeagent.core.context_preflight import ContextPreflightResult
+from codeagent.core.context.budget import ContextBudgetSnapshot
+from codeagent.core.context.preflight import ContextPreflightResult
 from codeagent.session.persistence.models import UsageStats
 
 class RunPhase(StrEnum):

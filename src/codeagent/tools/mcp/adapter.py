@@ -1,4 +1,7 @@
-"""tools/mcp/adapter.py:MCP 工具适配器——SDK 工具元数据 → AtomicTool。
+"""tools/mcp/adapter.py:MCP SDK 工具元数据 → AtomicTool 实现。
+
+MCP 工具进入 Agent Runtime 前还会经过
+``app/composition/tools/adapter.py`` 的显式 AgentTool 边界。
 
 - 命名 ``mcp__<server>__<tool>``(对齐 Claude Code / CodeBuddy 共识,mcp spec
   「外部工具接入」):与内建工具不冲突;统一 ``mcp__`` 命名空间为权限通配

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 from ..state.model import TuiModel
 from ..presentation.primitives import RichLine

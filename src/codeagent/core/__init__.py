@@ -4,8 +4,8 @@
 本包内部模块。外部世界通过 AgentLoopConfig 注入模型、工具和运行时。
 """
 
-from codeagent.core.context import AgentContext
-from codeagent.core.context_budget import (
+from codeagent.core.context.model import AgentContext
+from codeagent.core.context.budget import (
     ContextBudgetInput,
     ContextBudgetSnapshot,
     DEFAULT_CONTEXT_WINDOW,
@@ -13,51 +13,54 @@ from codeagent.core.context_budget import (
     DEFAULT_RESERVE_TOKENS,
     estimate_context_budget,
 )
-from codeagent.core.context_preflight import (
+from codeagent.core.context.preflight import (
     ContextPreflightConfig,
     ContextPreflightResult,
     PreflightStatus,
     evaluate_context_preflight,
 )
+from codeagent.core.context.contracts import (
+    ContextBudgetPort,
+    ContextPreparationRequest,
+    ContextPreparer,
+    ContextToolDefinition,
+)
 from codeagent.core.agent import Agent
-from codeagent.core.errors import (
+from codeagent.core.contracts.errors import (
     AgentContinueError,
     AgentRuntimeError,
     ContextPreparationError,
     ContextPreflightError,
 )
-from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.execution import (
+from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.execution.runtime import (
     CleanupResult,
     OperationRegistry,
     ToolExecutionRuntime,
     ToolOperation,
 )
-from codeagent.core.loop import (
+from codeagent.core.orchestration.loop import (
     DEFAULT_RECURSION_LIMIT,
     RecursionLimitError,
     run_agent_loop,
     run_agent_loop_continue,
 )
-from codeagent.core.messages import (
+from codeagent.core.contracts.messages import (
     CleanupStatus,
     Message,
     ToolCall,
     ToolExecutionStatus,
     ToolResult,
 )
-from codeagent.core.ports import (
-    AgentLoopConfig,
+from codeagent.core.contracts.ports import (
     AgentTool,
-    ContextBudgetPort,
-    ContextPreparationRequest,
-    ContextPreparer,
-    ContextToolDefinition,
     ModelPort,
     ModelResponse,
     StreamEvent,
+    ToolCleanupPort,
     ToolDecision,
 )
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 __all__ = [
     "AgentEvent",
@@ -94,6 +97,7 @@ __all__ = [
     "StreamEvent",
     "ToolCall",
     "ToolDecision",
+    "ToolCleanupPort",
     "ToolExecutionRuntime",
     "ToolExecutionStatus",
     "ToolOperation",

@@ -2,7 +2,7 @@
 
 from codeagent.session import session as session_module
 from codeagent.session import store as store_module
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 from codeagent.session.memory_store import MemoryStore
 from codeagent.session.session_persistence import SessionPersistence
 from codeagent.session.session_runtime import SessionRuntime

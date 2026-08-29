@@ -20,12 +20,12 @@ import uuid
 from dataclasses import replace
 from typing import Any, Callable
 
-from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.context_budget import ContextBudgetSnapshot
-from codeagent.core.context_preflight import ContextPreflightResult
-from codeagent.core.loop import DEFAULT_RECURSION_LIMIT
-from codeagent.core.messages import Message
-from codeagent.core.ports import AgentLoopConfig
+from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.context.budget import ContextBudgetSnapshot
+from codeagent.core.context.preflight import ContextPreflightResult
+from codeagent.core.orchestration.loop import DEFAULT_RECURSION_LIMIT
+from codeagent.core.contracts.messages import Message
+from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.events.bus import EventBus, Subscriber
 from codeagent.session.compaction import (
     DEFAULT_BUDGET_TOKENS,

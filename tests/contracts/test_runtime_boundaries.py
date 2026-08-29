@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 def test_legacy_runtime_entrypoint_reexports_controller() -> None:
@@ -101,7 +101,7 @@ def test_event_mapper_preserves_structured_runtime_correlation() -> None:
 
 
 def test_event_mapper_assigns_stable_tool_error_code() -> None:
-    from codeagent.core.messages import ToolExecutionStatus, ToolResult
+    from codeagent.core.contracts.messages import ToolExecutionStatus, ToolResult
     from codeagent.session.runtime.event_mapper import EventMapper
 
     mapped = EventMapper.map_agent_event(

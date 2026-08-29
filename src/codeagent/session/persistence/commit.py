@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 from codeagent.session.persistence.models import (
     CompactionEntry,
     SessionStore,

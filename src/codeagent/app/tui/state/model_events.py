@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..presentation.blocks import ErrorBlock, ToolCallBlock, UserBlock, CancelledBlock
 from ..presentation.primitives import _visible_user_content
 from .runtime import RuntimePhase
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 class ModelEventMixin:

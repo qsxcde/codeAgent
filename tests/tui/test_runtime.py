@@ -9,7 +9,7 @@ from codeagent.app.tui.state.runtime import (
     RuntimeSnapshot,
 )
 from codeagent.app.tui.presentation.status import StatusBar
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 def test_runtime_reducer_tracks_phase_and_elapsed_operation() -> None:

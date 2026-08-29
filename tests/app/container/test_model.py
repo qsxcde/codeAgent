@@ -67,8 +67,6 @@ async def test_config_inject_system_prompt_with_agents(tmp_path, monkeypatch):
     assert any(str(CONFIG_DIR / "AGENTS.md") in s for s in sources)
     assert any(str(tmp_path / "AGENTS.md") in s for s in sources)
     # 运行一轮:模型收到的首条消息为 system,含基础提示词 + 来源标注
-    import asyncio
-
     events: list = []
     await (_run_config(ports, "你好", emit=events.append))
     assert model.call_history
@@ -225,10 +223,10 @@ async def test_config_inject_skills_section_and_tool(tmp_path, monkeypatch):
     assert "- fmt: 格式化。 (来源:" in first["content"]
     assert "格式化正文" not in first["content"]  # 正文不预载
     skill_tool = next(t for t in ports.tools if getattr(t, "name", "") == "skill")
-    out = skill_tool.invoke(skill_tool.Args(name="fmt"))
-    assert "格式化正文" in out
-    out = skill_tool.invoke(skill_tool.Args(name="nope"))
-    assert "技能不存在" in out
+    out = await skill_tool.execute("skill-1", {"name": "fmt"})
+    assert "格式化正文" in out.content
+    out = await skill_tool.execute("skill-2", {"name": "nope"})
+    assert "技能不存在" in out.content
 
 
 

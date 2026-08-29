@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.ports import AgentLoopConfig
+from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 
 def test_run_state_enforces_lifecycle_transitions() -> None:
@@ -58,7 +58,7 @@ def test_session_runtime_suppresses_events_after_run_finalization() -> None:
 
 
 def test_runtime_failure_classifies_recursion_limit_with_stable_fields() -> None:
-    from codeagent.core.loop import RecursionLimitError
+    from codeagent.core.orchestration.loop import RecursionLimitError
     from codeagent.session.runtime.error_policy import classify_error
     from codeagent.session.runtime.state import RunPhase
 

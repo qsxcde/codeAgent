@@ -7,8 +7,8 @@ import threading
 
 import pytest
 
-from codeagent.core.execution import ToolExecutionRuntime
-from codeagent.core.messages import ToolCall, ToolExecutionStatus, ToolResult
+from codeagent.core.execution.runtime import ToolExecutionRuntime
+from codeagent.core.contracts.messages import ToolCall, ToolExecutionStatus, ToolResult
 from codeagent.tools.atomic import ReadTool
 
 
@@ -22,11 +22,14 @@ class EchoAgentTool:
 
 
 async def test_atomic_tool_contract_returns_structured_result(tmp_path):
+    from codeagent.app.composition.tools.adapter import adapt_tools
+
     path = tmp_path / "message.txt"
     path.write_text("hello", encoding="utf-8")
 
     result = await ToolExecutionRuntime().execute(
-        ReadTool(), ToolCall("read-1", "read", {"file_path": str(path)})
+        adapt_tools([ReadTool()])[0],
+        ToolCall("read-1", "read", {"file_path": str(path)}),
     )
 
     assert result.error is False
@@ -67,7 +70,7 @@ async def test_tool_contract_cancellation_clears_active_operation():
 
 
 async def test_sync_atomic_adapter_reports_uncertain_cleanup_on_cancellation():
-    from codeagent.app.composition.tools.factory import adapt_tools
+    from codeagent.app.composition.tools.adapter import adapt_tools
     from codeagent.tools.base import AtomicTool
     from pydantic import BaseModel
 
@@ -110,7 +113,7 @@ async def test_sync_atomic_adapter_reports_uncertain_cleanup_on_cancellation():
 
 
 async def test_atomic_adapter_preserves_structured_async_tool_result():
-    from codeagent.app.composition.tools.factory import adapt_tools
+    from codeagent.app.composition.tools.adapter import adapt_tools
     from codeagent.tools.atomic.bash import BashInvocationResult
     from codeagent.tools.base import AtomicTool
     from pydantic import BaseModel

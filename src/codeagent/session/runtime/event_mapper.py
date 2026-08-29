@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 class EventMapper:

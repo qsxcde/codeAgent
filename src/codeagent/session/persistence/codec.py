@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from codeagent.core.messages import Message, ToolCall
+from codeagent.core.contracts.messages import Message, ToolCall
 from codeagent.session.persistence.models import CURRENT_VERSION
 
 TITLE_MAX = 20

@@ -4,8 +4,8 @@
 - 无状态:工具本身不持有会话/文件缓存状态,天然可离线测试;
 - 依赖注入:构造函数注入 ``cwd``(相对路径解析基准)与 ``ops``(文件系统抽象,
   缺省 ``LocalFsOps``),工具逻辑不直接触碰文件系统 → 可测试、可远程化;
-- 自研编排对接:循环直接 ``invoke(args)``,不再经 langchain StructuredTool
-  包装(``to_langchain`` 已随编排自研删除);
+- 工具实现保留自己的 Pydantic ``Args`` / ``invoke`` 细节,由应用组合根的
+  ``AgentToolAdapter`` 统一挂载到 core,不让 core 依赖这些实现形态;
 - ``args_schema`` 属性供模型端口生成 OpenAI function schema;
 - 分层约束:本模块不 import langchain,不触碰 core/session。
 """
@@ -23,7 +23,7 @@ __all__ = ["AtomicTool"]
 
 
 class AtomicTool:
-    """无状态原子工具的基类。
+    """无状态原子工具的基类(由组合根适配后进入 Agent Runtime)。
 
     子类需要:
     - 定义 ``name`` / ``description`` 类属性;

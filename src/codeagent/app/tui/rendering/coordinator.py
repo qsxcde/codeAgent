@@ -9,7 +9,7 @@ from dataclasses import replace
 from ..ports.backend import TuiBackend
 from ..state.model import TuiModel
 from .scheduler import FrameScheduler, ResizeDebouncer
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 class TuiEventBuffer:

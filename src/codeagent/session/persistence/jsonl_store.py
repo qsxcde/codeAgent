@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterator
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 from codeagent.session.persistence.codec import (
     _derive_title,
     _dict_to_message,

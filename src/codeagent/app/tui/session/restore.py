@@ -8,7 +8,7 @@ from typing import Any
 
 from codeagent.app.errors.reporting import report_unexpected_error
 from ..state.model import TuiModel
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 @dataclass(frozen=True)

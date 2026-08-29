@@ -8,6 +8,7 @@ import pytest
 
 from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
+from codeagent.app.composition.tools.adapter import adapt_tools
 from codeagent.core import AgentLoopConfig
 from codeagent.session import AgentSession, EventBus
 from codeagent.session.store import MemoryStore
@@ -26,7 +27,9 @@ def session_factory() -> Callable[..., AgentSession]:
     ) -> AgentSession:
         config = AgentLoopConfig(
             model=ChatModelPort(model or FakeClient(response="测试回复")),
-            tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
+            tools=adapt_tools(
+                [ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()]
+            ),
         )
         return AgentSession(config, EventBus(), store=store, session_id=session_id)
 

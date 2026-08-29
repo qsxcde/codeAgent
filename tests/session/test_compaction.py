@@ -4,7 +4,7 @@
 文件操作 details 提取。全部离线,零文件系统依赖。
 """
 
-from codeagent.core.messages import Message, ToolCall
+from codeagent.core.contracts.messages import Message, ToolCall
 from codeagent.session.compaction import (
     DEFAULT_BUDGET_TOKENS,
     estimate_tokens,

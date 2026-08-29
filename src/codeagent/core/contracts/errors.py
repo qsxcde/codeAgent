@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from codeagent.core.context_preflight import ContextPreflightResult
+from typing import Any
 
 __all__ = [
     "AgentContinueError",
@@ -39,7 +36,7 @@ class ContextPreflightError(ContextPreparationError):
 
     phase = "context_preflight"
 
-    def __init__(self, result: "ContextPreflightResult") -> None:
+    def __init__(self, result: Any) -> None:
         self.result = result
         self.code = (
             "context_budget_exceeded"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 from codeagent.session.persistence.jsonl_store import JsonFileStore
 from codeagent.session.persistence.memory_store import MemoryStore
 

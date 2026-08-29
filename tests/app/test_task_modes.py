@@ -40,6 +40,7 @@ async def test_plan_policy_is_enforced_by_react_tool_boundary():
 
     from codeagent.ai.providers.fake import FakeClient
     from codeagent.app.container import ChatModelPort
+    from codeagent.app.composition.tools.adapter import adapt_tools
     from codeagent.core import AgentContext, AgentLoopConfig, EventType, ToolDecision, run_agent_loop
     from codeagent.tools.atomic import EditTool, ReadTool, WriteTool
 
@@ -62,7 +63,7 @@ async def test_plan_policy_is_enforced_by_react_tool_boundary():
 
     config = AgentLoopConfig(
         model=ChatModelPort(model),
-        tools=[ReadTool(), WriteTool(), EditTool()],
+        tools=adapt_tools([ReadTool(), WriteTool(), EditTool()]),
         before_tool_call=before_tool_call,
     )
 

@@ -16,7 +16,7 @@ from ..presentation.primitives import RichLine, _visible_user_content
 from .runtime import RuntimePhase, RuntimeReducer, RuntimeSnapshot
 from ..presentation.status import StatusBar
 from .transcript import Transcript
-from codeagent.core.events import AgentEvent
+from codeagent.core.contracts.events import AgentEvent
 
 
 class TuiModel(ModelHistoryMixin, ModelEventMixin):

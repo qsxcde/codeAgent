@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from codeagent.core.ports import PolicyDecision
+from codeagent.core.contracts.ports import PolicyDecision
 
 
 def _create_policy(cfg: Any = None, approval_mode: str = "deny") -> Any:

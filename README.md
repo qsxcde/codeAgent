@@ -21,7 +21,7 @@
 
 - **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频"思考中"提示、人类可读的工具摘要及可展开 edit/write 意图差异、model/effort/cwd 状态栏、斜杠命令体系(含 `/provider` `/model` `/effort` `/login` `/skills` `/mcp` `/sessions` `/tree` `/tools` `/status` `/quit`)与模糊补全 / 选择器、Markdown 渲染、Esc 运行中打断 / 空闲退出并打印完整文档。
 - **Headless CLI**(默认形态):`--prompt` 一次性输入或 stdin 逐行读取,事件聚合输出最终回复。
-- **自研编排引擎**:`core/agent.py` 的纯内存 `Agent` 外壳与 `core/loop.py` 的 `run_agent_loop`/`run_agent_loop_continue` 驱动 ReAct（模型→工具→继续/结束）；Session 只负责持久化、压缩和会话事件，零 langgraph/langchain 依赖。
+- **自研编排引擎**:`core/agent.py` 的纯内存 `Agent` 外壳与 `core/orchestration/loop.py` 的 `run_agent_loop`/`run_agent_loop_continue` 驱动 ReAct（模型→工具→继续/结束）；Session 只负责持久化、压缩和会话事件，零 langgraph/langchain 依赖。
 - **会话层**:`SessionStore`(JSONL 树形,重启可恢复,含用量累计)+ `SessionManager`(create / switch / fork / dispose)+ 上下文压缩;成功轮次才落盘,失败/取消内存回滚;`abort` / `steer` / `followup`;`/tree` 和 `/sessions list` 提供分叉树导航。
 - **安全确认环**:执行前 `ApprovalPolicy`(bash 危险命令黑名单 + 语义级检测 + 文件访问边界三档 deny/ask/allow);headless 缺省 fail closed。
 - **模型配置层**:每 provider 一个文件(配置 + 工厂自包含),内置模型目录 + `models.json` 按 id upsert 合并,支持思考强度(`model:effort`)与运行时热切换(/provider /model /effort /login)。
@@ -168,12 +168,12 @@ codeagent/
     │
     ├── core/                    # [Agent Runtime] 纯内存,不 import config/tools/ai/session
     │   ├── agent.py             #   Agent:prompt / continue / abort / steer / follow-up
-    │   ├── context.py           #   AgentContext:运行期消息与工具
-    │   ├── loop.py              #   run_agent_loop(+continue):本轮新增消息
-    │   ├── execution.py         #   共享工具执行器:并发/超时/取消/清理
-    │   ├── ports.py             #   AgentLoopConfig / AgentTool / 模型流端口
-    │   ├── messages.py          #   Agent Runtime 消息、ToolCall、ToolResult
-    │   └── events.py            #   Agent 生命周期事件
+    │   ├── contracts/           #   messages / events / errors / 外部 ports
+    │   ├── context/             #   AgentContext、预算、preflight 与上下文契约
+    │   ├── model/               #   请求准备与模型流归一化
+    │   ├── execution/           #   runtime、operation 状态、清理与结果归一化
+    │   ├── orchestration/       #   loop、turn、工具批次/调用与 AgentLoopConfig
+    │   └── support/             #   无领域状态的同步/异步辅助函数
     │
     ├── session/                 # [会话层] Agent 外壳 + 持久化/压缩/事件适配
     │   ├── session.py           #   AgentSession:run(事件分发)/ abort / steer / followup
@@ -206,7 +206,7 @@ tests/                          # 按行为域分包，1000 passed（2026-08-28�
 
 **分层依赖规则**:依赖单向流动,跨层 import 只允许出现在 `app/container.py` / `app/main.py`。判据:`core/` 中 grep 不到 `config / tools / ai / session` 字面量,由 `tests/test_decoupling.py` AST 扫描强制校验。详见 [`docs/design/architecture.md`](docs/design/architecture.md) §8-9。
 
-**运行时边界**：`core` 只执行内存 Agent Runtime；模型 provider 的消息/参数转换由 `app/composition/model_factory.py` 完成，Atomic/MCP 工具由组合根适配为 `AgentTool`，Memory 通过 `transform_context`、安全确认通过 `before_tool_call` 注入。Skill 文件、MCP 客户端、JSONL、压缩和会话树不进入 core 主循环。
+**运行时边界**：`core` 只执行内存 Agent Runtime；模型 provider 的消息/参数转换由 `app/composition/model/port.py` 完成，Atomic/MCP 工具由 `app/composition/tools/adapter.py` 显式适配为 `AgentTool`，Memory 通过 `transform_context`、安全确认通过 `before_tool_call` 注入。Skill 文件、MCP 客户端、JSONL、压缩和会话树不进入 core 主循环。
 
 ## 当前状态与后续
 

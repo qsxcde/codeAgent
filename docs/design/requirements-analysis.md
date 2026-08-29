@@ -47,7 +47,7 @@
 
 | 条目 | 本文档原文口径 | 现状 |
 |---|---|---|
-| 编排引擎 | LangGraph(StateGraph / ToolNode / checkpointer;FR-4、AR-5、IR-2) | **自研 ReAct 主循环**(`core/loop.py` `run_agent_loop`,模型→工具→继续/结束,事件直接 emit)+ 消息归约(`core/messages.py`,按 tool_call_id 归属,uuid7) |
+| 编排引擎 | LangGraph(StateGraph / ToolNode / checkpointer;FR-4、AR-5、IR-2) | **自研 ReAct 主循环**(`core/orchestration/loop.py` `run_agent_loop`,模型→工具→继续/结束,事件直接 emit)+ 消息归约(`core/contracts/messages.py`,按 tool_call_id 归属,uuid7) |
 | AgentLoopConfig | `bound_model / tool_executor / checkpointer`(IR-1、AR-2) | `model / tools / policy`(无 store;core 循环不落盘,存储经会话层注入) |
 | 编排自研第二步(FR-4.8 / AR-5) | 📝 暂缓,三未决问题待答 | ✅ **已落地**(2026-08-14,spike 双跑 diff 通过;平台部署非刚需、JSONL 树形为格式结论) |
 | 事件类型(FR-6.1 / NFR-O1) | 10 类 | **11 类**(新增 `confirmation_requested`,执行前安全确认环事件) |
@@ -141,7 +141,7 @@
 | **横切轴:依赖方向** | config / 工具 / 编排 / 调用之间谁认识谁 | 端口-适配器(hexagonal) |
 | **纵切轴:生命周期** | 装配(Factory)/ 单个对话(Session)/ 会话生命周期(Runtime) | Pi-Agent 三层协作 |
 
-Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 ReAct 主循环**(`core/loop.py` `run_agent_loop`)提供无状态循环(模型→工具→继续/结束),有状态外壳由 `session/` 层补齐。
+Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 ReAct 主循环**(`core/orchestration/loop.py` `run_agent_loop`)提供无状态循环(模型→工具→继续/结束),有状态外壳由 `session/` 层补齐。
 
 ### 2.4 差异化定位
 
@@ -372,10 +372,10 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 |---|---|---|
 | F-01 | `tools/` 原子工具 read/write/edit/bash + 注册表 | ✅ 已落地(08-09) |
 | F-02 | ~~`tools/pipeline.py` 拦截管道~~ | ❌ 已删除(危险命令由 bash 黑名单承担) |
-| F-03 | `core/ports.py` AgentLoopConfig | ✅ 已落地(**自研版:`model / tools / policy`,无 store**) |
-| F-04 | `core/messages.py` 消息模型 + `core/loop.py` `run_agent_loop` | ✅ 已落地(自研编排后 `state.py`/`build_graph` 删除,改为自研 ReAct 主循环,2026-08-14) |
+| F-03 | `core/orchestration/config.py` AgentLoopConfig | ✅ 已落地(**自研版:`model / tools / policy`,无 store**) |
+| F-04 | `core/contracts/messages.py` 消息模型 + `core/orchestration/loop.py` `run_agent_loop` | ✅ 已落地(自研编排后 `state.py`/`build_graph` 删除,改为自研 ReAct 主循环,2026-08-14) |
 | F-05 | ~~`core/nodes/` agent & tools 节点~~ | ⚠️ 随自研编排删除(循环内直接 emit,工具并行经 `asyncio.gather`) |
-| F-06 | `core/events.py` AgentEvent 类型 | ✅ 已落地(**11 类事件**,含 `confirmation_requested`) |
+| F-06 | `core/contracts/events.py` AgentEvent 类型 | ✅ 已落地(**11 类事件**,含 `confirmation_requested`) |
 | F-07 | `session/bus.py` 事件总线 | ✅ 已落地 |
 | F-08 | `session/session.py` AgentSession | ✅ 已落地(含 abort / steer / followup;自研版) |
 | F-09 | `container.py` 接线(现 `app/container.py`) | ✅ 已落地(create_agent_config / create_agent_session / create_session_manager / create_tui_app) |
@@ -436,7 +436,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 | `app/config.py` | 全局配置(仅 provider 无关字段) | — | core、session、cli |
 | `ai/` | 模型基础设施(model/catalog/transport/providers) | 基础依赖 | app、core、session、tools 的反向 |
 | `tools/` | 工具层:原子工具 + 注册表 | config | 模型、编排 |
-| `core/` | 编排层:端口、消息、循环、事件 | 只有 `ports.py`(及 core 内部) | config、ai、tools、session |
+| `core/` | Agent Runtime:契约、上下文、模型请求、执行与编排 | 只有 core 子包与注入端口 | config、ai、tools、session |
 | `session/` | 有状态会话 + 事件分发 | core(ports/loop)、bus、store | ai、tools、config |
 | `app/container.py` | 组合根,创建图与会话 | 全部(唯一交汇点) | — |
 | `app/main.py` | 命令行入口(headless) | container、session、bus | core、ai、tools |
@@ -450,11 +450,11 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 @dataclass(frozen=True)
 class AgentLoopConfig:
     model: ModelPort               # 模型端口(组合根适配 ai 层 ChatClient)
-    tools: list[Any]               # 工具列表(自研 AtomicTool 实例,直接 invoke)
+    tools: list[AgentTool]         # 工具列表(组合根适配后的 AgentTool)
     policy: ApprovalPolicy | None = None   # 执行前安全策略(可空 = 无确认环)
 ```
 
-- 设计理由:编排层不绑定具体工具——工具列表作为数据传入循环按名查找 `invoke`,加/换工具时 `core/` 零改动;`store` 不在端口内(core 循环不落盘,存储经会话层注入)。
+- 设计理由:编排层不绑定具体工具——工具列表作为 `AgentTool` 数据传入循环,加/换工具时 `core/` 零改动;`store` 不在端口内(core 循环不落盘,存储经会话层注入)。
 
 **run_agent_loop(自研 ReAct 主循环)**:
 
@@ -494,7 +494,7 @@ class AgentSession:
 | 变更 | 应动的文件 | 若还动了 | 结论 |
 |---|---|---|---|
 | 新增一个 provider | `ai/` + 环境变量 | `session.py` / `core/` | ❌ 泄漏 |
-| 新增/更换一个工具 | `tools/` | `core/loop.py` / `ai/` | ❌ 泄漏 |
+| 新增/更换一个工具 | `tools/` | `core/orchestration/` / `ai/` | ❌ 泄漏 |
 | 改编排形状(加节点/改循环) | `core/` | `ai/` / `tools/` | ❌ 泄漏 |
 | 换会话存储 | `store.py` + `container` | `cli.py` / `core/` | ❌ 泄漏 |
 | 加会话分叉 | `session/` | `core/` | ❌ 泄漏 |
@@ -629,7 +629,7 @@ class AgentSession:
 
 | ID | 接口 | 契约要点 | 消费方 | 状态 |
 |---|---|---|---|---|
-| IR-1 | `AgentLoopConfig` | frozen dataclass:`model`(ModelPort)/ `tools`(list[Any])/ `policy`(ApprovalPolicy,可选);**无 store**(core 不落盘) | core/loop | ✅ 已落地(自研版) |
+| IR-1 | `AgentLoopConfig` | dataclass:`model`(ModelPort)/ `tools`(list[AgentTool])/ `tool_runtime`(可选);**无 store**(core 不落盘) | core/orchestration | ✅ 已落地(自研版) |
 | IR-2 | `run_agent_loop(session, model, tools, policy, ...)` | 自研 ReAct 主循环;循环内直接 emit 事件;循环条件看消息形状 | session/session | ✅ 已落地(自研版,替代 build_graph) |
 | IR-3 | `AgentSession.run(text, recursion_limit=None)` | async;发布事件不返回值;thread 累积;可被 `abort()` 中断 | CLI / TUI / 测试 | ✅ |
 | IR-4 | `AgentSession.run_sync(text)` | 同步便捷入口(新线程 + asyncio.run) | 脚本 / 无 loop 环境 | ✅ |
@@ -824,7 +824,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | 2 | provider 数量 | 3(deepseek/openai/fake) | 6(+qwen/glm/kimi/minimax) | 3 | **7**(deepseek/openai/qwen/glm/kimi/minimax/fake,`PROVIDERS` 注册表确认) |
 | 3 | TUI 状态 | ✅ 已落地(SessionAgentClient 流式渲染) | ✅ 已落地 | ✅ 已落地 | ✅ **已恢复为 MVP**(`app/tui/`:view/components/backend 端口 + textual 后端,`--tui` 进入;E9~E11);斜杠命令/模糊补全/选择器拆 v0.2 |
 | 4 | 目录结构 | 顶层 `cli.py/container.py/config.py/model_pattern.py` + `tui/` | 同左 | 同左 | `app/` 包(main/config/container/composition)+ `app/tui/`;`ai/` 保留 model/catalog/transport/providers;顶层无 cli/container/config |
-| 5 | 事件类型 | 7 类(无 thinking_delta/run_cancelled/usage) | 7 类 | 7 类 | **10 类**(新增 thinking_delta / run_cancelled / usage,core/events.py 确认) |
+| 5 | 事件类型 | 7 类(无 thinking_delta/run_cancelled/usage) | 7 类 | 7 类 | **10 类**(新增 thinking_delta / run_cancelled / usage,`core/contracts/events.py` 确认) |
 | 6 | 会话接口 | run/subscribe/run_sync;abort 延后 | 同左 | 同左 | 新增 `abort()`、`replace_graph()` 已落地 |
 | 7 | 模型客户端 | langchain-openai 统一接入 | 同左 | 同左 | **自研落地**(协议/传输/桥接三层,pyproject 已移除 langchain-openai;langchain-core/langgraph 保留于编排侧) |
 | 8 | TUI 依赖 | textual 8.2.8 | textual | textual | **textual 已恢复为运行依赖**(TUI MVP 需要;pyproject dependencies 含 `textual>=2.1.0`) |

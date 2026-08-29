@@ -12,17 +12,18 @@ from collections.abc import Mapping
 from collections.abc import Callable
 from typing import Any
 
-from codeagent.core.awaiting import await_if_needed
-from codeagent.core.context_budget import ContextBudgetInput, estimate_context_budget
-from codeagent.core.context_preflight import evaluate_context_preflight
-from codeagent.core.errors import ContextPreparationError, ContextPreflightError
-from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.messages import Message, ToolCall, new_id
-from codeagent.core.ports import (
-    AgentLoopConfig,
+from codeagent.core.support.awaiting import await_if_needed
+from codeagent.core.context.budget import ContextBudgetInput, estimate_context_budget
+from codeagent.core.context.contracts import (
     ContextPreparationRequest,
     ContextToolDefinition,
 )
+from codeagent.core.context.preflight import evaluate_context_preflight
+from codeagent.core.contracts.errors import ContextPreparationError, ContextPreflightError
+from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.messages import Message, ToolCall, new_id
+from codeagent.core.contracts.ports import AgentTool
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 
 def clone_message(message: Message) -> Message:
@@ -46,23 +47,14 @@ def clone_message(message: Message) -> Message:
 
 
 def neutral_tool_definitions(
-    tools: list[Any],
+    tools: list[AgentTool],
 ) -> tuple[ContextToolDefinition, ...]:
     """Expose only serializable tool metadata to context extensions."""
     definitions: list[ContextToolDefinition] = []
     for tool in tools:
-        name = getattr(tool, "name", "") or getattr(tool, "__name__", "")
-        description = getattr(tool, "description", "") or ""
-        parameters = getattr(tool, "parameters", None)
-        if not isinstance(parameters, Mapping):
-            args_schema = getattr(tool, "args_schema", None)
-            model_json_schema = getattr(args_schema, "model_json_schema", None)
-            if callable(model_json_schema):
-                try:
-                    candidate = model_json_schema()
-                except Exception:  # noqa: BLE001 - one bad schema must not leak
-                    candidate = None
-                parameters = candidate if isinstance(candidate, Mapping) else None
+        name = tool.name
+        description = tool.description
+        parameters = tool.parameters
         if not isinstance(parameters, Mapping):
             parameters = {"type": "object", "properties": {}}
         definitions.append(

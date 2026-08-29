@@ -8,9 +8,9 @@ from dataclasses import fields, replace
 from typing import Any, Callable
 
 from codeagent.core import Agent, AgentContext, ToolDecision
-from codeagent.core.events import AgentEvent, EventType
-from codeagent.core.messages import Message
-from codeagent.core.ports import AgentLoopConfig
+from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.messages import Message
+from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.persistence.models import UsageStats
 from codeagent.session.runtime.confirmation import ConfirmationCoordinator
 from codeagent.session.runtime.event_mapper import EventMapper, SideEffectObserver

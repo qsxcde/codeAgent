@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from codeagent.core.errors import ContextPreparationError
-from codeagent.core.loop import RecursionLimitError
+from codeagent.core.contracts.errors import ContextPreparationError
+from codeagent.core.orchestration.loop import RecursionLimitError
 from codeagent.session.runtime.state import RunPhase, RuntimeFailure
 
 

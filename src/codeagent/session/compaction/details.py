@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 
 
 def extract_file_ops(messages: list[Message]) -> dict[str, list[str]]:

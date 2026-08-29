@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from codeagent.core.messages import Message, new_id
+from codeagent.core.contracts.messages import Message, new_id
 
 CURRENT_VERSION = 1
 

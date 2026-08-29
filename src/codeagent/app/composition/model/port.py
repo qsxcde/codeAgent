@@ -6,12 +6,11 @@ import json
 from typing import Any, AsyncIterator
 
 from codeagent.ai.model.types import ChatMessage, ToolCall as AiToolCall, ToolDefinition
-from codeagent.core.context_budget import ContextBudgetInput, ContextBudgetSnapshot, estimate_context_budget
-from codeagent.core.messages import Message, ToolCall
-from codeagent.core.ports import ModelResponse, StreamEvent
+from codeagent.core.context.budget import ContextBudgetInput, ContextBudgetSnapshot, estimate_context_budget
+from codeagent.core.contracts.messages import Message, ToolCall
+from codeagent.core.contracts.ports import AgentTool, ModelResponse, StreamEvent
 
 from .budget import fit_budget_reserves
-from ..tools.definitions import tool_definition_for
 
 
 def to_chat_message(message: Message) -> ChatMessage:
@@ -116,25 +115,41 @@ class ChatModelPort:
             return [ChatMessage(role="system", content=self._system_prompt), *chat]
         return chat
 
-    def stream(self, messages: list[Message], tools: list[Any] | None = None) -> AsyncIterator[StreamEvent]:
+    def stream(
+        self, messages: list[Message], tools: list[AgentTool] | None = None
+    ) -> AsyncIterator[StreamEvent]:
         return self._stream(messages, tools)
 
     def stream_agent(
-        self, messages: list[Message], tools: list[Any] | None = None
+        self, messages: list[Message], tools: list[AgentTool] | None = None
     ) -> AsyncIterator[StreamEvent]:
         return self._stream_agent(messages, tools)
 
     @staticmethod
-    def _tool_definitions(tools: list[Any] | None) -> list[ToolDefinition] | None:
+    def _tool_definitions(
+        tools: list[AgentTool] | None,
+    ) -> list[ToolDefinition] | None:
         if tools is None:
             return None
-        return [
-            tool if isinstance(tool, ToolDefinition) else tool_definition_for(tool)
-            for tool in tools
-        ]
+        definitions: list[ToolDefinition] = []
+        for tool in tools:
+            if isinstance(tool, AgentTool):
+                definitions.append(
+                    ToolDefinition(
+                        name=tool.name,
+                        description=tool.description,
+                        parameters=dict(tool.parameters),
+                    )
+                )
+                continue
+            raise TypeError(
+                "模型工具必须是 AgentTool；"
+                "请在组合根先调用 adapt_tools"
+            )
+        return definitions
 
     def describe_context_budget(
-        self, messages: list[Message], tools: list[Any] | None = None
+        self, messages: list[Message], tools: list[AgentTool] | None = None
     ) -> ContextBudgetSnapshot:
         definitions = self._tool_definitions(tools) or []
         return estimate_context_budget(
@@ -150,7 +165,7 @@ class ChatModelPort:
         )
 
     async def _stream(
-        self, messages: list[Message], tools: list[Any] | None = None
+        self, messages: list[Message], tools: list[AgentTool] | None = None
     ) -> AsyncIterator[StreamEvent]:
         chat = self._prepend_system([to_chat_message(message) for message in messages])
         async for event in self._client.stream(chat, self._tool_definitions(tools)):
@@ -166,7 +181,7 @@ class ChatModelPort:
             )
 
     async def _stream_agent(
-        self, messages: list[Message], tools: list[Any] | None = None
+        self, messages: list[Message], tools: list[AgentTool] | None = None
     ) -> AsyncIterator[StreamEvent]:
         chat = self._prepend_system([to_chat_message(message) for message in messages])
         buffers: dict[int, list[str]] = {}
@@ -207,7 +222,7 @@ class ChatModelPort:
             )
 
     async def generate(
-        self, messages: list[Message], tools: list[Any] | None = None
+        self, messages: list[Message], tools: list[AgentTool] | None = None
     ) -> ModelResponse:
         chat = self._prepend_system([to_chat_message(message) for message in messages])
         response = await self._client.generate(chat, self._tool_definitions(tools))

@@ -5,7 +5,7 @@ import logging
 
 from pydantic import BaseModel
 
-from codeagent.app.composition.tools.factory import AgentToolAdapter
+from codeagent.app.composition.tools.adapter import AgentToolAdapter
 
 
 class _Args(BaseModel):
@@ -26,6 +26,15 @@ class _FailingTool(_LegacyTool):
         raise RuntimeError("token=secret-value")
 
 
+class _HookedTool(_LegacyTool):
+    def __init__(self) -> None:
+        self.received: tuple[object, object] | None = None
+
+    async def ainvoke(self, args: _Args, *, signal=None, on_update=None) -> str:
+        self.received = (signal, on_update)
+        return args.text
+
+
 async def test_agent_tool_adapter_exposes_schema_and_async_execute() -> None:
     adapter = AgentToolAdapter(_LegacyTool())
 
@@ -33,6 +42,8 @@ async def test_agent_tool_adapter_exposes_schema_and_async_execute() -> None:
 
     assert adapter.name == "echo"
     assert adapter.parameters["type"] == "object"
+    assert not hasattr(adapter, "Args")
+    assert not hasattr(adapter, "invoke")
     assert result.content == "hello"
     assert result.tool_call_id == "c1"
 
@@ -49,3 +60,17 @@ async def test_agent_tool_adapter_logs_unexpected_execution_failure(caplog) -> N
     record = caplog.records[-1]
     assert record.getMessage() == "工具执行失败"
     assert record.exc_info is not None
+
+
+async def test_agent_tool_adapter_forwards_optional_runtime_hooks() -> None:
+    tool = _HookedTool()
+    adapter = AgentToolAdapter(tool)
+    signal = object()
+    on_update = object()
+
+    result = await adapter.execute(
+        "c1", {"text": "hello"}, signal=signal, on_update=on_update
+    )
+
+    assert result.content == "hello"
+    assert tool.received == (signal, on_update)

@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from codeagent.core.execution import ToolExecutionRuntime
-from codeagent.core.messages import ToolCall, ToolExecutionStatus, ToolResult
+from codeagent.core.execution.runtime import ToolExecutionRuntime
+from codeagent.core.contracts.messages import ToolCall, ToolExecutionStatus, ToolResult
 
 
 class _AgentTool:
@@ -35,6 +35,29 @@ async def test_runtime_executes_agent_tool_protocol_and_preserves_operation_id()
     assert result.status == ToolExecutionStatus.OK
     assert result.cleanup_status == "confirmed"
     assert tool.calls[0][0:2] == ("c1", {"text": "hello"})
+
+
+async def test_runtime_rejects_unadapted_legacy_tool_without_invoking_it() -> None:
+    class LegacyTool:
+        name = "legacy"
+        Args = dict
+
+        def __init__(self) -> None:
+            self.invoked = False
+
+        def invoke(self, _args: dict[str, str]) -> str:
+            self.invoked = True
+            return "must not run"
+
+    tool = LegacyTool()
+    result = await ToolExecutionRuntime().execute(
+        tool, ToolCall("legacy-1", "legacy", {})
+    )
+
+    assert result.error is True
+    assert result.status == ToolExecutionStatus.FAILED
+    assert "工具契约" in result.content
+    assert tool.invoked is False
 
 
 async def test_runtime_reports_failed_cleanup_without_claiming_confirmation() -> None:
@@ -97,6 +120,8 @@ async def test_runtime_treats_false_cleanup_hook_result_as_failed_cleanup() -> N
 
 
 async def test_runtime_marks_sync_thread_timeout_as_unsupported_cleanup() -> None:
+    from codeagent.app.composition.tools.adapter import adapt_tools
+
     started = asyncio.Event()
 
     class BlockingSyncTool:
@@ -111,7 +136,7 @@ async def test_runtime_marks_sync_thread_timeout_as_unsupported_cleanup() -> Non
     runtime = ToolExecutionRuntime()
     result_task = asyncio.create_task(
         runtime.execute(
-            BlockingSyncTool(),
+            adapt_tools([BlockingSyncTool()])[0],
             ToolCall("c1", "sync", {}),
             timeout=0.001,
             operation_id="op-1",

@@ -4,7 +4,7 @@ import json
 import subprocess
 import sys
 
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.app.tui.benchmark.performance import (
     BenchmarkResult,
     MetricSummary,

@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 from codeagent.session.persistence.codec import _derive_title, _now
 from codeagent.session.persistence.models import (
     CompactionEntry,

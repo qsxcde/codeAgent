@@ -12,7 +12,7 @@ from codeagent.app.composition.tools.definitions import (
 )
 from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.composition.model.factory import ChatModelPort
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 
 
 class _Args:
@@ -63,10 +63,14 @@ def test_composition_tool_conversion_reports_tool_and_schema_failure():
 
 
 async def test_chat_model_port_converts_runtime_tools_before_model_call():
+    from codeagent.app.composition.tools.adapter import adapt_tools
+
     client = FakeClient(response="ok")
     port = ChatModelPort(client)
 
-    await (port.generate([Message(role="user", content="读取")], [_Tool()]))
+    await port.generate(
+        [Message(role="user", content="读取")], adapt_tools([_Tool()])
+    )
 
     assert client.bound_tools == ["read"]
     assert client.call_history[0]["bound_tools"] == ["read"]
@@ -124,6 +128,8 @@ async def test_chat_model_port_injects_system_prompt_at_adapter_boundary() -> No
 
 
 def test_chat_model_port_describes_the_same_system_and_tool_request_budget():
+    from codeagent.app.composition.tools.adapter import adapt_tools
+
     client = FakeClient(response="ok")
     port = ChatModelPort(
         client,
@@ -135,7 +141,7 @@ def test_chat_model_port_describes_the_same_system_and_tool_request_budget():
     )
 
     snapshot = port.describe_context_budget(
-        [Message(role="user", content="read the workspace")], [_Tool()]
+        [Message(role="user", content="read the workspace")], adapt_tools([_Tool()])
     )
 
     assert snapshot.context_window == 1_000

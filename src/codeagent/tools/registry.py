@@ -1,7 +1,7 @@
 """工具注册表:make_tools(cfg) 工厂,装配原子工具集(自研版,2026-08-14)。
 
-组合根在 `app/composition/tool_factory.py` 调用 make_tools,产出可直接交给自研循环的工具列表
-(实现 ``name`` / ``description`` / ``args_schema`` / ``invoke``)。工厂即注入点:
+组合根调用 make_tools 取得具体原子工具,再由 `app/composition/tools/adapter.py`
+转换为可交给自研循环的 AgentTool 列表。工厂即注入点:
 cwd 注入全部工具(design D2;对应 spec「装配时注入工作目录」),技能注册表
 (名 → 渲染块)注入 ``skill`` 工具(design skills-system D3,组合根预渲染)。
 """

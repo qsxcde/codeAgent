@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from codeagent.core.context_preflight import ContextPreflightConfig
+from codeagent.core.context.preflight import ContextPreflightConfig
 
 from ..model.factory import _resolve_context_window, _resolve_model_effort
 from ..runtime.factory import create_agent_config, policy_for_config, runtime_for_config

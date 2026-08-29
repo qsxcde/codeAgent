@@ -12,6 +12,9 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.contract
+
+from codeagent.app.composition.tools.adapter import adapt_tools
 from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
 from codeagent.core import (
@@ -30,7 +33,7 @@ from codeagent.tools.atomic import BashTool, ReadTool
 def _config(model: FakeClient, *, before_tool_call=None, tool_timeout=None):
     return AgentLoopConfig(
         model=ChatModelPort(model),
-        tools=[ReadTool(), BashTool()],
+        tools=adapt_tools([ReadTool(), BashTool()]),
         before_tool_call=before_tool_call,
         tool_timeout=tool_timeout,
     )
@@ -143,7 +146,7 @@ async def test_runtime_timeout_is_a_structured_tool_result():
             await asyncio.Event().wait()
             return "late"
 
-    from codeagent.core.ports import AgentTool
+    from codeagent.core.contracts.ports import AgentTool
 
     assert isinstance(SlowTool(), AgentTool)
     model = FakeClient(
@@ -189,7 +192,7 @@ async def test_cancelled_sync_tool_publishes_uncertain_cleanup_metadata():
     runtime = ToolExecutionRuntime(max_concurrency=1)
     config = AgentLoopConfig(
         model=ChatModelPort(model),
-        tools=[BlockingSyncTool()],
+        tools=adapt_tools([BlockingSyncTool()]),
         tool_runtime=runtime,
     )
     task = asyncio.create_task(run_agent_loop(AgentContext(), config, "执行", emit=events.append))

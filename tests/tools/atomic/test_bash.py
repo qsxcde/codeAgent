@@ -36,9 +36,11 @@ def test_bash_timeout(tmp_path):
 
 async def test_bash_async_agent_timeout_cleans_process_tree(tmp_path):
     """Agent timeout uses Bash's cancellable subprocess path, not a thread wait."""
+    from codeagent.app.composition.tools.adapter import adapt_tools
+
     async def scenario():
         return await ToolExecutionRuntime().execute(
-            BashTool(cwd=str(tmp_path)),
+            adapt_tools([BashTool(cwd=str(tmp_path))])[0],
             ToolCall(
                 "b1",
                 "bash",
@@ -338,4 +340,3 @@ def test_bash_output_keeps_tail_on_truncation(tmp_path):
     out = _invoke(BashTool(cwd=str(tmp_path)), command="seq 1 40000")
     assert "[输出已截断(保留末尾)]" in out
     assert "40000" in out
-

@@ -11,7 +11,7 @@ from codeagent.app.tasks.supervisor import TaskEvent, TaskPhase, TaskSupervisor
 from ..commands.parser import Command
 from ..presentation.primitives import Span
 from ..presentation.theme import ACCENT, DIM, ERROR, WARNING
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 
 class TuiConversationCoordinator:

@@ -27,7 +27,7 @@
 | # | 职责 | 实现 | 位置 |
 |---|---|---|---|
 | ① | 状态归约 | `add_messages`(同 role 合并 / 工具结果按 tool_call_id 归属) | `core/state.py` |
-| ② | 图遍历 | `astream`(START→agent→should_continue→tools→agent/END,双通道 messages+updates) | `core/loop.py` |
+| ② | 图遍历 | `astream`(START→agent→should_continue→tools→agent/END,双通道 messages+updates) | `core/orchestration/loop.py` |
 | ③ | 工具执行 | `ToolNode`(我们已外包一层并行+错误归属) | `core/nodes/tools.py` |
 | ④ | 持久化 | `InMemorySaver` + thread_id 快照 | `container.py` |
 
@@ -194,7 +194,7 @@ for call in msg.tool_calls:
 ## 8. 实施前未决问题及结论
 
 1. **平台部署是不是刚需**?结论：当前不是刚需，`langgraph.json` 不再保留；Web/HTTP 入口待真实消费者出现后按需重估。
-2. **消息归约正确性**:结论：5 场景双跑 diff 通过，当前由 `core/messages.py` 按 `tool_call_id` 归约。
+2. **消息归约正确性**:结论：5 场景双跑 diff 通过，当前由 `core/contracts/messages.py` 按 `tool_call_id` 归约。
 3. **会话持久化格式**:结论：采用 JSONL 树形 `SessionStore`，支持恢复、分叉、压缩和回放。
 
 ## 9. 当前复核（2026-08-28）

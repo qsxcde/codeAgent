@@ -7,9 +7,9 @@ import asyncio
 import inspect
 from typing import Any, Callable
 
-from codeagent.core.execution import ToolExecutionRuntime
-from codeagent.core.context_preflight import ContextPreflightConfig
-from codeagent.core.ports import AgentLoopConfig
+from codeagent.core.execution.runtime import ToolExecutionRuntime
+from codeagent.core.context.preflight import ContextPreflightConfig
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 from ..model.factory import (
     DEFAULT_RESERVE_TOKENS,
@@ -19,7 +19,8 @@ from ..model.factory import (
 from ..model import selection as model_selection
 from ..policy import _create_policy
 from ..prompts import _build_system_prompt, _load_skills
-from ..tools.factory import _load_mcp_tools, adapt_tools, create_tools
+from ..tools.adapter import adapt_tools
+from ..tools.factory import _load_mcp_tools, create_tools
 
 
 class AgentRuntime:

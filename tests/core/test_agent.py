@@ -5,10 +5,11 @@ import asyncio
 import pytest
 
 from codeagent.core.agent import Agent
-from codeagent.core.context import AgentContext
-from codeagent.core.events import EventType
-from codeagent.core.messages import Message
-from codeagent.core.ports import AgentLoopConfig, StreamEvent
+from codeagent.core.context.model import AgentContext
+from codeagent.core.contracts.events import EventType
+from codeagent.core.contracts.messages import Message
+from codeagent.core.contracts.ports import StreamEvent
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 
 class _Model:

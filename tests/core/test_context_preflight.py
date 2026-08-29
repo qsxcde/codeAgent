@@ -4,13 +4,14 @@ import math
 
 import pytest
 
-from codeagent.core.context_budget import ContextBudgetSnapshot
-from codeagent.core import context_preflight
-from codeagent.core.context import AgentContext
-from codeagent.core.errors import ContextPreflightError
-from codeagent.core.events import EventType
-from codeagent.core.loop import run_agent_loop
-from codeagent.core.ports import AgentLoopConfig, StreamEvent
+from codeagent.core.context.budget import ContextBudgetSnapshot
+from codeagent.core.context import preflight as context_preflight
+from codeagent.core.context.model import AgentContext
+from codeagent.core.contracts.errors import ContextPreflightError
+from codeagent.core.contracts.events import EventType
+from codeagent.core.orchestration.loop import run_agent_loop
+from codeagent.core.contracts.ports import StreamEvent
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 
 def _snapshot(*, headroom: int, status: str = "estimate") -> ContextBudgetSnapshot:

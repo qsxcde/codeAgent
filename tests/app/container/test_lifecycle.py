@@ -9,7 +9,7 @@ def test_create_agent_config_injects_shared_tool_runtime():
 
         mock_llm.return_value = FakeClient(response="测试回复")
         from codeagent.app.container import create_agent_config
-        from codeagent.core.execution import ToolExecutionRuntime
+        from codeagent.core.execution.runtime import ToolExecutionRuntime
 
         config = create_agent_config()
 
@@ -20,7 +20,7 @@ def test_create_agent_config_injects_shared_tool_runtime():
 async def test_agent_runtime_close_is_idempotent():
     """Composition-root runtime closes model resources exactly once."""
     from codeagent.app.container import AgentRuntime
-    from codeagent.core.ports import AgentLoopConfig
+    from codeagent.core.orchestration.config import AgentLoopConfig
 
     class Closable:
         model_id = "stub"
@@ -41,7 +41,7 @@ async def test_agent_runtime_close_is_idempotent():
 
 async def test_agent_runtime_waits_for_sync_model_close():
     from codeagent.app.container import AgentRuntime
-    from codeagent.core.ports import AgentLoopConfig
+    from codeagent.core.orchestration.config import AgentLoopConfig
 
     class SyncClosable:
         def __init__(self):
@@ -61,7 +61,7 @@ async def test_agent_runtime_waits_for_sync_model_close():
 
 async def test_concurrent_agent_runtime_close_waits_for_one_shared_close():
     from codeagent.app.container import AgentRuntime
-    from codeagent.core.ports import AgentLoopConfig
+    from codeagent.core.orchestration.config import AgentLoopConfig
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -86,13 +86,17 @@ async def test_concurrent_agent_runtime_close_waits_for_one_shared_close():
 
 async def test_agent_runtime_closes_model_after_active_tool_is_cancelled():
     from codeagent.app.container import AgentRuntime
-    from codeagent.core.execution import ToolExecutionRuntime
-    from codeagent.core.ports import AgentLoopConfig
+    from codeagent.core.execution.runtime import ToolExecutionRuntime
+    from codeagent.core.orchestration.config import AgentLoopConfig
 
     started = asyncio.Event()
     order: list[str] = []
 
     class SlowTool:
+        name = "slow"
+        description = "slow"
+        parameters = {"type": "object"}
+
         async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
             started.set()
             await asyncio.Event().wait()
@@ -104,7 +108,7 @@ async def test_agent_runtime_closes_model_after_active_tool_is_cancelled():
             order.append("model_close")
             assert tool_runtime.active_operations == {}
 
-    from codeagent.core.messages import ToolCall
+    from codeagent.core.contracts.messages import ToolCall
 
     tool_runtime = ToolExecutionRuntime()
     tool_task = asyncio.create_task(
@@ -125,7 +129,7 @@ async def test_agent_runtime_closes_model_after_active_tool_is_cancelled():
 
 async def test_agent_runtime_is_removed_from_registry_after_close():
     from codeagent.app.container import AgentRuntime, runtime_for_config
-    from codeagent.core.ports import AgentLoopConfig
+    from codeagent.core.orchestration.config import AgentLoopConfig
 
     class Closable:
         async def aclose(self):
@@ -172,4 +176,3 @@ def test_rebuild_config_closes_realized_previous_runtime():
     assert len(clients) == 2
     assert clients[0].closed == 1
     assert clients[1].closed == 0
-

@@ -56,7 +56,9 @@ async def test_forked_session_started_carries_previous_session_id():
     """分叉会话首轮 SESSION_STARTED 事件 metadata 携带父会话 id(对齐 Pi reason=fork)。"""
     config = AgentLoopConfig(
         model=ChatModelPort(FakeClient(response="OK")),
-        tools=[ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()],
+        tools=adapt_tools(
+            [ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()]
+        ),
     )
     sess = AgentSession(config, EventBus(), previous_session_id="parent-1")
     seen: list = []
@@ -95,4 +97,3 @@ async def test_session_context_transform_is_model_only_and_does_not_change_histo
     assert seen
     assert any(message.content == "memory-only" for message in seen[0])
     assert all(message.content != "memory-only" for message in sess.history)
-

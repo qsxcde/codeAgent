@@ -22,6 +22,8 @@ def test_bash_invocation_result_exposes_verification_metadata():
 
 
 async def test_tool_runtime_propagates_bash_metadata():
+    from codeagent.app.composition.tools.adapter import AgentToolAdapter
+
     class FakeTool:
         name = "bash"
 
@@ -39,7 +41,9 @@ async def test_tool_runtime_propagates_bash_metadata():
             )
 
     result = await (
-        ToolExecutionRuntime().execute(FakeTool(), ToolCall("c1", "bash", {}))
+        ToolExecutionRuntime().execute(
+            AgentToolAdapter(FakeTool()), ToolCall("c1", "bash", {})
+        )
     )
 
     assert result.status == "failed"

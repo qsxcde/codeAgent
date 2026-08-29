@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from codeagent.core.messages import Message
+from codeagent.core.contracts.messages import Message
 
 DEFAULT_BUDGET_TOKENS = 20_000
 

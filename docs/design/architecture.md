@@ -30,7 +30,7 @@
 - **横切轴**解决"零件怎么装":依赖单向流动,组合根是唯一交汇点。
 - **纵切轴**解决"装好之后会话怎么活":三层生命周期不同、变化率不同,不该绑在一个类里。
 
-**Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构**:无状态循环是 `core/loop.py` 的 `run_agent_loop` / `run_agent_loop_continue`，有状态内存外壳是 `core/agent.py` 的 `Agent`，而 `session/` 只补齐历史提交、落盘、压缩和 Session 事件。不要把它与横切/纵切混淆。
+**Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构**:无状态循环是 `core/orchestration/loop.py` 的 `run_agent_loop` / `run_agent_loop_continue`，有状态内存外壳是 `core/agent.py` 的 `Agent`，而 `session/` 只补齐历史提交、落盘、压缩和 Session 事件。不要把它与横切/纵切混淆。
 
 ## 3. 现状
 
@@ -41,7 +41,7 @@
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 仅存 `llm_provider`。
 - `ai/` 层:模型基础设施(provider / catalog / model / transport),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);provider/model/effort 选择位于 `app/composition/model/selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
-- `core/` Agent Runtime:context / agent / loop / execution / ports / messages / events(纯内存、全异步),模块顶层零副作用。
+- `core/` Agent Runtime:根级 `agent.py` 为运行时外壳，`contracts/`、`context/`、`model/`、`execution/`、`orchestration/` 和 `support/` 按职责组织纯内存、全异步实现；模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
 - 事件 11 类:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)。
@@ -112,13 +112,13 @@ codeagent/
 │   │       └── fake.py               #   FakeClient + make_llm(离线测试)
 │   │
 │   ├── core/                         # [Agent Runtime]  ← pi-agent-core ✅ 已落地
-│   │   ├── context.py                #   AgentContext(纯内存上下文)
 │   │   ├── agent.py                  #   Agent(prompt/continue/abort/steer/follow-up)
-│   │   ├── loop.py                   #   run_agent_loop(+continue),返回本轮新增消息
-│   │   ├── execution.py              #   共享工具执行器(并发/超时/取消/清理)
-│   │   ├── ports.py                  #   AgentLoopConfig / AgentTool / 模型流端口
-│   │   ├── messages.py               #   Agent Runtime 消息、ToolCall、ToolResult
-│   │   └── events.py                 #   Agent 生命周期事件
+│   │   ├── contracts/                #   messages / events / errors / ports
+│   │   ├── context/                  #   AgentContext、预算与 preflight
+│   │   ├── model/                    #   模型请求准备与流归一化
+│   │   ├── execution/                #   工具执行、状态、清理与结果
+│   │   ├── orchestration/            #   loop、turn、工具批次/调用与配置
+│   │   └── support/                  #   通用同步/异步辅助
 │   │
 │   ├── session/                      # [Session + Runtime]  ← Pi 核心增量 ✅ 已落地
 │   │   ├── session.py                #   AgentSession: run / subscribe / abort / steer / followup
@@ -130,7 +130,7 @@ codeagent/
 │   │   └── navigation/               #   会话树与分支导航
 │   │
 │   ├── tools/                        # [工具层] hexagonal ✅ 已落地
-│   │   ├── base.py                   #   AtomicTool 基类(Args pydantic schema → invoke)
+│   │   ├── base.py                   #   AtomicTool 实现(由组合根适配为 AgentTool)
 │   │   ├── registry.py               #   make_tools 工厂(8 个内建工具,cwd/ops 注入)
 │   │   ├── security/                  #   执行前安全分类器与 deny/ask/allow 决策
 │   │   ├── atomic/                   #   read / write / edit / bash / grep / find / ls / skill
@@ -196,7 +196,7 @@ codeagent/
 ### 5.1 AgentLoopConfig —— 编排认识外部世界的唯一窗口
 
 ```python
-# core/ports.py
+# core/orchestration/config.py
 @dataclass
 class AgentLoopConfig:
     model: ModelPort               # 模型端口(组合根适配 ai 层 ChatClient)
@@ -205,14 +205,14 @@ class AgentLoopConfig:
     before_tool_call: Callable | None = None
 ```
 
-**为什么 `model` 而不是 `model + tools` 绑定**:工具列表作为数据传入循环(循环按名查找 `invoke`),编排层不需要知道工具内部实现;加/换工具时 `core/` 零改动。
+**为什么 `model` 而不是 `model + tools` 绑定**:工具列表作为实现 `AgentTool` 的数据传入循环,编排层不需要知道工具内部实现;加/换工具时 `core/` 零改动。具体 Atomic/MCP 工具在组合根先经 `AgentToolAdapter` 挂载。
 
 **`store` 不在端口内**:core 循环从不落盘(成功轮次才写由会话层负责),会话存储只经 `AgentSession` / `SessionManager` 注入(`session-manager` change 清理死字段)。
 
 ### 5.2 run_agent_loop —— 自研 ReAct 主循环
 
 ```python
-# core/loop.py
+# core/orchestration/loop.py
 async def run_agent_loop(context, config, prompt, *, emit=None, recursion_limit=50) -> list[Message]:
     # for 循环:模型 → 工具 → 继续/结束
     # 模型调用 stream/generate → emit(text_delta / thinking_delta / agent_message)
@@ -224,7 +224,7 @@ async def run_agent_loop(context, config, prompt, *, emit=None, recursion_limit=
 - 模块顶层**没有任何副作用**(不建模型、不发请求、不读 key),平台可直接 import。
 - 循环条件由消息形状驱动(最后一条有没有 `tool_calls`),**不 import 任何具体工具**。
 - 事件在循环内**直接 emit**(无翻译层),thinking / usage 事件原生化。
-- `recursion_limit`(默认 50)是循环计数;`abort()` 抛 CancelledError 自然传播;工具执行 `asyncio.to_thread` + 超时。
+- `recursion_limit`(默认 50)是循环计数;`abort()` 抛 CancelledError 自然传播;同步旧工具的 `asyncio.to_thread` 只存在于组合根适配器,core 只看到异步 `AgentTool.execute`。
 - 安全策略经 `policy.decide` 在每个工具调用执行前调用。
 
 ### 5.3 AgentSession —— 有状态会话壳(单个对话)
@@ -243,7 +243,7 @@ class AgentSession:
 ```
 
 - **`run` 发布事件流而不是返回单个回复**——CLI/TUI/测试/CI 都通过 `subscribe` 感知进度。
-- **全异步**:`run()` 为 `async def`,直接驱动 `core/loop.py` 的 `run_agent_loop`,把循环内事件经 `EventBus` 分发。
+- **全异步**:`run()` 为 `async def`,直接驱动 `core/orchestration/loop.py` 的 `run_agent_loop`,把循环内事件经 `EventBus` 分发。
 - **成功才落盘**:本轮工作在局部历史副本上,`self._history` 仅成功时重赋值,store 循环在其后;失败/取消时内存回滚(历史从未被就地修改,回滚是空操作)。
 - **会话历史**:自研 `Message`(role/content/tool_calls/tool_call_id/id/parentId),`id` 用 uuid7;归约按 tool_call_id 归属、按 id 删除。
 - **事件类型(11 类)**:`session_started / text_delta / thinking_delta / agent_message / tool_call / tool_result / turn_end / error / run_cancelled / usage / confirmation_requested`。
@@ -344,7 +344,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | 变更 | 应动的文件 | 若还动了 | 结论 |
 |---|---|---|---|
 | 新增一个 provider | `ai/` + 环境变量 | `session.py` / `core/` | ❌ 泄漏 |
-| 新增/更换一个工具 | `tools/` | `core/loop.py` / `ai/` | ❌ 泄漏 |
+| 新增/更换一个工具 | `tools/` | `core/orchestration/` / `ai/` | ❌ 泄漏 |
 | 改编排形状(改循环) | `core/` | `ai/` / `tools/` | ❌ 泄漏 |
 | 换会话存储 | `store.py` + `container` | `app/main.py` / `core/` | ❌ 泄漏 |
 | 加会话分叉 | `session/` | `core/` | ❌ 泄漏 |
@@ -358,7 +358,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | 结构 | 对应讨论结论 |
 |---|---|
 | `app/container.py` + `app/config.py` | 组合根 + 配置层独立(2026-08-13 由顶层迁入 `app/` 包) |
-| 自研编排(`core/loop.py` + `core/messages.py`) | 2026-08-14 `self-built-orchestration`:自研 ReAct 主循环 + 消息归约替换 langgraph;删除 `ai/bridge`、`core/state.py`、`core/nodes/`;pyproject 移除 langchain-core/langgraph(决策见 blueprint.md) |
+| 自研编排(`core/orchestration/loop.py` + `core/contracts/messages.py`) | 2026-08-14 `self-built-orchestration`:自研 ReAct 主循环 + 消息归约替换 langgraph;删除 `ai/bridge`、`core/state.py`、`core/nodes/`;pyproject 移除 langchain-core/langgraph(决策见 blueprint.md) |
 | `core/` 端口(model / tools / policy) | 端口-适配器、编排层独立;`store` 不进端口(会话层负责落盘) |
 | `session/`(session/manager/store/bus/compaction) | Pi 三层协作的 Session + Runtime、会话即状态;JSONL 树形(2026-08-14 格式结论) |
 | `events.py` + `bus.py` | Pi 事件驱动,替代"返回单个 AIMessage";11 类事件 |

@@ -4,10 +4,11 @@ import asyncio
 
 import pytest
 
-from codeagent.core.context import AgentContext
-from codeagent.core.errors import AgentContinueError
-from codeagent.core.ports import AgentLoopConfig, AgentTool, ToolDecision
-from codeagent.core.messages import Message
+from codeagent.core.context.model import AgentContext
+from codeagent.core.contracts.errors import AgentContinueError
+from codeagent.core.contracts.ports import AgentTool, ToolDecision
+from codeagent.core.contracts.messages import Message
+from codeagent.core.orchestration.config import AgentLoopConfig
 
 
 class _Tool:

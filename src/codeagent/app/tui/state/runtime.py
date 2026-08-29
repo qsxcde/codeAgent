@@ -6,7 +6,7 @@ import time
 from dataclasses import replace
 from typing import Any, Callable
 
-from codeagent.core.events import AgentEvent, EventType
+from codeagent.core.contracts.events import AgentEvent, EventType
 
 from .runtime_state import RuntimePhase, RuntimeSnapshot, phase_label
 from .runtime_transitions import transition
