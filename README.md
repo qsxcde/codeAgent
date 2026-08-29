@@ -4,7 +4,7 @@
 
 当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
-当前验收基线（2026-08-30）：`uv run pytest -q` **1433 passed**（macOS，33.47s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
+当前验收基线（2026-08-30）：`uv run pytest -q` **1444 passed**（macOS，33.50s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
 
 ## 项目介绍
 
@@ -168,7 +168,7 @@ codeagent/
     │
     ├── core/                    # [Agent Runtime] 纯内存,不 import config/tools/ai/session
     │   ├── agent.py             #   Agent:prompt / continue / abort / steer / follow-up
-    │   ├── contracts/           #   messages / events / errors / 外部 ports
+    │   ├── contracts/           #   messages / events / hooks / errors / 外部 ports
     │   ├── context/             #   AgentContext、预算、preflight 与上下文契约
     │   ├── model/               #   请求准备与模型流归一化
     │   ├── execution/           #   runtime、operation 状态、清理与结果归一化
@@ -212,7 +212,7 @@ tests/                          # 按行为域分包，1348 passed（2026-08-29�
 
 v0.3.0 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。当前未实现且已明确移出本版本的能力包括：费用估算、Web / HTTP 事件订阅、轻量记忆、插件系统、多智能体和自动化任务；它们在出现真实需求后重新评估。
 
-工程后续优先级是完成 CI 性能基线和阈值决策、补充 Hooks 与完成前验证门禁，再推进 Runtime、上下文和 TUI 产品化。性能基线在数据稳定前保持非阻塞。
+工程后续优先级是完成 CI 性能基线和阈值决策、补齐 Hook 异常隔离与 ContextTransformer 契约，再推进工具和 Provider 稳定性。性能基线在数据稳定前保持非阻塞。
 
 ## 参考
 

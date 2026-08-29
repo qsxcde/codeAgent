@@ -24,6 +24,7 @@ from codeagent.core.contracts.ports import (
     ModelPort,
     ToolExecutionRuntimePort,
 )
+from codeagent.core.contracts.hooks import LifecycleHook, LifecycleHookEvent
 
 __all__ = ["AgentLoopConfig"]
 
@@ -45,6 +46,8 @@ class AgentLoopConfig:
     uncertain_budget_policy: str = "allow"
     before_tool_call: BeforeToolCall | None = None
     after_tool_call: AfterToolCall | None = None
+    #: Ordered, read-only observers for core lifecycle events.
+    lifecycle_hooks: tuple[LifecycleHook, ...] = field(default_factory=tuple)
     tool_execution: str = "parallel"
     tool_timeout: float | None = None
     should_stop_after_turn: Callable[..., Awaitable[bool] | bool] | None = None
@@ -58,5 +61,6 @@ class AgentLoopConfig:
     window_source: str = "fallback"
 
     def __post_init__(self) -> None:
+        self.lifecycle_hooks = tuple(self.lifecycle_hooks or ())
         if self.uncertain_budget_policy not in {"allow", "fail"}:
             raise ValueError("uncertain_budget_policy must be 'allow' or 'fail'")

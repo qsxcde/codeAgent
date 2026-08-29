@@ -47,6 +47,7 @@ class SessionRunCoordinator:
             raise
         finally:
             self._finish(run_id, before_ids, outcome)
+            await self._owner._drain_lifecycle_hooks()
 
     def _start(self, text: str) -> tuple[str, list[Message], set[str]]:
         owner = self._owner

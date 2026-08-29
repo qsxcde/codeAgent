@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Callable
 
 from codeagent.core.context.preflight import ContextPreflightConfig
+from codeagent.core.contracts.hooks import LifecycleHook, LifecycleHookEvent
 from codeagent.session.compaction import CompactionPolicyConfig
 
 from ..model.factory import _resolve_context_window, _resolve_model_effort
-from ..runtime.factory import create_agent_config, policy_for_config, runtime_for_config
+from ..runtime.factory import (
+    close_runtime_for_config_async,
+    create_agent_config,
+    policy_for_config,
+    runtime_for_config,
+)
 
 
 def create_agent_session(
@@ -27,6 +34,7 @@ def create_agent_session(
     summarizer: Any = None,
     uncertain_budget_policy: str = "allow",
     context_preflight: ContextPreflightConfig | None = None,
+    lifecycle_hooks: Iterable[LifecycleHook] | None = None,
     compact_budget: int | None = None,
     compaction_policy: CompactionPolicyConfig | None = None,
 ) -> Any:
@@ -42,6 +50,7 @@ def create_agent_session(
         approval_mode=approval_mode,
         uncertain_budget_policy=uncertain_budget_policy,
         context_preflight=context_preflight,
+        lifecycle_hooks=lifecycle_hooks,
     )
     runtime = runtime_for_config(config)
     return AgentSession(
@@ -80,6 +89,7 @@ def create_session_manager(
     session_config_factory: Callable[[Any], Any] | None = None,
     uncertain_budget_policy: str = "allow",
     context_preflight: ContextPreflightConfig | None = None,
+    lifecycle_hooks: Iterable[LifecycleHook] | None = None,
     compact_budget: int | None = None,
     compaction_policy: CompactionPolicyConfig | None = None,
 ) -> Any:
@@ -98,6 +108,7 @@ def create_session_manager(
             mcp_diagnostics=mcp_diagnostics,
             uncertain_budget_policy=uncertain_budget_policy,
             context_preflight=context_preflight,
+            lifecycle_hooks=lifecycle_hooks,
         )
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
 
@@ -113,14 +124,10 @@ def create_session_manager(
                 mcp_diagnostics=mcp_diagnostics,
                 uncertain_budget_policy=uncertain_budget_policy,
                 context_preflight=context_preflight,
+                lifecycle_hooks=lifecycle_hooks,
             )
 
         session_config_factory = _restore_session_config
-
-    async def _close_runtime() -> None:
-        runtime = runtime_for_config(config)
-        if runtime is not None:
-            await runtime.close()
 
     return SessionManager(
         config,
@@ -134,9 +141,10 @@ def create_session_manager(
         context_window=context_window or _resolve_context_window(
             registry, cfg, provider, model
         ),
-        runtime_closer=_close_runtime,
+        runtime_closer=lambda: close_runtime_for_config_async(config),
         policy=policy_for_config(config),
         session_config_factory=session_config_factory,
+        lifecycle_hooks=lifecycle_hooks,
         compact_budget=compact_budget,
         compaction_policy=compaction_policy,
     )

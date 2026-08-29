@@ -44,7 +44,7 @@
 - `core/` Agent Runtime:根级 `agent.py` 为运行时外壳，`contracts/`、`context/`、`model/`、`execution/`、`orchestration/` 和 `support/` 按职责组织纯内存、全异步实现；模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;会话标题支持自动派生和 append-only `name` 元数据重命名;`SessionQuery` 统一标题/id、模型、时间、运行状态和归档范围筛选,管理器为驻留会话叠加只读运行态;归档使用 append-only 元数据,删除由存储边界完成路径保护和索引清理;恢复报告区分 healthy/degraded/unavailable,有效损坏记录局部降级,结构性错误携带可操作建议;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
-- 事件按消息、工具生命周期和运行控制分组；工具生命周期包含 `tool_queued / tool_started / tool_progress / tool_finished / tool_result`，core 对应 `tool_execution_queued / tool_execution_start / tool_execution_update / tool_execution_end`，事件通过 `run_id`、`tool_call_id`、`operation_id` 和结构化状态字段关联。
+- 事件按消息、模型请求、工具生命周期和运行控制分组；模型请求显式发布 `model_request_started / model_request_finished`，工具生命周期包含 `tool_queued / tool_started / tool_progress / tool_finished / tool_result`，core 对应 `tool_execution_queued / tool_execution_start / tool_execution_update / tool_execution_end`，事件通过 `run_id`、`tool_call_id`、`operation_id` 和结构化状态字段关联。
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)。
 - Skills 系统(v0.3 阶段 1~4):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
 - MCP(v0.3 阶段 2):用户级配置发现、工具 schema 适配、权限分类、`/mcp` 可见诊断与分组预算。
@@ -52,7 +52,7 @@
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
- - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1433 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
+ - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1444 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
  - TUI 性能验收:`benchmark/` 使用 schema v2 的固定离线 fixture 测量提交首帧、首 token、帧 p50/p95、控制延迟、峰值 Python 分配和协调器的 dropped/over-budget 计数；`compare_benchmark.py` 只在 schema、平台、Python、视口和 fixture 一致时比较，`update_tui_baseline.py` 负责生成受约束的 Linux/Python 3.12 候选基线。
 
 **v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
@@ -145,7 +145,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按行为域分包,1433 passed(2026-08-30)
+└── tests/                            # 按行为域分包,1444 passed(2026-08-30)
     ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
     ├── contracts/                    # AI、core、session、tools 边界契约
     ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为
@@ -216,6 +216,7 @@ class AgentLoopConfig:
     tools: list[AgentTool]         # 统一 AgentTool 协议
     tool_runtime: ToolExecutionRuntimePort | None = None
     before_tool_call: Callable | None = None
+    lifecycle_hooks: tuple[Callable, ...] = ()  # 只读 turn/model/tool 观察
 ```
 
 **为什么 `model` 而不是 `model + tools` 绑定**:工具列表作为实现 `AgentTool` 的数据传入循环,编排层不需要知道工具内部实现;加/换工具时 `core/` 零改动。具体 Atomic/MCP 工具在组合根先经 `AgentToolAdapter` 挂载。
@@ -237,6 +238,7 @@ async def run_agent_loop(context, config, prompt, *, emit=None, recursion_limit=
 - 模块顶层**没有任何副作用**(不建模型、不发请求、不读 key),平台可直接 import。
 - 循环条件由消息形状驱动(最后一条有没有 `tool_calls`),**不 import 任何具体工具**。
 - 事件在循环内**直接 emit**(无翻译层),thinking / usage 事件原生化。
+- 观察 Hook 通过 `LifecycleHookEvent(scope, phase, event, run_id, session_id)` 接收脱离主事件的快照；core 只发送 turn/model/tool scope，session 适配层补充 session scope，Hook 返回值不参与控制。
 - `recursion_limit`(默认 50)是循环计数;`abort()` 抛 CancelledError 自然传播;同步旧工具的 `asyncio.to_thread` 只存在于组合根适配器,core 只看到异步 `AgentTool.execute`。
 - 安全策略经 `policy.decide` 在每个工具调用执行前调用。
 
@@ -246,7 +248,8 @@ async def run_agent_loop(context, config, prompt, *, emit=None, recursion_limit=
 # session/session.py
 class AgentSession:
     def __init__(self, config, bus, store=None, session_id=None,
-                 recursion_limit=50, tool_timeout=None, summarizer=None): ...
+                 recursion_limit=50, tool_timeout=None, summarizer=None,
+                 lifecycle_hooks=()): ...
 
     async def run(self, text) -> None: ...    # 直接驱动 run_agent_loop,发布事件,不返回值
     async def steer(self, text) -> None: ...  # 运行中注入消息
@@ -260,6 +263,7 @@ class AgentSession:
 - **成功才落盘**:本轮工作在局部历史副本上,`self._history` 仅成功时重赋值,store 循环在其后;失败/取消时内存回滚(历史从未被就地修改,回滚是空操作)。
 - **会话历史**:自研 `Message`(role/content/tool_calls/tool_call_id/id/parentId),`id` 用 uuid7;归约按 tool_call_id 归属、按 id 删除。
 - **事件类型**按生命周期分组：会话/消息事件、工具生命周期事件（排队、开始、进度、结束、结果）、确认与运行控制事件；工具事件保留类型化状态和 metadata 双重兼容字段。
+- **观察 Hook**按注册顺序接收 turn、model、tool、session 的 started/updated/finished 快照；core 与 session 通过 `AgentLoopConfig.lifecycle_hooks` 注入，具体实现仍由组合根提供。
 - **上下文压缩**:`summarizer` 端口(session-compaction),自动/手动触发窗口摘要。
 
 ### 5.4 SessionManager / SessionStore —— 会话生命周期与持久化

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import is_dataclass
 from typing import Any
 
+from codeagent.core.contracts.hooks import LifecycleHook, LifecycleHookEvent
 from codeagent.core.contracts.ports import AgentTool, ApprovalPolicy
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.compaction.summarizer import Summarizer
@@ -44,6 +46,7 @@ class SessionManager(
         runtime_closer: SessionCloser | None = None,
         policy: ApprovalPolicy | None = None,
         session_config_factory: Callable[[SessionRef], AgentLoopConfig] | None = None,
+        lifecycle_hooks: Iterable[LifecycleHook] | None = None,
         max_resident_sessions: int = 32,
     ) -> None:
         if type(max_resident_sessions) is not int or max_resident_sessions < 1:
@@ -62,6 +65,12 @@ class SessionManager(
         self._compaction_policy = compaction_policy
         self._runtime_closer = runtime_closer
         self._session_config_factory = session_config_factory
+        if lifecycle_hooks is not None:
+            self._lifecycle_hooks = tuple(lifecycle_hooks)
+        elif is_dataclass(config):
+            self._lifecycle_hooks = tuple(config.lifecycle_hooks)
+        else:
+            self._lifecycle_hooks = ()
         self._max_resident_sessions = max_resident_sessions
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None

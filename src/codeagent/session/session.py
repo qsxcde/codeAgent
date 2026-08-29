@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
 from typing import Any
 
 from codeagent.core.context.budget import ContextBudgetSnapshot
 from codeagent.core.context.contracts import TransformContext
 from codeagent.core.context.diagnostics import ContextDiagnostics
 from codeagent.core.context.preflight import ContextPreflightResult
+from codeagent.core.contracts.events import AgentEvent
+from codeagent.core.contracts.hooks import LifecycleHook, LifecycleHookEvent
 from codeagent.core.contracts.ports import ApprovalPolicy
 from codeagent.core.contracts.messages import Message
 from codeagent.core.orchestration.config import AgentLoopConfig
@@ -64,7 +66,18 @@ class AgentSession(
         runtime_closer: SessionCloser | None = None,
         transform_context: TransformContext | None = None,
         policy: ApprovalPolicy | None = None,
+        lifecycle_hooks: tuple[LifecycleHook, ...] | None = None,
     ) -> None:
+        self._lifecycle_hooks = (
+            tuple(lifecycle_hooks) if lifecycle_hooks is not None else None
+        )
+        if self._lifecycle_hooks is not None:
+            if not is_dataclass(config):
+                getattr(config, "model")
+                config = getattr(config, "_real", None)
+            if config is None:  # pragma: no cover - defensive lazy-config guard
+                raise TypeError("lifecycle hooks require a materialized AgentLoopConfig")
+            config = replace(config, lifecycle_hooks=self._lifecycle_hooks)
         self._config = config
         self._policy = policy
         self._bus = bus
@@ -79,6 +92,8 @@ class AgentSession(
         self._transform_context = transform_context
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
+        self._lifecycle_hook_tasks: set[asyncio.Task[Any]] = set()
+        self._lifecycle_hook_errors: list[tuple[AgentEvent, Exception]] = []
         if compaction_policy is None:
             compaction_policy = CompactionPolicyConfig(compact_budget=compact_budget)
         elif compact_budget is not None:
@@ -134,6 +149,11 @@ class AgentSession(
 
     def subscribe(self, fn: Subscriber) -> Callable[[], None]:
         return self._bus.subscribe(fn)
+
+    @property
+    def lifecycle_hook_errors(self) -> list[tuple[AgentEvent, Exception]]:
+        """Return observer failures without changing session run outcomes."""
+        return list(self._lifecycle_hook_errors)
 
     @property
     def session_id(self) -> str:

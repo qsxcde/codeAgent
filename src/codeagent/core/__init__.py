@@ -35,6 +35,15 @@ from codeagent.core.contracts.errors import (
     ContextPreflightError,
 )
 from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.hooks import (
+    HookPhase,
+    HookScope,
+    LifecycleHook,
+    LifecycleHookEvent,
+    classify_core_event,
+    classify_session_event,
+    to_lifecycle_hook_event,
+)
 from codeagent.core.execution.runtime import (
     CleanupResult,
     OperationRegistry,
@@ -68,6 +77,10 @@ from codeagent.core.orchestration.config import AgentLoopConfig
 
 __all__ = [
     "AgentEvent",
+    "HookPhase",
+    "HookScope",
+    "LifecycleHook",
+    "LifecycleHookEvent",
     "AgentContext",
     "Agent",
     "AgentContinueError",
@@ -113,4 +126,7 @@ __all__ = [
     "estimate_context_budget",
     "ContextDiagnostics",
     "govern_tool_messages",
+    "classify_core_event",
+    "classify_session_event",
+    "to_lifecycle_hook_event",
 ]

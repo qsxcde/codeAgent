@@ -79,6 +79,7 @@ class SessionManagerRegistry:
             defer_persistence=defer_persistence,
             persistence_options=persistence_options,
             policy=self._policy,
+            lifecycle_hooks=self._lifecycle_hooks or None,
         )
         for fn, unsubs in self._subscribers:
             for unsubscribe in unsubs:

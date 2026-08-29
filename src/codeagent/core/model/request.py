@@ -8,6 +8,7 @@ messages; session persistence and application wiring stay outside ``core``.
 from __future__ import annotations
 
 import copy
+import asyncio
 from collections.abc import Mapping
 from collections.abc import Callable
 from typing import Any
@@ -155,67 +156,80 @@ async def new_model_message(
     emit: Callable[[AgentEvent], Any],
 ) -> Message:
     """Collect one model stream into a core assistant message."""
-    text_parts: list[str] = []
-    tool_calls: list[ToolCall] = []
+    emit(AgentEvent(EventType.MODEL_REQUEST_STARTED))
+    status = "completed"
+    finish_metadata: dict[str, Any] = {}
+    try:
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        emit(AgentEvent(EventType.MESSAGE_START))
+        transformed, final_budget = await prepare_context(config, history, emit)
+        preflight = evaluate_context_preflight(
+            final_budget,
+            config.context_preflight,
+            uncertain_budget_policy=config.uncertain_budget_policy,
+        )
+        emit(AgentEvent(EventType.CONTEXT_PREFLIGHT, payload=preflight))
+        if not preflight.allowed:
+            raise ContextPreflightError(preflight)
+        stream = getattr(config.model, "stream_agent", None) or config.model.stream
+        async for event in stream(transformed, config.tools):
+            if event.type == "content":
+                text_parts.append(event.text)
+                emit(AgentEvent(EventType.MESSAGE_UPDATE, payload=event.text))
+            elif event.type == "thinking":
+                emit(
+                    AgentEvent(
+                        EventType.MESSAGE_UPDATE,
+                        payload={"type": "thinking_delta", "text": event.text},
+                    )
+                )
+            elif event.type == "tool_call":
+                index = event.tool_index if event.tool_index is not None else len(tool_calls)
+                tool_calls.append(
+                    ToolCall(
+                        id=event.tool_id or new_id(),
+                        name=event.tool_name or "",
+                        args=dict(event.arguments or {}),
+                        details=(
+                            {"argument_error": event.argument_error}
+                            if event.argument_error
+                            else {}
+                        ),
+                    )
+                )
+                emit(
+                    AgentEvent(
+                        EventType.MESSAGE_UPDATE,
+                        payload={
+                            "type": "tool_call",
+                            "tool_index": index,
+                            "tool_name": event.tool_name,
+                            "tool_call_id": event.tool_id,
+                            "arguments": event.arguments or {},
+                        },
+                    )
+                )
+            elif event.type == "usage":
+                emit(AgentEvent(EventType.USAGE, payload=event.usage or {}))
 
-    emit(AgentEvent(EventType.MESSAGE_START))
-    transformed, final_budget = await prepare_context(config, history, emit)
-    preflight = evaluate_context_preflight(
-        final_budget,
-        config.context_preflight,
-        uncertain_budget_policy=config.uncertain_budget_policy,
-    )
-    emit(AgentEvent(EventType.CONTEXT_PREFLIGHT, payload=preflight))
-    if not preflight.allowed:
-        raise ContextPreflightError(preflight)
-    stream = getattr(config.model, "stream_agent", None) or config.model.stream
-    async for event in stream(transformed, config.tools):
-        if event.type == "content":
-            text_parts.append(event.text)
-            emit(AgentEvent(EventType.MESSAGE_UPDATE, payload=event.text))
-        elif event.type == "thinking":
-            emit(
-                AgentEvent(
-                    EventType.MESSAGE_UPDATE,
-                    payload={"type": "thinking_delta", "text": event.text},
-                )
-            )
-        elif event.type == "tool_call":
-            index = event.tool_index if event.tool_index is not None else len(tool_calls)
-            tool_calls.append(
-                ToolCall(
-                    id=event.tool_id or new_id(),
-                    name=event.tool_name or "",
-                    args=dict(event.arguments or {}),
-                    details=(
-                        {"argument_error": event.argument_error}
-                        if event.argument_error
-                        else {}
-                    ),
-                )
-            )
-            emit(
-                AgentEvent(
-                    EventType.MESSAGE_UPDATE,
-                    payload={
-                        "type": "tool_call",
-                        "tool_index": index,
-                        "tool_name": event.tool_name,
-                        "tool_call_id": event.tool_id,
-                        "arguments": event.arguments or {},
-                    },
-                )
-            )
-        elif event.type == "usage":
-            emit(AgentEvent(EventType.USAGE, payload=event.usage or {}))
-
-    message = Message(
-        role="assistant",
-        content="".join(text_parts),
-        tool_calls=tool_calls,
-    )
-    emit(AgentEvent(EventType.MESSAGE_END, payload=message))
-    return message
+        message = Message(
+            role="assistant",
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+        )
+        emit(AgentEvent(EventType.MESSAGE_END, payload=message))
+        return message
+    except asyncio.CancelledError:
+        status = "cancelled"
+        raise
+    except Exception as exc:
+        status = "failed"
+        finish_metadata["error_type"] = type(exc).__name__
+        raise
+    finally:
+        finish_metadata["status"] = status
+        emit(AgentEvent(EventType.MODEL_REQUEST_FINISHED, metadata=finish_metadata))
 
 
 def _message_views_differ(before: list[Message], after: list[Message]) -> bool:

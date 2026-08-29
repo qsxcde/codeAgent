@@ -129,7 +129,7 @@ Agent Runtime SHALL 在每个工具调用执行前提供通用的 `before_tool_c
 
 ### Requirement: 事件契约
 
-Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流和工具执行生命周期；核心事件至少包括 `agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_update`、`message_end`、`tool_execution_queued`、`tool_execution_start`、`tool_execution_update`、`tool_execution_end`、`usage`、`context_budget`、`context_preflight`、`error` 和 `aborted`。每个属于一次运行的事件 SHALL 携带稳定的 `run_id`；工具生命周期事件 SHALL 携带 `tool_call_id`、`operation_id` 和工具名，并在 session 适配边界补充 `session_id`。事件 SHALL 能区分排队、执行中、过程更新和唯一终态，且订阅方无需解析错误文本判断工具状态、清理状态或输出完整性。Session started、restore、compaction、persistence 和 confirmation 等事件 SHALL 由 session/app 层定义或适配，不再作为 core Agent 事件的职责。
+Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型请求、模型流和工具执行生命周期；核心事件至少包括 `agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_update`、`message_end`、`model_request_started`、`model_request_finished`、`tool_execution_queued`、`tool_execution_start`、`tool_execution_update`、`tool_execution_end`、`usage`、`context_budget`、`context_preflight`、`error` 和 `aborted`。每个属于一次运行的事件 SHALL 携带稳定的 `run_id`；工具生命周期事件 SHALL 携带 `tool_call_id`、`operation_id` 和工具名，并在 session 适配边界补充 `session_id`。事件 SHALL 能区分排队、执行中、过程更新和唯一终态，且订阅方无需解析错误文本判断工具状态、清理状态或输出完整性。Session started、restore、compaction、persistence 和 confirmation 等事件 SHALL 由 session/app 层定义或适配，不再作为 core Agent 事件的职责。
 
 #### Scenario: Agent 生命周期可订阅
 
@@ -140,6 +140,11 @@ Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流�
 
 - **WHEN** 模型产生文本、thinking 或工具参数增量
 - **THEN** 订阅方收到对应的结构化 message update，无需等待最终回复
+
+#### Scenario: 模型请求边界可订阅
+
+- **WHEN** 一次模型请求开始并正常、失败或取消结束
+- **THEN** 订阅方收到一次 `model_request_started` 和一次带结果状态的 `model_request_finished` 事件，流式内容、预算和用量位于两者之间
 
 #### Scenario: 工具生命周期可订阅
 

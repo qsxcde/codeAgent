@@ -5,8 +5,10 @@ from __future__ import annotations
 import atexit
 import asyncio
 import inspect
+from collections.abc import Iterable
 from typing import Any, Callable
 
+from codeagent.core.contracts.hooks import LifecycleHook, LifecycleHookEvent
 from codeagent.core.execution.runtime import ToolExecutionRuntime
 from codeagent.core.context.preflight import ContextPreflightConfig
 from codeagent.core.orchestration.config import AgentLoopConfig
@@ -156,6 +158,7 @@ def create_agent_config(
     mcp_diagnostics: list[str] | None = None,
     uncertain_budget_policy: str = "allow",
     context_preflight: ContextPreflightConfig | None = None,
+    lifecycle_hooks: Iterable[LifecycleHook] | None = None,
 ) -> AgentLoopConfig:
     """装配模型、工具执行器和独立安全策略。"""
     preflight_config = (
@@ -198,6 +201,7 @@ def create_agent_config(
         tool_runtime=tool_runtime,
         uncertain_budget_policy=uncertain_budget_policy,
         context_preflight=preflight_config,
+        lifecycle_hooks=tuple(lifecycle_hooks or ()),
     )
     AgentRuntime(config, _create_policy(cfg, approval_mode), client, mcp_tools, tool_runtime)
     return config

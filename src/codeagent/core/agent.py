@@ -11,6 +11,7 @@ from typing import Any
 from codeagent.core.context.model import AgentContext
 from codeagent.core.contracts.errors import AgentRuntimeError
 from codeagent.core.contracts.events import AgentEvent
+from codeagent.core.contracts.hooks import LifecycleHook, classify_core_event
 from codeagent.core.execution.runtime import ToolExecutionRuntime
 from codeagent.core.orchestration.loop import (
     DEFAULT_RECURSION_LIMIT,
@@ -49,6 +50,9 @@ class Agent:
         self._recursion_limit = recursion_limit
         self._run_id = run_id
         self._listeners: list[EventListener] = []
+        self._lifecycle_hooks: tuple[LifecycleHook, ...] = tuple(
+            config.lifecycle_hooks
+        )
         self._listener_errors: list[tuple[AgentEvent, Exception]] = []
         self._listener_tasks: set[asyncio.Task[Any]] = set()
         self._task: asyncio.Task[list[Message]] | None = None
@@ -100,6 +104,19 @@ class Agent:
         for listener in tuple(self._listeners):
             try:
                 result = listener(event)
+            except Exception as exc:  # noqa: BLE001 - observers are isolated
+                self._listener_errors.append((event, exc))
+                continue
+            if inspect.isawaitable(result):
+                task = asyncio.create_task(self._consume_listener(result, event))
+                self._listener_tasks.add(task)
+                task.add_done_callback(self._listener_tasks.discard)
+        lifecycle = classify_core_event(event)
+        if lifecycle is None:
+            return
+        for hook in self._lifecycle_hooks:
+            try:
+                result = hook(lifecycle)
             except Exception as exc:  # noqa: BLE001 - observers are isolated
                 self._listener_errors.append((event, exc))
                 continue
