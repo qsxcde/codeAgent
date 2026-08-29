@@ -4,7 +4,7 @@
 
 截至 2026-08-30 应用层包布局变更复核后：
 
-- `uv run pytest -q`：**1466 passed**（2026-08-30，macOS）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试、会话标题重启/分叉回归、会话查询双后端/TUI 回归、归档删除安全回归、恢复诊断回归、会话列表索引失效隔离回归、生命周期 Hook 契约、异常隔离和 ContextTransformer 契约回归。
+- `uv run pytest -q`：**1473 passed**（2026-08-30，macOS）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试、会话标题重启/分叉回归、会话查询双后端/TUI 回归、归档删除安全回归、恢复诊断回归、会话列表索引失效隔离回归、生命周期 Hook 契约、异常隔离、ContextTransformer 契约和 RuntimeExtensions 装配回归。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
 - 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 1037 passed，硬下限为 77.9%。
 - package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
@@ -28,7 +28,7 @@
 
 会话列表索引回归覆盖多个有效索引命中时列表/搜索/筛选不扫描 JSONL、单个索引缺失/损坏/过期时只重建对应目标、源文件回源失败时隔离损坏会话，以及 `continue_recent` 依据索引选择最近目标并只恢复最终会话。
 
-生命周期 Hook 回归覆盖 Hook 快照脱离原始事件、多个 Hook 注册顺序和返回值忽略、turn/model/tool/session 的阶段映射、模型请求成功/失败/取消时边界事件 exactly-once、工具调用关联、同步/异步/快照失败诊断、取消任务清理以及 core 不导入具体 provider/tools/MCP/Skill/UI。
+生命周期 Hook 回归覆盖 Hook 快照脱离原始事件、多个 Hook 注册顺序和返回值忽略、turn/model/tool/session 的阶段映射、模型请求成功/失败/取消时边界事件 exactly-once、工具调用关联、同步/异步/快照失败诊断、取消任务清理以及 core 不导入具体 provider/tools/MCP/Skill/UI。组合根回归继续验证 `RuntimeExtensions` 的字段身份、生命周期 Hook 顺序，以及 session 恢复和 TUI 模型重建不丢失扩展。
 
 本次收口会使旧平铺导入路径失效；`tests/contracts/test_app_package_layout.py` 会同时检查旧模块不存在和规范模块可导入。
 

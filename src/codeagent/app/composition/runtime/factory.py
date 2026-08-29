@@ -8,7 +8,8 @@ import inspect
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from codeagent.core.contracts.hooks import LifecycleHook, LifecycleHookEvent
+from codeagent.core.context.contracts import identity_context
+from codeagent.core.contracts.hooks import LifecycleHook
 from codeagent.core.execution.runtime import ToolExecutionRuntime
 from codeagent.core.context.preflight import ContextPreflightConfig
 from codeagent.core.orchestration.config import AgentLoopConfig
@@ -21,6 +22,7 @@ from ..model.factory import (
 from ..model import selection as model_selection
 from ..policy import _create_policy
 from ..prompts import _build_system_prompt, _load_skills
+from .extensions import RuntimeExtensions, normalize_runtime_extensions
 from ..tools.adapter import adapt_tools
 from ..tools.factory import _load_mcp_tools, create_tools
 
@@ -159,8 +161,10 @@ def create_agent_config(
     uncertain_budget_policy: str = "allow",
     context_preflight: ContextPreflightConfig | None = None,
     lifecycle_hooks: Iterable[LifecycleHook] | None = None,
+    extensions: RuntimeExtensions | None = None,
 ) -> AgentLoopConfig:
     """装配模型、工具执行器和独立安全策略。"""
+    runtime_extensions = normalize_runtime_extensions(extensions, lifecycle_hooks)
     preflight_config = (
         context_preflight
         if context_preflight is not None
@@ -201,7 +205,13 @@ def create_agent_config(
         tool_runtime=tool_runtime,
         uncertain_budget_policy=uncertain_budget_policy,
         context_preflight=preflight_config,
-        lifecycle_hooks=tuple(lifecycle_hooks or ()),
+        transform_context=runtime_extensions.transform_context or identity_context,
+        context_preparer=runtime_extensions.context_preparer,
+        context_budget=runtime_extensions.context_budget,
+        context_transform_timeout=runtime_extensions.context_transform_timeout,
+        before_tool_call=runtime_extensions.before_tool_call,
+        after_tool_call=runtime_extensions.after_tool_call,
+        lifecycle_hooks=runtime_extensions.lifecycle_hooks,
     )
     AgentRuntime(config, _create_policy(cfg, approval_mode), client, mcp_tools, tool_runtime)
     return config

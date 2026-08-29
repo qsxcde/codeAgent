@@ -33,6 +33,10 @@ from codeagent.app.composition.runtime.factory import (
     create_agent_runtime,
     runtime_for_config,
 )
+from codeagent.app.composition.runtime.extensions import (
+    RuntimeExtensions,
+    normalize_runtime_extensions,
+)
 from codeagent.app.composition.session.factory import (
     create_agent_session,
     create_session_manager,
@@ -48,6 +52,7 @@ from codeagent.app.composition.tui.factory import (
 
 __all__ = [
     "AgentRuntime",
+    "RuntimeExtensions",
     "ChatModelPort",
     "LlmSummarizer",
     "TuiAssembler",
@@ -57,6 +62,7 @@ __all__ = [
     "create_session_manager",
     "create_tools",
     "create_tui_app",
+    "normalize_runtime_extensions",
     "runtime_for_config",
     "close_runtime_for_config",
     "close_runtime_for_config_async",

@@ -52,7 +52,7 @@
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
- - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1466 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
+ - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1473 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
  - TUI 性能验收:`benchmark/` 使用 schema v2 的固定离线 fixture 测量提交首帧、首 token、帧 p50/p95、控制延迟、峰值 Python 分配和协调器的 dropped/over-budget 计数；`compare_benchmark.py` 只在 schema、平台、Python、视口和 fixture 一致时比较，`update_tui_baseline.py` 负责生成受约束的 Linux/Python 3.12 候选基线。
 
 **v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
@@ -145,7 +145,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按行为域分包,1466 passed(2026-08-30)
+└── tests/                            # 按行为域分包,1473 passed(2026-08-30)
     ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
     ├── contracts/                    # AI、core、session、tools 边界契约
     ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为
@@ -239,6 +239,7 @@ async def run_agent_loop(context, config, prompt, *, emit=None, recursion_limit=
 - 循环条件由消息形状驱动(最后一条有没有 `tool_calls`),**不 import 任何具体工具**。
 - 事件在循环内**直接 emit**(无翻译层),thinking / usage 事件原生化。
 - 观察 Hook 通过 `LifecycleHookEvent(scope, phase, event, run_id, session_id)` 接收脱离主事件的快照；core 只发送 turn/model/tool scope，session 适配层补充 session scope，Hook 返回值不参与控制。
+- `app/composition/runtime/extensions.py` 提供不可变的 `RuntimeExtensions` 组合对象，统一承载 ContextTransformer、预算上下文扩展、工具 Hook、生命周期 Hook 和扩展超时；runtime、session 恢复与 TUI 重建复用同一对象，core/session 只消费协议。
 - `recursion_limit`(默认 50)是循环计数;`abort()` 抛 CancelledError 自然传播;同步旧工具的 `asyncio.to_thread` 只存在于组合根适配器,core 只看到异步 `AgentTool.execute`。
 - 安全策略经 `policy.decide` 在每个工具调用执行前调用。
 
@@ -293,7 +294,8 @@ class SessionStore:
 ```python
 # app/container.py
 def create_agent_config(cfg=None, *, registry=None, reasoning_effort=None,
-                       provider=None, model=None, approval_mode="deny") -> AgentLoopConfig:
+                       provider=None, model=None, approval_mode="deny",
+                       extensions=None) -> AgentLoopConfig:
     client = create_llm(cfg, registry=registry, reasoning_effort=reasoning_effort,
                         provider=provider, model=model)               # app.composition.model_selection.create_llm
     skills, _ = _load_skills(cfg)                                     # 技能一次加载两处消费
@@ -318,6 +320,7 @@ def create_tui_app(cfg=None, *, backend=None, store=None, ...) -> TuiApp: ...
 - `approval_mode`(`deny` / `interactive` / `allow`):headless 缺省 `deny`(ask 降级 deny,fail closed),TUI 传 `interactive`(ask 由确认条响应),`--yes` 传 `allow`。
 - `store` 经 `AgentSession` / `SessionManager` 注入;**不进 `AgentLoopConfig`**(core 循环不落盘)。
 - `registry` / `reasoning_effort` / `provider` / `model` 均可注入;`create_tui_app` 的 `rebuild_ports` 回调支持运行时热切换(/provider /model /effort /login)。
+- `extensions` 是组合根统一归一的 `RuntimeExtensions`；旧的 `lifecycle_hooks` 参数继续兼容，但恢复、模型切换和 TUI 重建均从同一不可变集合重建配置。
 - `create_agent_config` 返回端口(平台 / 测试用);`create_agent_session` 供 CLI 入口消费。
 
 ## 7. 运行时生命周期

@@ -14,6 +14,7 @@ from ..runtime.factory import (
     create_agent_config,
     policy_for_config,
 )
+from ..runtime.extensions import RuntimeExtensions
 from ..session.factory import create_session_manager
 
 
@@ -42,6 +43,7 @@ class TuiConfigMixin:
             mcp_diagnostics=self.mcp_diagnostics,
             uncertain_budget_policy=self.uncertain_budget_policy,
             context_preflight=self.context_preflight,
+            extensions=self.extensions,
         )
 
     def _restore_session_config(self, ref: Any) -> Any:
@@ -66,6 +68,7 @@ class TuiConfigMixin:
             mcp_diagnostics=self.mcp_diagnostics,
             uncertain_budget_policy=self.uncertain_budget_policy,
             context_preflight=self.context_preflight,
+            extensions=self.extensions,
         )
 
     def _build_manager(self) -> Any:
@@ -86,6 +89,7 @@ class TuiConfigMixin:
             session_config_factory=self._restore_session_config,
             uncertain_budget_policy=self.uncertain_budget_policy,
             context_preflight=self.context_preflight,
+            extensions=self.extensions,
         )
         return self.manager
 
@@ -112,6 +116,7 @@ class TuiConfigMixin:
             approval_mode="interactive",
             uncertain_budget_policy=self.uncertain_budget_policy,
             context_preflight=self.context_preflight,
+            extensions=self.extensions,
         )
 
     def _resolved_selection(

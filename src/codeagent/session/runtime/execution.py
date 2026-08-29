@@ -5,9 +5,11 @@ from __future__ import annotations
 import uuid
 import asyncio
 from dataclasses import fields, replace
+import inspect
 from typing import Any
 
 from codeagent.core import Agent, AgentContext, ToolDecision
+from codeagent.core.context.contracts import BeforeToolCall
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.messages import Message
 from codeagent.core.contracts.ports import ApprovalPolicy
@@ -75,15 +77,29 @@ class SessionExecutionMixin:
         values.update(
             {
                 "tools": list(values["tools"]),
-                "before_tool_call": self._before_tool_call_factory(run_id, policy),
+                "before_tool_call": self._before_tool_call_factory(
+                    run_id, policy, values["before_tool_call"]
+                ),
                 "tool_timeout": tool_timeout,
                 "transform_context": transform_context or values["transform_context"],
             }
         )
         return AgentLoopConfig(**values)
 
-    def _before_tool_call_factory(self, run_id: str, policy: ApprovalPolicy | None):
+    def _before_tool_call_factory(
+        self,
+        run_id: str,
+        policy: ApprovalPolicy | None,
+        extension: BeforeToolCall | None,
+    ):
         async def before_tool_call(call, _context):
+            if extension is not None:
+                extension_result = extension(call, _context)
+                if inspect.isawaitable(extension_result):
+                    extension_result = await extension_result
+                if extension_result is not None:
+                    if extension_result.action != "allow":
+                        return extension_result
             if policy is None:
                 return ToolDecision.allow()
             decision = policy.decide(call.name, call.args)

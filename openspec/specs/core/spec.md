@@ -274,7 +274,7 @@ Agent Runtime SHALL 支持 prompt、continue、abort、steer 和 follow-up 五�
 
 ### Requirement: Agent Runtime 扩展钩子
 
-Agent Runtime SHALL 在每次模型请求前提供 provider-neutral 的 ContextTransformer 上下文转换点，并在工具执行前后提供 `before_tool_call`、`after_tool_call` 钩子；扩展可以修改本次模型可见上下文、阻止或修饰工具结果，但不得直接依赖 AI provider、Session 存储、MCP 客户端或 Skill 文件格式。ContextTransformer SHALL 接收当前请求消息的隔离副本并返回消息集合，可由同步或异步实现；预算感知上下文扩展 SHALL 收到与 provider、session 和工具实现解耦的请求预算视图。旧式只接收消息列表的 `transform_context` 扩展 SHALL 继续可用，且与预算感知扩展按既定顺序组合。扩展返回非法结果、抛出异常或超过配置超时 SHALL 产生可诊断的 Agent 错误并阻断模型调用，不得静默使用未变换上下文；取消 SHALL 保持取消语义并遵循回滚语义。
+Agent Runtime SHALL 只通过 provider-neutral 的配置协议接收 ContextTransformer、预算感知上下文扩展、工具 Hook 和生命周期 Hook；core 不得发现、实例化或导入任何具体 provider、工具、MCP、Skill、memory 或 UI 实现。应用组合根负责把具体实现归一并注入运行配置，运行时只执行已注入的协议对象，且不因 session 恢复、模型切换或 TUI 重建而改变其顺序和语义。其余上下文转换、工具 Hook 异常、超时、取消和回滚规则保持既有契约。
 
 #### Scenario: 上下文扩展
 
@@ -285,6 +285,11 @@ Agent Runtime SHALL 在每次模型请求前提供 provider-neutral 的 ContextT
 
 - **WHEN** 注册了需要预算信息的上下文扩展
 - **THEN** 扩展收到中立的请求预算视图并可以生成当前请求的临时上下文，不得要求 core 直接提供 provider、session、MCP 或 Skill 具体实现
+
+#### Scenario: 扩展只执行注入对象
+
+- **WHEN** Agent 收到由应用组合根注入的运行时扩展集合
+- **THEN** core 只调用集合中的协议对象，不自行发现或实例化任何具体扩展实现
 
 #### Scenario: 上下文扩展超时或非法返回
 
