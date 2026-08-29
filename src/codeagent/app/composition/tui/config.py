@@ -16,6 +16,7 @@ from ..runtime.factory import (
 )
 from ..runtime.extensions import RuntimeExtensions
 from ..session.factory import create_session_manager
+from codeagent.tools.shared import ToolResourceLimits
 
 
 class TuiConfigMixin:
@@ -44,6 +45,7 @@ class TuiConfigMixin:
             uncertain_budget_policy=self.uncertain_budget_policy,
             context_preflight=self.context_preflight,
             extensions=self.extensions,
+            resource_limits=self.resource_limits,
         )
 
     def _restore_session_config(self, ref: Any) -> Any:
@@ -69,6 +71,7 @@ class TuiConfigMixin:
             uncertain_budget_policy=self.uncertain_budget_policy,
             context_preflight=self.context_preflight,
             extensions=self.extensions,
+            resource_limits=self.resource_limits,
         )
 
     def _build_manager(self) -> Any:
@@ -90,6 +93,7 @@ class TuiConfigMixin:
             uncertain_budget_policy=self.uncertain_budget_policy,
             context_preflight=self.context_preflight,
             extensions=self.extensions,
+            resource_limits=self.resource_limits,
         )
         return self.manager
 
@@ -117,6 +121,7 @@ class TuiConfigMixin:
             uncertain_budget_policy=self.uncertain_budget_policy,
             context_preflight=self.context_preflight,
             extensions=self.extensions,
+            resource_limits=self.resource_limits,
         )
 
     def _resolved_selection(

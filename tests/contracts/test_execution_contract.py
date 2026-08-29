@@ -179,6 +179,37 @@ async def test_cancel_all_waits_for_async_operation_cleanup_and_is_idempotent():
         await task
 
 
+async def test_runtime_respects_configured_concurrency_limit():
+    from codeagent.core.contracts.messages import ToolCall, ToolResult
+    from codeagent.core.contracts.ports import AgentTool
+    from codeagent.core.execution.runtime import ToolExecutionRuntime
+
+    class SlowTool(AgentTool):
+        name = "slow"
+        description = "slow"
+        parameters = {}
+
+        def __init__(self):
+            self.active = 0
+            self.maximum = 0
+
+        async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):
+            self.active += 1
+            self.maximum = max(self.maximum, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return ToolResult(tool_call_id, "ok", name=self.name)
+
+    tool = SlowTool()
+    runtime = ToolExecutionRuntime(max_concurrency=1)
+    results = await asyncio.gather(
+        *(runtime.execute(tool, ToolCall(str(index), "slow", {})) for index in range(3))
+    )
+
+    assert tool.maximum == 1
+    assert all(result.status in {"", "completed"} for result in results)
+
+
 async def test_runtime_honors_explicit_cleanup_status_from_tool_result():
     class ReportedUncertainTool(_AgentTool):
         async def execute(self, tool_call_id, arguments, *, signal=None, on_update=None):

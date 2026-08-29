@@ -80,7 +80,9 @@ class SessionExecutionMixin:
                 "before_tool_call": self._before_tool_call_factory(
                     run_id, policy, values["before_tool_call"]
                 ),
-                "tool_timeout": tool_timeout,
+                "tool_timeout": (
+                    tool_timeout if tool_timeout is not None else values["tool_timeout"]
+                ),
                 "transform_context": transform_context or values["transform_context"],
             }
         )

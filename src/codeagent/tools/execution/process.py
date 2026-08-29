@@ -33,10 +33,29 @@ class ProcessRequest:
     command: str
     cwd: str
     env: dict[str, str]
-    timeout: int
+    timeout: float
     max_output_bytes: int = DEFAULT_MAX_BYTES
     max_output_lines: int = DEFAULT_MAX_LINES
     output_direction: str = "head"
+    max_memory_bytes: int | None = None
+    cleanup_timeout: float = 10.0
+
+    def __post_init__(self) -> None:
+        if type(self.timeout) not in (int, float) or self.timeout <= 0:
+            raise ValueError("timeout must be positive")
+        if type(self.max_output_bytes) is not int or self.max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
+        if type(self.max_output_lines) is not int or self.max_output_lines <= 0:
+            raise ValueError("max_output_lines must be a positive integer")
+        if self.max_memory_bytes is not None and (
+            type(self.max_memory_bytes) is not int or self.max_memory_bytes <= 0
+        ):
+            raise ValueError("max_memory_bytes must be a positive integer")
+        if (
+            type(self.cleanup_timeout) not in (int, float)
+            or self.cleanup_timeout <= 0
+        ):
+            raise ValueError("cleanup_timeout must be positive")
 
 
 @dataclass(frozen=True)
@@ -51,11 +70,13 @@ class ProcessResult:
     stdout_shown_bytes: int = 0
     stdout_shown_lines: int = 0
     stdout_truncated: bool = False
+    stdout_truncated_by: str | None = None
     stderr_total_bytes: int = 0
     stderr_total_lines: int = 0
     stderr_shown_bytes: int = 0
     stderr_shown_lines: int = 0
     stderr_truncated: bool = False
+    stderr_truncated_by: str | None = None
 
 
 def _default_backend() -> _ProcessBackend:
@@ -69,12 +90,15 @@ class ProcessRunner:
         self._backend = backend or _default_backend()
 
     @staticmethod
-    def _read_output(path: str, request: ProcessRequest) -> tuple[str, tuple[int, int, int, int, bool]]:
+    def _read_output(
+        path: str, request: ProcessRequest
+    ) -> tuple[str, tuple[int, int, int, int, bool, str | None]]:
         return _capture_file(
             path,
             max_bytes=request.max_output_bytes,
             max_lines=request.max_output_lines,
             direction=request.output_direction,
+            max_memory_bytes=request.max_memory_bytes,
         )
 
     @staticmethod
@@ -114,7 +138,10 @@ class ProcessRunner:
             except subprocess.TimeoutExpired:
                 timed_out = True
                 cleanup_confirmed = self._backend.kill_tree(proc.pid)
-                proc.wait()
+                try:
+                    proc.wait(timeout=request.cleanup_timeout)
+                except subprocess.TimeoutExpired:
+                    cleanup_confirmed = False
             stdout, stdout_stats = self._read_output(out_name, request)
             stderr, stderr_stats = self._read_output(err_name, request)
             return _process_result(
@@ -153,12 +180,19 @@ class ProcessRunner:
             except asyncio.TimeoutError:
                 timed_out = True
                 cleanup_confirmed = self._backend.kill_tree(proc.pid)
-                await proc.wait()
+                try:
+                    await asyncio.wait_for(
+                        proc.wait(), timeout=request.cleanup_timeout
+                    )
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    cleanup_confirmed = False
             except asyncio.CancelledError:
                 cleanup_confirmed = self._backend.kill_tree(proc.pid)
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=10)
-                except Exception:
+                    await asyncio.wait_for(
+                        proc.wait(), timeout=request.cleanup_timeout
+                    )
+                except (asyncio.TimeoutError, ProcessLookupError):
                     cleanup_confirmed = False
                 raise
             stdout, stdout_stats = self._read_output(out_name, request)
@@ -182,10 +216,12 @@ def _capture_file(
     max_bytes: int,
     max_lines: int,
     direction: str,
-) -> tuple[str, tuple[int, int, int, int, bool]]:
+    max_memory_bytes: int | None,
+) -> tuple[str, tuple[int, int, int, int, bool, str | None]]:
     """Read a bounded preview while counting the complete file by chunks."""
     if max_bytes < 1 or max_lines < 1:
         raise ValueError("output limits must be positive")
+    capture_bytes = min(max_bytes, max_memory_bytes) if max_memory_bytes is not None else max_bytes
     total_bytes = 0
     newline_count = 0
     last_byte = b""
@@ -196,10 +232,10 @@ def _capture_file(
             last_byte = chunk[-1:]
     total_lines = newline_count + int(total_bytes > 0 and last_byte != b"\n")
     with open(path, "rb") as stream:
-        if direction == "tail" and total_bytes > max_bytes:
-            stream.seek(-max_bytes, os.SEEK_END)
-        raw = stream.read(max_bytes)
-    text = raw.decode("utf-8", errors="replace")
+        if direction == "tail" and total_bytes > capture_bytes:
+            stream.seek(-capture_bytes, os.SEEK_END)
+        raw = stream.read(capture_bytes)
+    text = _decode_bounded(raw, capture_bytes)
     lines = text.splitlines()
     truncated_by_lines = len(lines) > max_lines
     if truncated_by_lines:
@@ -207,8 +243,39 @@ def _capture_file(
         text = "\n".join(lines)
     shown_bytes = len(text.encode("utf-8"))
     shown_lines = len(text.splitlines())
-    truncated = total_bytes > max_bytes or total_lines > max_lines
-    return text, (total_bytes, total_lines, shown_bytes, shown_lines, truncated)
+    truncated = total_bytes > capture_bytes or total_lines > max_lines
+    if max_memory_bytes is not None and total_bytes > max_memory_bytes:
+        truncated_by = "tool_memory"
+    elif total_bytes > max_bytes:
+        truncated_by = "tool_bytes"
+    elif total_lines > max_lines:
+        truncated_by = "tool_lines"
+    else:
+        truncated_by = None
+    return text, (
+        total_bytes,
+        total_lines,
+        shown_bytes,
+        shown_lines,
+        truncated,
+        truncated_by,
+    )
+
+
+def _decode_bounded(raw: bytes, max_bytes: int) -> str:
+    """Decode a preview without allowing replacement characters to exceed its cap."""
+    text = raw.decode("utf-8", errors="replace")
+    encoded_size = len(text.encode("utf-8"))
+    if encoded_size <= max_bytes:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(text[:middle].encode("utf-8")) <= max_bytes:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low]
 
 
 def _process_result(
@@ -217,8 +284,8 @@ def _process_result(
     stderr: str,
     timed_out: bool,
     cleanup_confirmed: bool,
-    stdout_stats: tuple[int, int, int, int, bool],
-    stderr_stats: tuple[int, int, int, int, bool],
+    stdout_stats: tuple[int, int, int, int, bool, str | None],
+    stderr_stats: tuple[int, int, int, int, bool, str | None],
 ) -> ProcessResult:
     return ProcessResult(
         returncode,

@@ -25,7 +25,12 @@ from ..prompts import _build_system_prompt, _load_skills
 from .extensions import RuntimeExtensions, normalize_runtime_extensions
 from ..tools.adapter import adapt_tools
 from codeagent.tools.capabilities import detect_tool_capabilities
-from ..tools.factory import _load_mcp_tools, create_tools
+from ..tools.factory import (
+    _load_mcp_tools,
+    create_tools,
+    resolve_tool_resource_limits,
+)
+from codeagent.tools.shared import ToolResourceLimits
 
 
 class AgentRuntime:
@@ -163,8 +168,10 @@ def create_agent_config(
     context_preflight: ContextPreflightConfig | None = None,
     lifecycle_hooks: Iterable[LifecycleHook] | None = None,
     extensions: RuntimeExtensions | None = None,
+    resource_limits: ToolResourceLimits | None = None,
 ) -> AgentLoopConfig:
     """装配模型、工具执行器和独立安全策略。"""
+    resolved_limits = resolve_tool_resource_limits(cfg, resource_limits)
     runtime_extensions = normalize_runtime_extensions(extensions, lifecycle_hooks)
     preflight_config = (
         context_preflight
@@ -188,8 +195,12 @@ def create_agent_config(
         mcp_diagnostics.extend(mcp_diags)
     if mcp_tools:
         atexit.register(close_mcp_tools, mcp_tools)
-    raw_tools = create_tools(cfg, skills=rendered_skills) + mcp_tools
-    tool_runtime = ToolExecutionRuntime()
+    raw_tools = create_tools(
+        cfg, skills=rendered_skills, resource_limits=resolved_limits
+    ) + mcp_tools
+    tool_runtime = ToolExecutionRuntime(
+        max_concurrency=resolved_limits.max_concurrency
+    )
     budget_metadata = _resolve_context_budget_metadata(
         registry, cfg, provider, model
     )
@@ -204,6 +215,7 @@ def create_agent_config(
         ),
         tools=adapt_tools(raw_tools),
         tool_runtime=tool_runtime,
+        tool_timeout=resolved_limits.timeout,
         uncertain_budget_policy=uncertain_budget_policy,
         context_preflight=preflight_config,
         transform_context=runtime_extensions.transform_context or identity_context,
@@ -217,6 +229,7 @@ def create_agent_config(
     # Tool environment facts belong to the composition boundary.  Keep them
     # off the core contract so core remains independent of concrete tools.
     config.tool_capabilities = detect_tool_capabilities()
+    config.tool_resource_limits = resolved_limits
     AgentRuntime(config, _create_policy(cfg, approval_mode), client, mcp_tools, tool_runtime)
     return config
 

@@ -9,6 +9,7 @@ from codeagent.core.context.preflight import ContextPreflightConfig
 from codeagent.core.contracts.hooks import LifecycleHook, LifecycleHookEvent
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.compaction import CompactionPolicyConfig
+from codeagent.tools.shared import ToolResourceLimits
 
 from ..model.factory import _resolve_context_window, _resolve_model_effort
 from ..runtime.factory import (
@@ -42,6 +43,7 @@ def _make_restore_session_config(
     uncertain_budget_policy: str,
     context_preflight: ContextPreflightConfig | None,
     extensions: RuntimeExtensions,
+    resource_limits: ToolResourceLimits | None,
 ) -> Callable[[Any], AgentLoopConfig]:
     """创建携带不可变扩展集合的 session 恢复配置工厂。"""
     def restore(ref: Any) -> AgentLoopConfig:
@@ -56,6 +58,7 @@ def _make_restore_session_config(
             uncertain_budget_policy=uncertain_budget_policy,
             context_preflight=context_preflight,
             extensions=extensions,
+            resource_limits=resource_limits,
         )
 
     return restore
@@ -72,6 +75,7 @@ def create_agent_session(
     model: str | None = None,
     recursion_limit: int | None = None,
     tool_timeout: float | None = None,
+    resource_limits: ToolResourceLimits | None = None,
     confirmation_timeout: float | None = None,
     approval_mode: str = "deny",
     summarizer: Any = None,
@@ -96,6 +100,7 @@ def create_agent_session(
         uncertain_budget_policy=uncertain_budget_policy,
         context_preflight=context_preflight,
         extensions=runtime_extensions,
+        resource_limits=resource_limits,
     )
     runtime = runtime_for_config(config)
     return AgentSession(
@@ -125,6 +130,7 @@ def create_session_manager(
     model: str | None = None,
     recursion_limit: int | None = None,
     tool_timeout: float | None = None,
+    resource_limits: ToolResourceLimits | None = None,
     confirmation_timeout: float | None = None,
     approval_mode: str = "deny",
     summarizer: Any = None,
@@ -143,9 +149,7 @@ def create_session_manager(
     from codeagent.session import SessionManager
 
     runtime_extensions = normalize_runtime_extensions(extensions, lifecycle_hooks)
-    manager_hooks = _manager_hooks(
-        extensions, lifecycle_hooks, runtime_extensions
-    )
+    manager_hooks = _manager_hooks(extensions, lifecycle_hooks, runtime_extensions)
     config_was_created = config is None
     if config_was_created:
         config = create_agent_config(
@@ -159,6 +163,7 @@ def create_session_manager(
             uncertain_budget_policy=uncertain_budget_policy,
             context_preflight=context_preflight,
             extensions=runtime_extensions,
+            resource_limits=resource_limits,
         )
     model_id, effort = _resolve_model_effort(cfg, provider, model, reasoning_effort)
 
@@ -174,6 +179,7 @@ def create_session_manager(
             uncertain_budget_policy,
             context_preflight,
             runtime_extensions,
+            resource_limits,
         )
 
     return SessionManager(
@@ -185,9 +191,7 @@ def create_session_manager(
         tool_timeout=tool_timeout,
         confirmation_timeout=confirmation_timeout,
         summarizer=summarizer,
-        context_window=context_window or _resolve_context_window(
-            registry, cfg, provider, model
-        ),
+        context_window=context_window or _resolve_context_window(registry, cfg, provider, model),
         runtime_closer=lambda: close_runtime_for_config_async(config),
         policy=policy_for_config(config),
         session_config_factory=session_config_factory,

@@ -17,7 +17,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
-from codeagent.tools.shared import OutputPolicy, govern_text
+from codeagent.tools.shared import OutputPolicy, ToolResourceLimits, govern_text
 
 __all__ = ["SkillArgs", "SkillTool"]
 
@@ -31,9 +31,15 @@ class SkillTool(AtomicTool):
     description: ClassVar[str] = "获取技能正文:按名称返回已加载技能的完整内容与使用说明。"
     Args: ClassVar[type[BaseModel]] = SkillArgs
 
-    def __init__(self, cwd=None, ops=None, skills: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        cwd=None,
+        ops=None,
+        skills: dict[str, str] | None = None,
+        resource_limits: ToolResourceLimits | None = None,
+    ) -> None:
         """``skills`` 为技能名 → 渲染块 的注册表(组合根预渲染注入;None = 未注入)。"""
-        super().__init__(cwd=cwd, ops=ops)
+        super().__init__(cwd=cwd, ops=ops, resource_limits=resource_limits)
         self._skills: dict[str, str] = dict(skills or {})
 
     def _invoke(self, args: SkillArgs) -> str:

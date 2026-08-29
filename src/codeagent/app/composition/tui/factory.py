@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from codeagent.core.context.preflight import ContextPreflightConfig
+from codeagent.tools.shared import ToolResourceLimits
 
 from ..model import selection as model_selection
 from ..prompts import _workspace, agents_sources, skills_view
@@ -81,6 +82,7 @@ class TuiAssembler(TuiConfigMixin):
         uncertain_budget_policy: str = "allow",
         context_preflight: ContextPreflightConfig | None = None,
         extensions: RuntimeExtensions | None = None,
+        resource_limits: ToolResourceLimits | None = None,
     ) -> None:
         from codeagent.ai.catalog.registry import ModelRegistry
         from codeagent.ai.catalog.store import ModelStore
@@ -98,6 +100,7 @@ class TuiAssembler(TuiConfigMixin):
         self.uncertain_budget_policy = uncertain_budget_policy
         self.context_preflight = context_preflight
         self.extensions = extensions
+        self.resource_limits = resource_limits
         self.mcp_diagnostics: list[str] = []
         self.package_manager = PackageManager(CONFIG_DIR, _workspace(cfg))
         self.manager: Any = None
@@ -184,6 +187,7 @@ def create_tui_app(
     uncertain_budget_policy: str = "allow",
     context_preflight: ContextPreflightConfig | None = None,
     extensions: RuntimeExtensions | None = None,
+    resource_limits: ToolResourceLimits | None = None,
 ) -> Any:
     """创建 TUI 应用，具体状态由 ``TuiAssembler`` 持有。"""
     return TuiAssembler(
@@ -197,4 +201,5 @@ def create_tui_app(
         uncertain_budget_policy=uncertain_budget_policy,
         context_preflight=context_preflight,
         extensions=extensions,
+        resource_limits=resource_limits,
     ).build()

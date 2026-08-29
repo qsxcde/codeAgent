@@ -23,7 +23,7 @@ from codeagent.tools.security.bash_rules import (
     _dangerous_intent,
 )
 from codeagent.tools.security.shell_parse import last_segment_first_token
-from codeagent.tools.shared import GovernedText, DEFAULT_MAX_LINES, redact_metadata_text
+from codeagent.tools.shared import GovernedText, ToolResourceLimits, redact_metadata_text
 
 __all__ = [
     "BashTool",
@@ -96,16 +96,21 @@ class BashTool(AtomicTool):
         cwd: str | None = None,
         ops=None,
         runner: ProcessRunner | None = None,
+        resource_limits: ToolResourceLimits | None = None,
     ) -> None:
-        super().__init__(cwd=cwd, ops=ops)
+        super().__init__(cwd=cwd, ops=ops, resource_limits=resource_limits)
         self._runner = runner or ProcessRunner()
 
-    @staticmethod
-    def _timeout(args: BashArgs) -> int:
-        requested = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_S
-        return max(1, min(requested, MAX_TIMEOUT_S))
+    def _timeout(self, args: BashArgs) -> float:
+        requested = (
+            args.timeout
+            if args.timeout is not None
+            else self.resource_limits.timeout or DEFAULT_TIMEOUT_S
+        )
+        maximum = min(MAX_TIMEOUT_S, self.resource_limits.max_timeout)
+        return max(0.001, min(float(requested), maximum))
 
-    def _validate_command(self, args: BashArgs) -> tuple[str, int]:
+    def _validate_command(self, args: BashArgs) -> tuple[str, float]:
         command = args.command.strip()
         if not command:
             raise ValueError("命令为空")
@@ -125,9 +130,11 @@ class BashTool(AtomicTool):
                     str(self._cwd or Path.cwd()),
                     self._bash_env(),
                     timeout,
-                    max_output_bytes=MAX_OUTPUT_CHARS,
-                    max_output_lines=DEFAULT_MAX_LINES,
+                    max_output_bytes=self.resource_limits.max_output_bytes,
+                    max_output_lines=self.output_max_lines,
                     output_direction="tail",
+                    max_memory_bytes=self.resource_limits.max_memory_bytes,
+                    cleanup_timeout=self.resource_limits.cleanup_timeout,
                 )
             )
         except OSError as exc:
@@ -146,9 +153,11 @@ class BashTool(AtomicTool):
                     str(self._cwd or Path.cwd()),
                     self._bash_env(),
                     timeout,
-                    max_output_bytes=MAX_OUTPUT_CHARS,
-                    max_output_lines=DEFAULT_MAX_LINES,
+                    max_output_bytes=self.resource_limits.max_output_bytes,
+                    max_output_lines=self.output_max_lines,
                     output_direction="tail",
+                    max_memory_bytes=self.resource_limits.max_memory_bytes,
+                    cleanup_timeout=self.resource_limits.cleanup_timeout,
                 )
             )
         except OSError as exc:
@@ -175,7 +184,7 @@ class BashTool(AtomicTool):
     def _format_result(
         self,
         command: str,
-        timeout: int,
+        timeout: float,
         result,
         elapsed: float,
     ) -> GovernedText:
@@ -220,7 +229,9 @@ class BashTool(AtomicTool):
         return bash_env()
 
 
-def _stream_stats(result: Any, name: str, content: str) -> tuple[int, int, int, int, bool]:
+def _stream_stats(
+    result: Any, name: str, content: str
+) -> tuple[int, int, int, int, bool, str | None]:
     """Read ProcessResult statistics with a compatibility fallback."""
     value = len(content.encode("utf-8"))
     lines = len(content.splitlines())
@@ -230,10 +241,14 @@ def _stream_stats(result: Any, name: str, content: str) -> tuple[int, int, int, 
     shown_bytes = int(getattr(result, prefix + "shown_bytes", 0) or value)
     shown_lines = int(getattr(result, prefix + "shown_lines", 0) or lines)
     truncated = bool(getattr(result, prefix + "truncated", False))
-    return total_bytes, total_lines, shown_bytes, shown_lines, truncated
+    truncated_by = getattr(result, prefix + "truncated_by", None)
+    return total_bytes, total_lines, shown_bytes, shown_lines, truncated, truncated_by
 
 
-def _truncation_reason(*stats: tuple[int, int, int, int, bool]) -> str | None:
+def _truncation_reason(*stats: tuple[int, int, int, int, bool, str | None]) -> str | None:
+    for item in stats:
+        if item[5] is not None:
+            return item[5]
     if any(item[4] and item[0] > item[2] for item in stats):
         return "tool_bytes"
     if any(item[4] and item[1] > item[3] for item in stats):

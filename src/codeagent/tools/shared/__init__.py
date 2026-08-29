@@ -28,6 +28,13 @@ from codeagent.tools.shared.governance import (
     govern_text,
     redact_metadata_text,
 )
+from codeagent.tools.shared.resource_limits import (
+    DEFAULT_TOOL_CLEANUP_TIMEOUT,
+    DEFAULT_TOOL_CONCURRENCY,
+    DEFAULT_TOOL_MAX_TIMEOUT,
+    DEFAULT_TOOL_MEMORY_BYTES,
+    ToolResourceLimits,
+)
 
 __all__ = [
     "DEFAULT_MAX_BYTES",
@@ -51,4 +58,9 @@ __all__ = [
     "govern_text",
     "redact_metadata_text",
     "with_path_lock",
+    "DEFAULT_TOOL_CLEANUP_TIMEOUT",
+    "DEFAULT_TOOL_CONCURRENCY",
+    "DEFAULT_TOOL_MAX_TIMEOUT",
+    "DEFAULT_TOOL_MEMORY_BYTES",
+    "ToolResourceLimits",
 ]

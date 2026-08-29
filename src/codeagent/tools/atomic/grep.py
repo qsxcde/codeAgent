@@ -19,8 +19,6 @@ from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
-    DEFAULT_MAX_BYTES,
-    DEFAULT_MAX_LINES,
     GovernedText,
     resolve_to_cwd,
     truncate_head,
@@ -215,7 +213,9 @@ class GrepTool(AtomicTool):
             raise ValueError(f"搜索失败: {exc}")
 
         body = "\n".join(lines) if lines else "(无匹配)"
-        body, trunc = truncate_head(body, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES)
+        body, trunc = truncate_head(
+            body, max_lines=self.output_max_lines, max_bytes=self.output_max_bytes
+        )
         parts = [body]
         if limit_hit:
             limit = args.limit if args.limit is not None else DEFAULT_LIMIT

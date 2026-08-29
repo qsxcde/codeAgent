@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
-    DEFAULT_MAX_BYTES,
     GovernedText,
     resolve_to_cwd,
     truncate_head,
@@ -48,7 +47,8 @@ class LsTool(AtomicTool):
         entries = [e for e in entries if not e.startswith(".")]
         entries.sort(key=str.lower)
 
-        limit = args.limit if args.limit is not None else DEFAULT_LIMIT
+        requested_limit = args.limit if args.limit is not None else DEFAULT_LIMIT
+        limit = min(requested_limit, self.output_max_lines)
         count = len(entries)
         shown = entries[:limit]
 
@@ -57,7 +57,9 @@ class LsTool(AtomicTool):
             suffix = "/" if self._ops.is_dir(dir_path / name) else ""
             lines.append(name + suffix)
         body = "\n".join(lines) if lines else "(空目录)"
-        body, trunc = truncate_head(body, max_lines=limit, max_bytes=DEFAULT_MAX_BYTES)
+        body, trunc = truncate_head(
+            body, max_lines=limit, max_bytes=self.output_max_bytes
+        )
 
         parts = [body]
         if count > limit:

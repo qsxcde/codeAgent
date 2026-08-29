@@ -17,7 +17,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
-from codeagent.tools.shared import FsOps, LocalFsOps
+from codeagent.tools.shared import FsOps, LocalFsOps, ToolResourceLimits
 
 __all__ = ["AtomicTool"]
 
@@ -39,7 +39,12 @@ class AtomicTool:
     #: 输入参数 schema(pydantic 模型,转换为 JSON Schema 给模型)
     Args: ClassVar[type[BaseModel]] = BaseModel
 
-    def __init__(self, cwd: str | Path | None = None, ops: FsOps | None = None) -> None:
+    def __init__(
+        self,
+        cwd: str | Path | None = None,
+        ops: FsOps | None = None,
+        resource_limits: ToolResourceLimits | None = None,
+    ) -> None:
         """装配时注入工作目录与文件操作实现(design D2)。
 
         - ``cwd``:相对路径解析基准;缺省回退进程启动目录;
@@ -47,6 +52,22 @@ class AtomicTool:
         """
         self._cwd = cwd
         self._ops: FsOps = ops if ops is not None else LocalFsOps()
+        self._resource_limits = resource_limits or ToolResourceLimits()
+
+    @property
+    def resource_limits(self) -> ToolResourceLimits:
+        """工具实例共享的不可变资源限制。"""
+        return self._resource_limits
+
+    @property
+    def output_max_bytes(self) -> int:
+        """返回同时受输出和预览内存约束的字节上限。"""
+        return self._resource_limits.effective_output_bytes
+
+    @property
+    def output_max_lines(self) -> int:
+        """返回统一的输出行上限。"""
+        return self._resource_limits.max_output_lines
 
     @property
     def args_schema(self) -> type[BaseModel]:

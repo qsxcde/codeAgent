@@ -21,6 +21,7 @@ from codeagent.tools.capabilities import (
     ToolCapability,
     detect_tool_capabilities,
 )
+from codeagent.tools.shared import ToolResourceLimits
 
 __all__ = [
     "AtomicTool",
@@ -35,4 +36,5 @@ __all__ = [
     "ToolCapabilities",
     "ToolCapability",
     "detect_tool_capabilities",
+    "ToolResourceLimits",
 ]

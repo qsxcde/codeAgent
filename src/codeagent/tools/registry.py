@@ -21,11 +21,16 @@ from codeagent.tools.atomic import (
     WriteTool,
 )
 from codeagent.tools.base import AtomicTool
+from codeagent.tools.shared import ToolResourceLimits
 
 __all__ = ["make_tools"]
 
 
-def make_tools(cfg: Any = None, skills: dict[str, str] | None = None) -> list[AtomicTool]:
+def make_tools(
+    cfg: Any = None,
+    skills: dict[str, str] | None = None,
+    resource_limits: ToolResourceLimits | None = None,
+) -> list[AtomicTool]:
     """按配置装配工具集,返回自研原子工具列表。
 
     - ``cfg`` 预留配置;若提供 ``cwd`` 字段则作为全部工具的工作目录,
@@ -36,13 +41,14 @@ def make_tools(cfg: Any = None, skills: dict[str, str] | None = None) -> list[At
     - 无网络、无密钥副作用。
     """
     cwd = getattr(cfg, "cwd", None) if cfg is not None else None
+    limits = resource_limits or ToolResourceLimits.from_config(cfg)
     return [
-        ReadTool(cwd=cwd),
-        WriteTool(cwd=cwd),
-        EditTool(cwd=cwd),
-        BashTool(cwd=cwd),
-        GrepTool(cwd=cwd),
-        FindTool(cwd=cwd),
-        LsTool(cwd=cwd),
-        SkillTool(cwd=cwd, skills=skills),
+        ReadTool(cwd=cwd, resource_limits=limits),
+        WriteTool(cwd=cwd, resource_limits=limits),
+        EditTool(cwd=cwd, resource_limits=limits),
+        BashTool(cwd=cwd, resource_limits=limits),
+        GrepTool(cwd=cwd, resource_limits=limits),
+        FindTool(cwd=cwd, resource_limits=limits),
+        LsTool(cwd=cwd, resource_limits=limits),
+        SkillTool(cwd=cwd, skills=skills, resource_limits=limits),
     ]

@@ -46,6 +46,27 @@ def test_create_agent_config_passes_context_preflight_policy():
     assert config.uncertain_budget_policy == "fail"
 
 
+def test_create_agent_config_injects_one_resource_limits_bundle():
+    from types import SimpleNamespace
+
+    from codeagent.tools.shared import ToolResourceLimits
+
+    limits = ToolResourceLimits(max_concurrency=2, timeout=1.0, max_timeout=2.0)
+    with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
+        from codeagent.ai.providers.fake import FakeClient
+        from codeagent.app.container import create_agent_config
+
+        mock_llm.return_value = FakeClient(response="测试回复")
+        config = create_agent_config(provider="fake", resource_limits=limits)
+
+    assert config.tool_resource_limits is limits
+    assert config.tool_runtime.max_concurrency == 2
+    assert config.tool_timeout == 1.0
+    bash = next(tool._tool for tool in config.tools if tool.name == "bash")
+    assert bash.resource_limits is limits
+    del SimpleNamespace
+
+
 
 def test_create_agent_session_returns_session():
     """create_agent_session 返回可订阅的 AgentSession。"""

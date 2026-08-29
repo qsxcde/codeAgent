@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
-    DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
     GovernedText,
     resolve_to_cwd,
@@ -52,7 +51,9 @@ class ReadTool(AtomicTool):
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
-            preview = raw[:BINARY_PREVIEW_BYTES].decode("utf-8", errors="replace")
+            preview = raw[: min(BINARY_PREVIEW_BYTES, self.output_max_bytes)].decode(
+                "utf-8", errors="replace"
+            )
             content = (
                 f"[二进制或非 UTF-8 文件,共 {len(raw)} 字节,仅显示可读前缀]\n"
                 f"{preview}"
@@ -78,12 +79,15 @@ class ReadTool(AtomicTool):
             raise ValueError(f"offset 不能为负: {start}")
         if start >= total and not (total == 0 and start == 0):
             raise ValueError(f"offset {start} 超出文件行数 {total}")
-        limit = args.limit if args.limit is not None else DEFAULT_MAX_LINES
+        requested_limit = args.limit if args.limit is not None else DEFAULT_MAX_LINES
+        limit = min(requested_limit, self.output_max_lines)
         limited = limit < total - start
         end = start + min(limit, total - start)
         body = "\n".join(lines[start:end])
         # 字节+行双上限(行上限与 limit 相同,已在上方切片;这里主要兜字节)
-        body, trunc = truncate_head(body, max_lines=limit, max_bytes=DEFAULT_MAX_BYTES)
+        body, trunc = truncate_head(
+            body, max_lines=limit, max_bytes=self.output_max_bytes
+        )
 
         parts = [f"[{start + 1}-{end}/{total} 行]" if limited else f"[{total} 行]"]
         parts.append(body)

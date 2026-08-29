@@ -239,6 +239,13 @@ class Settings(BaseSettings):
     )
 
     llm_provider: str = "deepseek"  # deepseek / openai / fake
+    tool_max_concurrency: int = 4
+    tool_timeout: float | None = None
+    tool_max_timeout: float = 600.0
+    tool_max_output_bytes: int = 30_000
+    tool_max_output_lines: int = 2_000
+    tool_max_memory_bytes: int = 1_048_576
+    tool_cleanup_timeout: float = 10.0
 
     @model_validator(mode="after")
     def _check_cwd_env(self) -> "Settings":

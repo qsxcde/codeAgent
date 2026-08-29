@@ -18,8 +18,6 @@ from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
 from codeagent.tools.shared import (
-    DEFAULT_MAX_BYTES,
-    DEFAULT_MAX_LINES,
     GovernedText,
     resolve_to_cwd,
     truncate_head,
@@ -133,7 +131,9 @@ class FindTool(AtomicTool):
 
         limit = args.limit if args.limit is not None else DEFAULT_LIMIT
         body = "\n".join(results) if results else "(无匹配文件)"
-        body, trunc = truncate_head(body, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES)
+        body, trunc = truncate_head(
+            body, max_lines=self.output_max_lines, max_bytes=self.output_max_bytes
+        )
         parts = [body]
         if limit is not None and len(results) >= limit:
             parts.append(f"[结果达到上限 {limit},可调大 limit 查看更多]")
