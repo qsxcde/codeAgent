@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from codeagent.core.context.preflight import ContextPreflightConfig
+from codeagent.session.compaction import CompactionPolicyConfig
 
 from ..model.factory import _resolve_context_window, _resolve_model_effort
 from ..runtime.factory import create_agent_config, policy_for_config, runtime_for_config
@@ -26,6 +27,8 @@ def create_agent_session(
     summarizer: Any = None,
     uncertain_budget_policy: str = "allow",
     context_preflight: ContextPreflightConfig | None = None,
+    compact_budget: int | None = None,
+    compaction_policy: CompactionPolicyConfig | None = None,
 ) -> Any:
     """创建有状态的 AgentSession。"""
     from codeagent.session import AgentSession, EventBus
@@ -53,6 +56,8 @@ def create_agent_session(
         context_window=_resolve_context_window(registry, cfg, provider, model),
         runtime_closer=runtime.close if runtime is not None else None,
         policy=runtime.policy if runtime is not None else None,
+        compact_budget=compact_budget,
+        compaction_policy=compaction_policy,
     )
 
 
@@ -75,6 +80,8 @@ def create_session_manager(
     session_config_factory: Callable[[Any], Any] | None = None,
     uncertain_budget_policy: str = "allow",
     context_preflight: ContextPreflightConfig | None = None,
+    compact_budget: int | None = None,
+    compaction_policy: CompactionPolicyConfig | None = None,
 ) -> Any:
     """创建会话管理器并注入共享端口和资源关闭器。"""
     from codeagent.session import SessionManager
@@ -130,4 +137,6 @@ def create_session_manager(
         runtime_closer=_close_runtime,
         policy=policy_for_config(config),
         session_config_factory=session_config_factory,
+        compact_budget=compact_budget,
+        compaction_policy=compaction_policy,
     )

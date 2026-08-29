@@ -187,3 +187,81 @@ def test_compaction_failure_has_terminal_runtime_state() -> None:
 
     assert model.runtime.phase == RuntimePhase.ERROR
     assert model.runtime.error_code == "compaction_failed"
+
+
+def test_auto_compaction_skip_keeps_idle_phase_and_exposes_diagnostics() -> None:
+    model = TuiModel(clock=lambda: 2.0)
+    model.apply(
+        AgentEvent(
+            EventType.COMPACTION_STARTED,
+            metadata={"trigger": "auto", "target_budget": 600},
+        )
+    )
+    model.apply(
+        AgentEvent(
+            EventType.COMPACTION_FINISHED,
+            metadata={
+                "success": True,
+                "status": "skipped",
+                "reason_code": "oversized_turn",
+                "before_input_tokens": 2_000,
+                "input_budget": 2_000,
+                "target_budget": 600,
+            },
+        )
+    )
+
+    assert model.runtime.phase == RuntimePhase.IDLE
+    assert model.runtime.compaction_status == "skipped"
+    assert model.runtime.compaction_trigger == "auto"
+    assert model.runtime.compaction_reason == "oversized_turn"
+
+
+def test_auto_compaction_success_updates_context_and_transcript_diagnostics() -> None:
+    model = TuiModel(clock=lambda: 2.0)
+    model.apply(
+        AgentEvent(
+            EventType.COMPACTION_STARTED,
+            metadata={"trigger": "auto", "input_tokens": 1_900, "target_budget": 1_300},
+        )
+    )
+    model.apply(
+        AgentEvent(
+            EventType.COMPACTION_FINISHED,
+            metadata={
+                "success": True,
+                "trigger": "auto",
+                "status": "compacted",
+                "before_input_tokens": 1_900,
+                "after_input_tokens": 700,
+                "target_budget": 1_300,
+                "summarized_turns": 4,
+                "kept_turns": 2,
+            },
+        )
+    )
+
+    assert model.runtime.context_tokens == 700
+    assert model.runtime.compaction_after_tokens == 700
+    assert "1,900" in model.transcript.blocks[-1].body
+    assert "700" in model.transcript.blocks[-1].body
+
+
+def test_auto_compaction_persistence_uncertain_is_not_success() -> None:
+    model = TuiModel(clock=lambda: 2.0)
+    model.apply(AgentEvent(EventType.COMPACTION_STARTED, metadata={"trigger": "auto"}))
+    model.apply(
+        AgentEvent(
+            EventType.COMPACTION_FINISHED,
+            metadata={
+                "success": False,
+                "trigger": "auto",
+                "status": "persistence_uncertain",
+                "error_code": "persistence_uncertain",
+            },
+        )
+    )
+
+    assert model.runtime.phase == RuntimePhase.ERROR
+    assert model.runtime.error_code == "persistence_uncertain"
+    assert "持久化结果不确定" in model.transcript.blocks[-1].body

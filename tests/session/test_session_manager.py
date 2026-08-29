@@ -10,6 +10,7 @@ from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
 from codeagent.core import AgentLoopConfig, EventType
 from codeagent.session import SessionManager
+from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session.persistence import MemoryStore
 
 
@@ -30,6 +31,19 @@ def test_create_keeps_empty_session_in_memory_only():
     assert mgr.current is a
     assert store.list() == []
     assert store.get(a.session_id) is None
+
+
+def test_manager_passes_compaction_policy_to_adopted_session():
+    policy = CompactionPolicyConfig(
+        trigger_ratio=0.75,
+        target_ratio=0.5,
+        trigger_headroom_tokens=100,
+        min_recent_turns=2,
+    )
+
+    session = _manager(compaction_policy=policy).create()
+
+    assert session._compaction_policy == policy
 
 
 async def test_create_persists_header_after_successful_first_turn():

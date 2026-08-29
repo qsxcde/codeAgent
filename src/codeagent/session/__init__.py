@@ -4,7 +4,8 @@
 """
 
 from codeagent.session.events.bus import EventBus
+from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session.manager import SessionManager
 from codeagent.session.session import AgentSession
 
-__all__ = ["AgentSession", "EventBus", "SessionManager"]
+__all__ = ["AgentSession", "CompactionPolicyConfig", "EventBus", "SessionManager"]

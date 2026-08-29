@@ -22,7 +22,7 @@
 - **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频"思考中"提示、人类可读的工具摘要及可展开 edit/write 意图差异、model/effort/cwd 状态栏、斜杠命令体系(含 `/provider` `/model` `/effort` `/login` `/skills` `/mcp` `/sessions` `/tree` `/tools` `/status` `/quit`)与模糊补全 / 选择器、Markdown 渲染、Esc 运行中打断 / 空闲退出并打印完整文档。
 - **Headless CLI**(默认形态):`--prompt` 一次性输入或 stdin 逐行读取,事件聚合输出最终回复。
 - **自研编排引擎**:`core/agent.py` 的纯内存 `Agent` 外壳与 `core/orchestration/loop.py` 的 `run_agent_loop`/`run_agent_loop_continue` 驱动 ReAct（模型→工具→继续/结束）；Session 只负责持久化、压缩和会话事件，零 langgraph/langchain 依赖。
-- **会话层**:`SessionStore`(JSONL 树形,重启可恢复,含用量累计)+ `SessionManager`(create / switch / fork / dispose)+ 上下文压缩;成功轮次才落盘,失败/取消内存回滚;`abort` / `steer` / `followup`;`/tree` 和 `/sessions list` 提供分叉树导航。
+- **会话层**:`SessionStore`(JSONL 树形,重启可恢复,含用量累计)+ `SessionManager`(create / switch / fork / dispose)+ 手动与预算驱动的上下文压缩;成功轮次才落盘,失败/取消内存回滚;`abort` / `steer` / `followup`;`/tree` 和 `/sessions list` 提供分叉树导航。
 - **安全确认环**:执行前 `ApprovalPolicy`(bash 危险命令黑名单 + 语义级检测 + 文件访问边界三档 deny/ask/allow);headless 缺省 fail closed。
 - **模型配置层**:每 provider 一个文件(配置 + 工厂自包含),内置模型目录 + `models.json` 按 id upsert 合并,支持思考强度(`model:effort`)与运行时热切换(/provider /model /effort /login)。
 - **工具层(hexagonal)**:`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可按用户配置接入 `tools/list` / `tools/call` 工具，并以 `mcp__<server>__<tool>` 命名空间化和分组预算控制提示词膨胀。

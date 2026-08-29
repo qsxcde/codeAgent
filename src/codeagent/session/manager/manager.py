@@ -9,6 +9,7 @@ from typing import Any
 from codeagent.core.contracts.ports import AgentTool, ApprovalPolicy
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.compaction.summarizer import Summarizer
+from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session.constants import DEFAULT_CONTEXT_WINDOW
 from codeagent.session.contracts import SessionCloser
 from codeagent.session.events.bus import EventBus, Subscriber
@@ -33,6 +34,8 @@ class SessionManager(SessionManagerOperations, SessionManagerRegistry):
         confirmation_timeout: float | None = None,
         summarizer: Summarizer | None = None,
         context_window: int | None = None,
+        compact_budget: int | None = None,
+        compaction_policy: CompactionPolicyConfig | None = None,
         runtime_closer: SessionCloser | None = None,
         policy: ApprovalPolicy | None = None,
         session_config_factory: Callable[[SessionRef], AgentLoopConfig] | None = None,
@@ -50,6 +53,8 @@ class SessionManager(SessionManagerOperations, SessionManagerRegistry):
         self._confirmation_timeout = confirmation_timeout
         self._summarizer = summarizer
         self._context_window = self._resolve_context_window(config, context_window)
+        self._compact_budget = compact_budget
+        self._compaction_policy = compaction_policy
         self._runtime_closer = runtime_closer
         self._session_config_factory = session_config_factory
         self._max_resident_sessions = max_resident_sessions

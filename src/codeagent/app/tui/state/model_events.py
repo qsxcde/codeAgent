@@ -8,6 +8,16 @@ from .runtime import RuntimePhase
 from codeagent.core.contracts.events import AgentEvent, EventType
 
 
+def _token_label(value: object) -> str:
+    """Format optional token metadata for compact TUI diagnostics."""
+    if value is None:
+        return "—"
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 class ModelEventMixin:
     """维护运行态、活动提示、工具块和助手块。"""
 
@@ -32,6 +42,7 @@ class ModelEventMixin:
             EventType.TOOL_CALL: self._apply_tool_call,
             EventType.TOOL_RESULT: self._apply_tool_result,
             EventType.CONFIRMATION_REQUESTED: self._apply_confirmation,
+            EventType.COMPACTION_FINISHED: self._apply_compaction_finished,
             EventType.TURN_END: self._apply_turn_end,
             EventType.ERROR: self._apply_error,
             EventType.RUN_CANCELLED: self._apply_cancelled,
@@ -127,6 +138,30 @@ class ModelEventMixin:
         if block is not None:
             block.set_awaiting()
         self.activity_visible = False
+
+    def _apply_compaction_finished(self, event: AgentEvent) -> None:
+        metadata = event.metadata or {}
+        if metadata.get("trigger") != "auto":
+            return
+        status = str(metadata.get("status") or "failed")
+        reason = str(metadata.get("reason_code") or metadata.get("error_code") or "")
+        if status == "compacted":
+            self.append_info(
+                "自动压缩完成:"
+                f"{_token_label(metadata.get('before_input_tokens'))} → "
+                f"{_token_label(metadata.get('after_input_tokens'))} token,"
+                f"目标 {_token_label(metadata.get('target_budget'))};"
+                f"摘要 {metadata.get('summarized_turns', 0)} 轮,"
+                f"保留 {metadata.get('kept_turns', 0)} 轮"
+            )
+        elif status == "skipped":
+            self.append_info(f"自动压缩跳过:{reason or '无需压缩'}")
+        elif status == "cancelled":
+            self.append_info("自动压缩已取消")
+        elif status == "persistence_uncertain":
+            self.append_info("自动压缩持久化结果不确定")
+        else:
+            self.append_info(f"自动压缩失败:{reason or '未知原因'}")
 
     def _apply_turn_end(self, event: AgentEvent) -> None:
         if self._assistant is not None:

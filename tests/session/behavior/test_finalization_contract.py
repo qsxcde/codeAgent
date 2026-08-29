@@ -11,11 +11,12 @@ from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
 from codeagent.core import Agent, AgentContext, AgentLoopConfig, EventType, Message
 from codeagent.session import AgentSession, EventBus
+from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session.persistence.jsonl import JsonFileStore
 from codeagent.session.persistence.memory_store import MemoryStore
 from codeagent.session.persistence.models import UsageStats
 from codeagent.session.runtime.state import CommitStatus, RunPhase
-from tests.session.behavior.fixtures import _compact_session, _long, _session
+from tests.session.behavior.fixtures import _StubSummarizer, _compact_session, _long, _session
 
 
 class _FailingUsageMemoryStore(MemoryStore):
@@ -149,12 +150,21 @@ async def test_compaction_failure_keeps_committed_turn_and_does_not_duplicate_us
         response="reply",
         usage={"input_tokens": 5, "output_tokens": 1},
     )
-    session = _compact_session(model, store=store, summarizer=None)
+    session = _compact_session(
+        model,
+        store=store,
+        summarizer=None,
+        compact_budget=None,
+        compaction_policy=CompactionPolicyConfig(
+            trigger_ratio=0.0008,
+            target_ratio=0.0005,
+            trigger_headroom_tokens=0,
+        ),
+    )
     for prompt in (_long("q1"), _long("q2"), _long("q3")):
         await session.run(prompt)
     before_usage = store.load_usage(session.session_id)
     session._summarizer = _FailingSummarizer()
-    session._should_auto_compact = lambda: True
     seen: list = []
     session.subscribe(seen.append)
 
@@ -166,8 +176,9 @@ async def test_compaction_failure_keeps_committed_turn_and_does_not_duplicate_us
     assert after_usage.input_tokens == before_usage.input_tokens + 5
     assert after_usage.output_tokens == before_usage.output_tokens + 1
     assert session.last_outcome is not None
-    assert session.last_outcome.commit_status is CommitStatus.COMPACTION_FAILED
-    assert session.last_outcome.phase is RunPhase.FAILED
+    assert session.last_outcome.commit_status is CommitStatus.COMMITTED
+    assert session.last_outcome.phase is RunPhase.COMPLETED
+    assert session.last_outcome.post_commit_status == "compaction_failed"
     assert any(
         event.type == EventType.ERROR
         and event.metadata.get("error_code") == "compaction_failed"
@@ -184,12 +195,17 @@ async def test_cancellation_during_post_commit_compaction_preserves_turn():
         model,
         store=store,
         summarizer=None,
+        compact_budget=None,
+        compaction_policy=CompactionPolicyConfig(
+            trigger_ratio=0.0008,
+            target_ratio=0.0005,
+            trigger_headroom_tokens=0,
+        ),
     )
     for prompt in (_long("q1"), _long("q2"), _long("q3")):
         await session.run(prompt)
     summarizer = _SlowSummarizer()
     session._summarizer = summarizer
-    session._should_auto_compact = lambda: True
 
     task = asyncio.create_task(session.run(_long("q4")))
     await asyncio.wait_for(summarizer.started.wait(), timeout=1)
@@ -201,8 +217,9 @@ async def test_cancellation_during_post_commit_compaction_preserves_turn():
     assert any(message.content.startswith("q4") for message in session.history)
     assert len(store.load_messages(session.session_id)) == len(session.history)
     assert session.last_outcome is not None
-    assert session.last_outcome.phase is RunPhase.CANCELLED
+    assert session.last_outcome.phase is RunPhase.COMPLETED
     assert session.last_outcome.commit_status is CommitStatus.COMMITTED
+    assert session.last_outcome.post_commit_status == "compaction_cancelled"
 
     model.steps = [
         {
@@ -218,6 +235,74 @@ async def test_cancellation_during_post_commit_compaction_preserves_turn():
     assert not any(
         message.get("content") == "stale during finalization"
         for message in model.call_history[-1]["messages"]
+    )
+
+
+async def test_repeated_auto_compaction_failure_enters_cooldown():
+    model = FakeClient(response="reply")
+    session = _compact_session(
+        model,
+        store=MemoryStore(),
+        summarizer=_FailingSummarizer(),
+        context_window=2_000,
+        compact_budget=None,
+        compaction_policy=CompactionPolicyConfig(
+            trigger_ratio=0.2,
+            target_ratio=0.1,
+            trigger_headroom_tokens=0,
+        ),
+        with_tools=False,
+    )
+
+    seen: list = []
+    session.subscribe(seen.append)
+    for index in range(1, 7):
+        await session.run(_long(f"q{index}" * 100))
+    assert session.last_outcome is not None
+    assert session.last_outcome.post_commit_status == "compaction_failed"
+
+    await session._maybe_auto_compact()
+
+    assert session._last_compaction_failure_fingerprint is not None
+    assert any(
+        event.type == EventType.COMPACTION_FINISHED
+        and event.metadata.get("reason_code") == "cooldown"
+        for event in seen
+    )
+
+
+async def test_compaction_persistence_uncertain_keeps_committed_turn(monkeypatch):
+    session = _compact_session(
+        FakeClient(response="reply"),
+        store=MemoryStore(),
+        summarizer=_StubSummarizer(),
+        context_window=2_000,
+        compact_budget=None,
+        compaction_policy=CompactionPolicyConfig(
+            trigger_ratio=0.2,
+            target_ratio=0.1,
+            trigger_headroom_tokens=0,
+        ),
+        with_tools=False,
+    )
+
+    async def append_uncertain(entry):
+        raise OSError("compaction append outcome unknown")
+
+    monkeypatch.setattr(session._persistence, "append_compaction_async", append_uncertain)
+    seen: list = []
+    session.subscribe(seen.append)
+    for index in range(1, 7):
+        await session.run(_long(f"q{index}" * 100))
+
+    assert session.last_outcome is not None
+    assert session.last_outcome.phase is RunPhase.COMPLETED
+    assert session.last_outcome.commit_status is CommitStatus.COMMITTED
+    assert session.last_outcome.post_commit_status == "persistence_uncertain"
+    assert any(
+        event.type == EventType.COMPACTION_FINISHED
+        and event.metadata.get("status") == "persistence_uncertain"
+        for event in seen
     )
 
 

@@ -30,11 +30,19 @@ def transition(
     if event_type in {EventType.TOOL_FINISHED, EventType.TOOL_RESULT}:
         return _tool_finished(snapshot, event, metadata)
     if event_type == EventType.COMPACTION_STARTED:
-        return _simple_phase(snapshot, RuntimePhase.COMPACTING, "压缩上下文")
-    if event_type == EventType.COMPACTION_FINISHED:
-        return _operation_finished(
-            snapshot, metadata, "compaction_failed", "压缩失败", "上下文压缩失败"
+        return replace(
+            snapshot,
+            phase=RuntimePhase.COMPACTING,
+            current_operation="压缩上下文",
+            compaction_trigger=str(metadata.get("trigger") or "manual"),
+            compaction_status="running",
+            compaction_reason=str(metadata.get("reason") or ""),
+            compaction_before_tokens=_int_or_none(metadata.get("input_tokens")),
+            compaction_after_tokens=None,
+            compaction_target_tokens=_int_or_none(metadata.get("target_budget")),
         )
+    if event_type == EventType.COMPACTION_FINISHED:
+        return _compaction_finished(snapshot, metadata)
     if event_type == EventType.RESTORE_STARTED:
         return replace(snapshot, phase=RuntimePhase.RESTORING, current_operation="恢复会话", context_stale=True)
     if event_type == EventType.RESTORE_FINISHED:
@@ -177,6 +185,46 @@ def _operation_finished(
         )
         if error_code == "compaction_failed":
             values["retryable"] = bool(metadata.get("retryable", False))
+    return replace(snapshot, **values)
+
+
+def _compaction_finished(
+    snapshot: RuntimeSnapshot,
+    metadata: dict[str, Any],
+) -> RuntimeSnapshot:
+    status = str(
+        metadata.get("status")
+        or ("compacted" if metadata.get("success", True) else "failed")
+    )
+    successful = status in {"compacted", "skipped"}
+    values: dict[str, Any] = {
+        "phase": RuntimePhase.IDLE if successful else RuntimePhase.ERROR,
+        "current_operation": "" if successful else "压缩失败",
+        "context_stale": False,
+        "compaction_trigger": str(
+            metadata.get("trigger") or snapshot.compaction_trigger or "manual"
+        ),
+        "compaction_status": status,
+        "compaction_reason": str(
+            metadata.get("reason_code") or metadata.get("error_code") or ""
+        ),
+        "compaction_before_tokens": _int_or_none(
+            metadata.get("before_input_tokens", snapshot.compaction_before_tokens)
+        ),
+        "compaction_after_tokens": _int_or_none(metadata.get("after_input_tokens")),
+        "compaction_target_tokens": _int_or_none(
+            metadata.get("target_budget", snapshot.compaction_target_tokens)
+        ),
+    }
+    after_tokens = _int_or_none(metadata.get("after_input_tokens"))
+    if after_tokens is not None:
+        values["context_tokens"] = after_tokens
+    if not successful:
+        values.update(
+            error_code=str(metadata.get("error_code") or "compaction_failed"),
+            error_message=str(metadata.get("error_message") or "上下文压缩失败"),
+            retryable=bool(metadata.get("retryable", False)),
+        )
     return replace(snapshot, **values)
 
 

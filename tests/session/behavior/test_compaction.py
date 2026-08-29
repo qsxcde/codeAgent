@@ -1,5 +1,7 @@
 """compaction behavior tests."""
 
+import asyncio
+
 from tests.session.behavior.fixtures import *  # noqa: F401,F403
 
 
@@ -95,18 +97,59 @@ async def test_after_compact_run_injects_summary_and_links_parent():
 
 
 async def test_threshold_auto_compact_triggers():
-    """阈值触发:usage.input_tokens 超窗口减余量 → turn_end 后自动压缩。"""
+    """阈值触发:下一次请求预算达到比例阈值 → turn_end 后自动压缩。"""
     store = MemoryStore()
-    # input_tokens 5000 > 20000 - 16384 = 3616 → 触发
     model = FakeClient(
-        usage={"input_tokens": 5000, "output_tokens": 10},
         responses=["答1", "答2", "答3", "答4", "答5", "答6"],
     )
-    sess = _compact_session(model, store=store, summarizer=_StubSummarizer(), context_window=20000)
-    for text in (_long("问1"), _long("问2"), _long("问3"), _long("问4"), _long("问5"), _long("问6")):
+    sess = _compact_session(
+        model,
+        store=store,
+        summarizer=_StubSummarizer(),
+        context_window=2_000,
+        compact_budget=600,
+        compaction_policy=CompactionPolicyConfig(
+            trigger_ratio=0.8,
+            target_ratio=0.6,
+            trigger_headroom_tokens=0,
+        ),
+        with_tools=False,
+    )
+    for text in tuple(_long(f"问{i}" * 600) for i in range(1, 7)):
         await (sess.run(text))
     assert sess._summary is not None  # 自动压缩已发生
     assert store.load_context(sess.session_id).summary == sess._summary
+
+
+async def test_auto_compaction_emits_budget_diagnostics_without_provider_usage():
+    seen: list = []
+    model = FakeClient(responses=["答1", "答2", "答3", "答4", "答5", "答6"])
+    sess = _compact_session(
+        model,
+        store=MemoryStore(),
+        summarizer=_StubSummarizer(),
+        context_window=2_000,
+        compact_budget=600,
+        compaction_policy=CompactionPolicyConfig(
+            trigger_ratio=0.8,
+            target_ratio=0.6,
+            trigger_headroom_tokens=0,
+        ),
+        with_tools=False,
+    )
+    sess.subscribe(seen.append)
+
+    for text in tuple(_long(f"问{i}" * 600) for i in range(1, 7)):
+        await sess.run(text)
+
+    finished = [event for event in seen if event.type == EventType.COMPACTION_FINISHED]
+    assert finished
+    assert any(
+        event.metadata.get("trigger") == "auto"
+        and event.metadata.get("status") == "compacted"
+        and event.metadata.get("before_input_tokens") is not None
+        for event in finished
+    )
 
 
 
@@ -134,3 +177,18 @@ async def test_second_compact_incremental_merge():
     assert state.entry_id != first_entry  # 新 entry
     assert state.summary == sess._summary
 
+
+async def test_concurrent_compaction_requests_append_only_one_entry():
+    store = MemoryStore()
+    sess = _compact_session(
+        FakeClient(response="答"),
+        store=store,
+        summarizer=_StubSummarizer(),
+    )
+    for text in (_long("问1"), _long("问2"), _long("问3"), _long("问4")):
+        await sess.run(text)
+
+    results = await asyncio.gather(sess.compact(), sess.compact())
+
+    assert sorted(results) == [False, True]
+    assert len(store._compactions) == 1

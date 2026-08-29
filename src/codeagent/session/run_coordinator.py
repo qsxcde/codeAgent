@@ -9,6 +9,10 @@ from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.messages import Message
 from codeagent.core.contracts.ports import ApprovalPolicy
 from codeagent.session.constants import SUMMARY_ID_PREFIX, SUMMARY_PREFIX
+from codeagent.session.persistence.errors import (
+    PersistenceCancellationUncertainError,
+    PersistenceUncertainError,
+)
 from codeagent.session.runtime.error_policy import classify_error
 from codeagent.session.runtime.state import CommitStatus, RunOutcome, RunPhase
 
@@ -102,14 +106,38 @@ class SessionRunCoordinator:
             return self._failure(text, run_id, exc, "persistence", CommitStatus.PERSISTENCE_FAILED)
 
         try:
-            if owner._should_auto_compact():
-                await owner.compact()
-        except asyncio.CancelledError:
-            self._pending_outcome = self._cancelled(run_id, before_ids, CommitStatus.COMMITTED, rollback=False)
+            await owner._maybe_auto_compact()
+        except asyncio.CancelledError as exc:
+            self._pending_outcome = RunOutcome(
+                run_id=run_id,
+                phase=RunPhase.COMPLETED,
+                commit_status=CommitStatus.COMMITTED,
+                post_commit_status=(
+                    "persistence_uncertain"
+                    if isinstance(exc, PersistenceCancellationUncertainError)
+                    else "compaction_cancelled"
+                ),
+            )
             raise
-        except Exception as exc:
-            return self._failure(text, run_id, exc, "compaction", CommitStatus.COMPACTION_FAILED)
-        return RunOutcome(run_id=run_id, phase=RunPhase.COMPLETED, commit_status=CommitStatus.COMMITTED)
+        except PersistenceUncertainError:
+            return RunOutcome(
+                run_id=run_id,
+                phase=RunPhase.COMPLETED,
+                commit_status=CommitStatus.COMMITTED,
+                post_commit_status="persistence_uncertain",
+            )
+        except Exception:
+            return RunOutcome(
+                run_id=run_id,
+                phase=RunPhase.COMPLETED,
+                commit_status=CommitStatus.COMMITTED,
+                post_commit_status="compaction_failed",
+            )
+        return RunOutcome(
+            run_id=run_id,
+            phase=RunPhase.COMPLETED,
+            commit_status=CommitStatus.COMMITTED,
+        )
 
     async def _commit(
         self,
@@ -205,6 +233,7 @@ class SessionRunCoordinator:
                     "phase": outcome.phase.value,
                     "run_outcome": outcome.phase.value,
                     "commit_status": outcome.commit_status.value,
+                    "post_commit_status": outcome.post_commit_status,
                     "side_effect_state": owner._runtime.side_effect_state,
                     "cleanup_status": owner._runtime.cleanup_status,
                     "cleanup_uncertain": owner._runtime.cleanup_uncertain,

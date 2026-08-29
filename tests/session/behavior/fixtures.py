@@ -7,6 +7,7 @@ from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
 from codeagent.app.composition.tools.adapter import adapt_tools
 from codeagent.core import AgentLoopConfig, EventType, Message, RecursionLimitError
+from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session import AgentSession, EventBus
 from codeagent.session.persistence import MemoryStore
 from codeagent.tools.atomic import (
@@ -126,12 +127,24 @@ def _compact_session(
     summarizer=None,
     context_window: int = 128_000,
     compact_budget: int = 50,
+    compaction_policy: CompactionPolicyConfig | None = None,
+    with_tools: bool = True,
 ) -> AgentSession:
     """构造带 Summarizer 的会话(port 直装,不跨组合根;预算注入小值便于离线测)。"""
     config = AgentLoopConfig(
-        model=ChatModelPort(model),
-        tools=adapt_tools(
-            [ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()]
+        model=ChatModelPort(
+            model,
+            context_window=context_window,
+            output_reserve=0,
+            reserve_tokens=0,
+            window_source="override",
+        ),
+        tools=(
+            adapt_tools(
+                [ReadTool(), WriteTool(), EditTool(), BashTool(), GrepTool(), FindTool(), LsTool()]
+            )
+            if with_tools
+            else []
         ),
     )
     return AgentSession(
@@ -141,6 +154,7 @@ def _compact_session(
         summarizer=summarizer,
         context_window=context_window,
         compact_budget=compact_budget,
+        compaction_policy=compaction_policy,
     )
 
 

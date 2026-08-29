@@ -56,6 +56,12 @@ class RuntimeSnapshot:
     context_tokens: int | None = None
     context_window: int | None = None
     context_stale: bool = False
+    compaction_trigger: str | None = None
+    compaction_status: str | None = None
+    compaction_reason: str | None = None
+    compaction_before_tokens: int | None = None
+    compaction_after_tokens: int | None = None
+    compaction_target_tokens: int | None = None
     last_event_at: float | None = None
 
     def elapsed(self, now: float | None = None) -> int:

@@ -6,6 +6,7 @@ from typing import Any
 
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.constants import DEFAULT_CONTEXT_WINDOW
+from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session.events.bus import EventBus
 from codeagent.session.persistence.models import SessionRef
 from codeagent.session.session import AgentSession
@@ -73,6 +74,8 @@ class SessionManagerRegistry:
             previous_session_id=previous_session_id,
             summarizer=self._summarizer,
             context_window=context_window,
+            compact_budget=self._compact_budget,
+            compaction_policy=self._compaction_policy,
             defer_persistence=defer_persistence,
             persistence_options=persistence_options,
             policy=self._policy,

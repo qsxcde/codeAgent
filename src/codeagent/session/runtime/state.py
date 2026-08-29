@@ -153,6 +153,7 @@ class RunOutcome:
     phase: RunPhase
     failure: RuntimeFailure | None = None
     commit_status: CommitStatus = CommitStatus.NOT_ATTEMPTED
+    post_commit_status: str | None = None
 
     @property
     def completed(self) -> bool:
@@ -168,6 +169,8 @@ class RunOutcome:
             "run_outcome": self.phase.value,
             "commit_status": self.commit_status.value,
         }
+        if self.post_commit_status is not None:
+            metadata["post_commit_status"] = self.post_commit_status
         if self.failure is not None:
             metadata.update(self.failure.as_metadata())
         return metadata

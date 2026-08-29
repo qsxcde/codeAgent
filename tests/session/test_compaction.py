@@ -4,12 +4,21 @@
 文件操作 details 提取。全部离线,零文件系统依赖。
 """
 
+import pytest
+
 from codeagent.core.contracts.messages import Message, ToolCall
+from codeagent.core.context.budget import ContextBudgetSnapshot
 from codeagent.session.compaction import (
+    AutoCompactionDecision,
+    CompactionPlan,
+    CompactionPolicyConfig,
+    CompactionService,
     DEFAULT_BUDGET_TOKENS,
     estimate_tokens,
     extract_file_ops,
     find_cut_point,
+    plan_compaction,
+    decide_auto_compaction,
 )
 
 
@@ -120,3 +129,161 @@ def test_summarizer_is_a_provider_agnostic_boundary() -> None:
     from codeagent.session.compaction.summarizer import Summarizer
 
     assert hasattr(Summarizer, "summarize")
+
+
+def _budget(input_tokens: int, input_budget: int = 100) -> ContextBudgetSnapshot:
+    return ContextBudgetSnapshot(
+        context_window=input_budget,
+        output_reserve=0,
+        reserve_tokens=0,
+        input_budget=input_budget,
+        system_prompt_tokens=0,
+        tool_definitions_tokens=0,
+        conversation_tokens=input_tokens,
+        tool_result_tokens=0,
+        input_tokens=input_tokens,
+        headroom=input_budget - input_tokens,
+        status="estimate",
+        window_source="catalog",
+    )
+
+
+def test_auto_compaction_uses_budget_ratio_and_lower_target() -> None:
+    config = CompactionPolicyConfig(
+        trigger_ratio=0.8,
+        target_ratio=0.6,
+        trigger_headroom_tokens=0,
+    )
+
+    decision = decide_auto_compaction(_budget(80), config)
+
+    assert isinstance(decision, AutoCompactionDecision)
+    assert decision.should_compact is True
+    assert decision.target_budget == 60
+    assert decision.reason_code == "threshold"
+
+
+def test_auto_compaction_does_not_trigger_inside_hysteresis_window() -> None:
+    config = CompactionPolicyConfig(
+        trigger_ratio=0.8,
+        target_ratio=0.6,
+        trigger_headroom_tokens=0,
+    )
+
+    decision = decide_auto_compaction(_budget(70), config)
+
+    assert decision.should_compact is False
+    assert decision.reason_code == "below_threshold"
+
+
+def test_auto_compaction_rejects_invalid_policy_order() -> None:
+    with pytest.raises(ValueError, match="target_ratio"):
+        CompactionPolicyConfig(trigger_ratio=0.8, target_ratio=0.8)
+
+
+def test_compaction_plan_keeps_required_recent_turns() -> None:
+    messages = [*_turn("u1", "a1"), *_turn("u2", "a2"), *_turn("u3", "a3"), *_turn("u4", "a4")]
+
+    plan = plan_compaction(messages, target_budget=4, min_recent_turns=2)
+
+    assert isinstance(plan, CompactionPlan)
+    assert plan.reason_code == "ready"
+    assert plan.cut_point == 4
+    assert plan.summarized_turns == 2
+    assert plan.kept_turns == 2
+
+
+def test_compaction_plan_reports_oversized_required_turn() -> None:
+    messages = [_msg("user", "x" * 100), _msg("assistant", "reply")]
+
+    plan = plan_compaction(messages, target_budget=10, min_recent_turns=1)
+
+    assert plan.cut_point == 0
+    assert plan.reason_code == "oversized_turn"
+
+
+def test_compaction_policy_requires_at_least_one_recent_turn() -> None:
+    with pytest.raises(ValueError, match="min_recent_turns"):
+        CompactionPolicyConfig(min_recent_turns=0)
+
+
+async def test_compaction_skips_without_persisting_when_candidate_exceeds_target() -> None:
+    appended = []
+
+    class Summarizer:
+        async def summarize(self, messages, previous_summary):
+            return "summary"
+
+    async def append_entry(entry):
+        appended.append(entry)
+        return entry.id
+
+    def estimate_candidate(summary, messages):
+        return _budget(51, input_budget=50)
+
+    service = CompactionService(
+        Summarizer(),
+        2,
+        append_entry,
+        candidate_budget=estimate_candidate,
+    )
+    result = await service.compact(
+        [*_turn("u1", "a1"), *_turn("u2", "a2")],
+        None,
+        None,
+        {},
+    )
+
+    assert result.status == "skipped"
+    assert result.reason_code == "summary_too_large"
+    assert appended == []
+
+
+async def test_compaction_candidate_target_includes_tool_definition_tokens() -> None:
+    appended = []
+
+    class Summarizer:
+        async def summarize(self, messages, previous_summary):
+            return "summary"
+
+    async def append_entry(entry):
+        appended.append(entry)
+        return entry.id
+
+    def estimate_candidate(summary, messages):
+        return ContextBudgetSnapshot(
+            context_window=100,
+            output_reserve=0,
+            reserve_tokens=0,
+            input_budget=100,
+            system_prompt_tokens=10,
+            tool_definitions_tokens=70,
+            conversation_tokens=20,
+            tool_result_tokens=0,
+            input_tokens=100,
+            headroom=0,
+            status="estimate",
+            window_source="catalog",
+        )
+
+    service = CompactionService(
+        Summarizer(),
+        80,
+        append_entry,
+        candidate_budget=estimate_candidate,
+    )
+    result = await service.compact(
+        [
+            *_turn("u1" * 50),
+            *_turn("u2" * 50),
+            *_turn("u3" * 50),
+            *_turn("u4" * 50),
+        ],
+        None,
+        None,
+        {},
+    )
+
+    assert result.status == "skipped"
+    assert result.reason_code == "summary_too_large"
+    assert appended == []

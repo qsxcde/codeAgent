@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from codeagent.core.context.budget import ContextBudgetSnapshot
@@ -14,7 +15,7 @@ from codeagent.core.contracts.ports import ApprovalPolicy
 from codeagent.core.contracts.messages import Message
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.core.orchestration.loop import DEFAULT_RECURSION_LIMIT
-from codeagent.session.compaction import DEFAULT_BUDGET_TOKENS
+from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session.compaction.summarizer import Summarizer
 from codeagent.session.constants import (
     COMPACTION_RESERVE_TOKENS,
@@ -55,7 +56,8 @@ class AgentSession(
         previous_session_id: str | None = None,
         summarizer: Summarizer | None = None,
         context_window: int | None = None,
-        compact_budget: int = DEFAULT_BUDGET_TOKENS,
+        compact_budget: int | None = None,
+        compaction_policy: CompactionPolicyConfig | None = None,
         defer_persistence: bool = False,
         persistence_options: dict[str, Any] | None = None,
         runtime_closer: SessionCloser | None = None,
@@ -76,7 +78,16 @@ class AgentSession(
         self._transform_context = transform_context
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
+        if compaction_policy is None:
+            compaction_policy = CompactionPolicyConfig(compact_budget=compact_budget)
+        elif compact_budget is not None:
+            compaction_policy = replace(compaction_policy, compact_budget=compact_budget)
+        self._compaction_policy = compaction_policy
         self._compact_budget = compact_budget
+        self._compaction_gate = asyncio.Lock()
+        self._last_compaction_fingerprint: tuple[Any, ...] | None = None
+        self._last_compaction_failure_fingerprint: tuple[Any, ...] | None = None
+        self._pending_compaction_budget: ContextBudgetSnapshot | None = None
         self._last_input_tokens: int | None = None
         self._persistence = SessionPersistence(
             store,
