@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+import math
 
 from codeagent.core.context.budget import (
     DEFAULT_CONTEXT_WINDOW,
@@ -37,6 +38,8 @@ class AgentLoopConfig:
     tools: list[AgentTool] = field(default_factory=list)
     transform_context: TransformContext = identity_context
     context_preparer: ContextPreparer | None = None
+    #: Maximum wait for each request-local context extension invocation.
+    context_transform_timeout: float | None = None
     context_budget: ContextBudgetPort | None = None
     context_preflight: ContextPreflightConfig = field(
         default_factory=ContextPreflightConfig
@@ -64,3 +67,12 @@ class AgentLoopConfig:
         self.lifecycle_hooks = tuple(self.lifecycle_hooks or ())
         if self.uncertain_budget_policy not in {"allow", "fail"}:
             raise ValueError("uncertain_budget_policy must be 'allow' or 'fail'")
+        timeout = self.context_transform_timeout
+        if timeout is not None and (
+            type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError(
+                "context_transform_timeout must be a finite positive number"
+            )

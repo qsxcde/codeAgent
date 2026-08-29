@@ -25,7 +25,9 @@ from codeagent.core.context.contracts import (
     ContextBudgetPort,
     ContextPreparationRequest,
     ContextPreparer,
+    ContextTransformer,
     ContextToolDefinition,
+    TransformContext,
 )
 from codeagent.core.agent import Agent
 from codeagent.core.contracts.errors import (
@@ -33,6 +35,7 @@ from codeagent.core.contracts.errors import (
     AgentRuntimeError,
     ContextPreparationError,
     ContextPreflightError,
+    ContextTransformTimeoutError,
 )
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.hooks import (
@@ -100,10 +103,13 @@ __all__ = [
     "ContextToolDefinition",
     "ContextPreparationRequest",
     "ContextPreparer",
+    "ContextTransformer",
+    "TransformContext",
     "ContextPreparationError",
     "ContextPreflightConfig",
     "ContextPreflightError",
     "ContextPreflightResult",
+    "ContextTransformTimeoutError",
     "CleanupStatus",
     "DEFAULT_CONTEXT_WINDOW",
     "DEFAULT_OUTPUT_RESERVE",

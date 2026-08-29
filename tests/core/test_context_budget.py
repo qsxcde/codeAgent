@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -15,6 +17,21 @@ from codeagent.core.contracts.errors import ContextPreparationError
 from codeagent.core.contracts.ports import StreamEvent
 from codeagent.core.orchestration.loop import run_agent_loop
 from codeagent.core.orchestration.config import AgentLoopConfig
+
+
+def test_context_transformer_contract_is_explicit_and_compatibly_exported():
+    from codeagent.core import ContextTransformer as PublicContextTransformer
+    from codeagent.core.context.contracts import ContextTransformer, TransformContext
+
+    assert getattr(ContextTransformer, "_is_protocol", False) is True
+    assert TransformContext is ContextTransformer
+    assert PublicContextTransformer is ContextTransformer
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, float("nan"), float("inf")])
+def test_agent_loop_config_rejects_invalid_context_transform_timeout(timeout):
+    with pytest.raises(ValueError, match="context_transform_timeout"):
+        AgentLoopConfig(model=object(), context_transform_timeout=timeout)
 
 
 def test_context_budget_rejects_invalid_window_and_reserve_values():
@@ -416,6 +433,174 @@ async def test_legacy_transform_context_remains_supported():
     )
 
     assert seen == ["legacy"]
+
+
+@pytest.mark.parametrize("invalid_result", [None, ["not-a-message"]])
+@pytest.mark.asyncio
+async def test_context_transformer_rejects_invalid_results_without_model_fallback(
+    invalid_result,
+):
+    model = _BudgetAwareModel()
+    source = AgentContext(messages=[Message(role="user", content="history")])
+    events = []
+
+    def transform(_messages):
+        return invalid_result
+
+    with pytest.raises(ContextPreparationError) as raised:
+        await run_agent_loop(
+            source,
+            AgentLoopConfig(model=model, transform_context=transform),
+            "prompt",
+            emit=events.append,
+        )
+
+    assert raised.value.code == "context_preparation_failed"
+    assert model.received == []
+    assert [message.content for message in source.messages] == ["history"]
+    error = next(event for event in events if event.type == "error")
+    assert error.metadata["error_code"] == "context_preparation_failed"
+
+
+@pytest.mark.asyncio
+async def test_context_transformer_timeout_blocks_model_and_preserves_history():
+    model = _BudgetAwareModel()
+    source = AgentContext(messages=[Message(role="user", content="history")])
+    events = []
+
+    async def transform(_messages):
+        await asyncio.sleep(10)
+        return []
+
+    with pytest.raises(ContextPreparationError) as raised:
+        await run_agent_loop(
+            source,
+            AgentLoopConfig(
+                model=model,
+                transform_context=transform,
+                context_transform_timeout=0.01,
+            ),
+            "prompt",
+            emit=events.append,
+        )
+
+    assert raised.value.code == "context_transform_timeout"
+    assert raised.value.extension == "transform_context"
+    assert raised.value.timeout == 0.01
+    assert model.received == []
+    assert [message.content for message in source.messages] == ["history"]
+    error = next(event for event in events if event.type == "error")
+    assert error.metadata["error_code"] == "context_transform_timeout"
+    assert error.metadata["extension"] == "transform_context"
+
+
+@pytest.mark.asyncio
+async def test_context_preparer_timeout_uses_same_contract():
+    model = _BudgetAwareModel()
+    events = []
+
+    async def prepare(_request):
+        await asyncio.sleep(10)
+        return []
+
+    with pytest.raises(ContextPreparationError) as raised:
+        await run_agent_loop(
+            AgentContext(),
+            AgentLoopConfig(
+                model=model,
+                context_preparer=prepare,
+                context_transform_timeout=0.01,
+            ),
+            "prompt",
+            emit=events.append,
+        )
+
+    assert raised.value.code == "context_transform_timeout"
+    assert raised.value.extension == "context_preparer"
+    assert model.received == []
+    assert next(event for event in events if event.type == "error").metadata[
+        "extension"
+    ] == "context_preparer"
+
+
+@pytest.mark.asyncio
+async def test_context_preparer_rejects_invalid_result_without_model_call():
+    model = _BudgetAwareModel()
+    source = AgentContext(messages=[Message(role="user", content="history")])
+
+    def prepare(_request):
+        return ["not-a-message"]
+
+    with pytest.raises(ContextPreparationError) as raised:
+        await run_agent_loop(
+            source,
+            AgentLoopConfig(model=model, context_preparer=prepare),
+            "prompt",
+        )
+
+    assert raised.value.code == "context_preparation_failed"
+    assert model.received == []
+    assert [message.content for message in source.messages] == ["history"]
+
+
+@pytest.mark.asyncio
+async def test_context_transformer_cancellation_is_not_wrapped():
+    model = _BudgetAwareModel()
+    started = asyncio.Event()
+    cancelled = False
+
+    async def transform(_messages):
+        nonlocal cancelled
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+
+    task = asyncio.create_task(
+        run_agent_loop(
+            AgentContext(),
+            AgentLoopConfig(
+                model=model,
+                transform_context=transform,
+                context_transform_timeout=1,
+            ),
+            "prompt",
+        )
+    )
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert cancelled is True
+    assert model.received == []
+
+
+@pytest.mark.asyncio
+async def test_sync_context_transformer_timeout_bounds_waiting():
+    model = _BudgetAwareModel()
+    started = time.monotonic()
+
+    def transform(messages):
+        time.sleep(0.15)
+        return messages
+
+    with pytest.raises(ContextPreparationError) as raised:
+        await run_agent_loop(
+            AgentContext(),
+            AgentLoopConfig(
+                model=model,
+                transform_context=transform,
+                context_transform_timeout=0.01,
+            ),
+            "prompt",
+        )
+
+    assert raised.value.code == "context_transform_timeout"
+    assert time.monotonic() - started < 0.1
+    assert model.received == []
 
 
 class _BrokenBudgetModel:

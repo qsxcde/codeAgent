@@ -11,6 +11,7 @@ from codeagent.core.context.model import AgentContext
 from codeagent.core.contracts.errors import (
     ContextPreparationError,
     ContextPreflightError,
+    ContextTransformTimeoutError,
 )
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.execution.runtime import ToolExecutionRuntime
@@ -120,6 +121,13 @@ def _error_metadata(error: Exception) -> dict[str, Any]:
             "cause_type": type(error.cause).__name__,
         }
     )
+    if isinstance(error, ContextTransformTimeoutError):
+        metadata.update(
+            {
+                "extension": error.extension,
+                "timeout": error.timeout,
+            }
+        )
     if isinstance(error, ContextPreflightError):
         snapshot = error.result.snapshot
         metadata.update(

@@ -4,7 +4,7 @@
 
 当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
-当前验收基线（2026-08-30）：`uv run pytest -q` **1444 passed**（macOS，33.50s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
+当前验收基线（2026-08-30）：`uv run pytest -q` **1466 passed**（macOS，33.69s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
 
 ## 项目介绍
 
@@ -194,7 +194,7 @@ codeagent/
     │
     └── resources/               # [资源层] 内建 skills / prompts（Skills 已启用）
 
-tests/                          # 按行为域分包，1452 passed（2026-08-30）
+tests/                          # 按行为域分包，1466 passed（2026-08-30）
 ├── conftest.py / fixtures/     #   marker、隔离环境和共享离线夹具
 ├── contracts/                  #   跨实现公共契约与分层边界
 ├── ai/ / core/ / mcp/          #   模型、编排和 MCP 行为
@@ -213,7 +213,7 @@ tests/                          # 按行为域分包，1452 passed（2026-08-30�
 
 v0.3.0 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。当前未实现且已明确移出本版本的能力包括：费用估算、Web / HTTP 事件订阅、轻量记忆、插件系统、多智能体和自动化任务；它们在出现真实需求后重新评估。
 
-工程后续优先级是完成 CI 性能基线和阈值决策、补齐 ContextTransformer 契约，再推进工具和 Provider 稳定性。性能基线在数据稳定前保持非阻塞。
+工程后续优先级是完成 CI 性能基线和阈值决策、落实 Hook 装配边界，再推进工具和 Provider 稳定性。ContextTransformer 已具备输入输出隔离、超时、取消和失败诊断契约；性能基线在数据稳定前保持非阻塞。
 
 ## 参考
 

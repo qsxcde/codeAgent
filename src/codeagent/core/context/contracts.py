@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -16,6 +16,7 @@ __all__ = [
     "ContextBudgetPort",
     "ContextPreparationRequest",
     "ContextPreparer",
+    "ContextTransformer",
     "ContextToolDefinition",
     "TransformContext",
 ]
@@ -35,11 +36,19 @@ async def _identity_context(messages: list[Message]) -> list[Message]:
     return list(messages)
 
 
-TransformContext = Callable[
-    [list[Message]], Awaitable[list[Message]] | list[Message]
-]
+class ContextTransformer(Protocol):
+    """Provider-neutral transformation applied to one request's messages."""
+
+    def __call__(
+        self,
+        messages: list[Message],
+    ) -> Awaitable[Iterable[Message]] | Iterable[Message]: ...
+
+
+# Compatibility name retained for callers that use the original contract.
+TransformContext = ContextTransformer
 ContextPreparer = Callable[
-    ["ContextPreparationRequest"], Awaitable[list[Message]] | list[Message]
+    ["ContextPreparationRequest"], Awaitable[Iterable[Message]] | Iterable[Message]
 ]
 BeforeToolCall = Callable[
     [ToolCall, Any], Awaitable[ToolDecision | None] | ToolDecision | None

@@ -9,6 +9,7 @@ __all__ = [
     "AgentRuntimeError",
     "ContextPreparationError",
     "ContextPreflightError",
+    "ContextTransformTimeoutError",
 ]
 
 
@@ -29,6 +30,21 @@ class ContextPreparationError(AgentRuntimeError, ValueError):
     def __init__(self, cause: Exception) -> None:
         super().__init__(str(cause))
         self.cause = cause
+
+
+class ContextTransformTimeoutError(ContextPreparationError):
+    """A request-local context extension exceeded its configured timeout."""
+
+    code = "context_transform_timeout"
+
+    def __init__(self, extension: str, timeout: float) -> None:
+        self.extension = extension
+        self.timeout = timeout
+        super().__init__(
+            TimeoutError(
+                f"{extension} exceeded context transform timeout of {timeout}s"
+            )
+        )
 
 
 class ContextPreflightError(ContextPreparationError):

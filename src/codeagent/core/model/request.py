@@ -7,10 +7,8 @@ messages; session persistence and application wiring stay outside ``core``.
 
 from __future__ import annotations
 
-import copy
 import asyncio
-from collections.abc import Mapping
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from codeagent.core.support.awaiting import await_if_needed
@@ -24,32 +22,20 @@ from codeagent.core.context.contracts import (
     ContextToolDefinition,
 )
 from codeagent.core.context.preflight import evaluate_context_preflight
-from codeagent.core.contracts.errors import ContextPreparationError, ContextPreflightError
+from codeagent.core.contracts.errors import (
+    ContextPreparationError,
+    ContextPreflightError,
+)
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.messages import Message, ToolCall, new_id
 from codeagent.core.contracts.ports import AgentTool
+from codeagent.core.context.transform import (
+    clone_context_messages,
+    clone_message,
+    invoke_context_extension,
+    materialize_context_messages,
+)
 from codeagent.core.orchestration.config import AgentLoopConfig
-
-
-def clone_message(message: Message) -> Message:
-    """Clone a message and its mutable tool-call payloads for a request view."""
-    return Message(
-        role=message.role,
-        content=copy.deepcopy(message.content),
-        tool_calls=[
-            ToolCall(
-                id=call.id,
-                name=call.name,
-                args=copy.deepcopy(call.args),
-                details=copy.deepcopy(call.details),
-            )
-            for call in message.tool_calls
-        ],
-        tool_call_id=message.tool_call_id,
-        id=message.id,
-        parent_id=message.parent_id,
-        tool_output=copy.deepcopy(message.tool_output),
-    )
 
 
 def neutral_tool_definitions(
@@ -109,7 +95,15 @@ async def prepare_context(
     """Build a temporary model view and publish its final budget snapshot."""
     try:
         source = [clone_message(message) for message in history]
-        legacy_view = list(await await_if_needed(config.transform_context(list(source))))
+        legacy_result = await invoke_context_extension(
+            config.transform_context,
+            list(source),
+            config.context_transform_timeout,
+            extension_name="transform_context",
+        )
+        legacy_view = clone_context_messages(
+            materialize_context_messages(legacy_result, extension="transform_context")
+        )
         if config.context_preparer is not None:
             budget = await describe_context_budget(config, legacy_view)
             emit(AgentEvent(EventType.CONTEXT_BUDGET, payload=budget))
@@ -124,18 +118,23 @@ async def prepare_context(
                 )
                 emit(AgentEvent(EventType.CONTEXT_PREFLIGHT, payload=result))
                 raise ContextPreflightError(result)
-            prepared = await await_if_needed(
-                config.context_preparer(
-                    ContextPreparationRequest(
-                        messages=tuple(clone_message(message) for message in legacy_view),
-                        tools=neutral_tool_definitions(config.tools),
-                        budget=budget,
-                    )
-                )
+            prepared_result = await invoke_context_extension(
+                config.context_preparer,
+                ContextPreparationRequest(
+                    messages=tuple(clone_message(message) for message in legacy_view),
+                    tools=neutral_tool_definitions(config.tools),
+                    budget=budget,
+                ),
+                config.context_transform_timeout,
+                extension_name="context_preparer",
+            )
+            prepared = materialize_context_messages(
+                prepared_result,
+                extension="context_preparer",
             )
         else:
             prepared = legacy_view
-        transformed = [clone_message(message) for message in prepared]
+        transformed = clone_context_messages(prepared)
         final_budget = await describe_context_budget(config, transformed)
         governed = govern_tool_messages(transformed, final_budget)
         if _message_views_differ(transformed, governed):
