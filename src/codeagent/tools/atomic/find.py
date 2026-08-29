@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
+from codeagent.tools.execution.search import run_optional_search
 from codeagent.tools.shared import (
     GovernedText,
+    ToolResourceLimits,
     resolve_to_cwd,
     truncate_head,
 )
@@ -83,7 +86,13 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
 
 
 def find_files(
-    ops, cwd, pattern: str, search_dir: str | None, limit: int | None
+    ops,
+    cwd,
+    pattern: str,
+    search_dir: str | None,
+    limit: int | None,
+    *,
+    resource_limits: ToolResourceLimits | None = None,
 ) -> list[str]:
     """在 ``search_dir`` 下按 glob 找文件,返回相对搜索根的 posix 路径列表(升级缝)。
 
@@ -100,6 +109,10 @@ def find_files(
 
     full_path = "/" in pattern
     matcher = _glob_to_regex(pattern) if full_path else re.compile(fnmatch.translate(pattern))
+    limits = resource_limits or ToolResourceLimits()
+    external = _try_fd(base, matcher, full_path, limit, limits)
+    if external is not None:
+        return external
 
     results: list[str] = []
     for root, dirs, files in ops.walk(base):
@@ -124,7 +137,12 @@ class FindTool(AtomicTool):
     def _invoke(self, args: FindArgs) -> str:
         try:
             results = find_files(
-                self._ops, self._cwd, args.pattern, args.path, args.limit
+                self._ops,
+                self._cwd,
+                args.pattern,
+                args.path,
+                args.limit,
+                resource_limits=self.resource_limits,
             )
         except OSError as exc:
             raise ValueError(f"查找失败: {exc}")
@@ -155,3 +173,51 @@ class FindTool(AtomicTool):
                 "source": "tool",
             },
         )
+
+
+def _try_fd(
+    base: Path,
+    matcher: re.Pattern[str],
+    full_path: bool,
+    limit: int | None,
+    limits: ToolResourceLimits,
+) -> list[str] | None:
+    """使用 fd 加速文件枚举；失败或不完整时返回 None 触发 Python fallback。"""
+    args = ["--type", "f", "--hidden", "--no-ignore", "--print0"]
+    for noise in (".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"):
+        args.extend(["--exclude", noise])
+    args.extend(["--", ".", "."])
+    result = run_optional_search(
+        "fd",
+        args,
+        base,
+        timeout=_search_timeout(limits),
+        max_output_bytes=limits.effective_output_bytes,
+        cleanup_timeout=limits.cleanup_timeout,
+    )
+    if result is None or result.truncated or not result.stdout.endswith(b"\0"):
+        return None
+    results: list[str] = []
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        try:
+            candidate = Path(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            return None
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        try:
+            rel = candidate.resolve().relative_to(base.resolve()).as_posix()
+        except ValueError:
+            continue
+        value = rel if full_path else Path(rel).name
+        if matcher.match(rel if full_path else value):
+            results.append(rel if full_path else value)
+            if limit is not None and len(results) >= limit:
+                break
+    return results
+
+
+def _search_timeout(limits: ToolResourceLimits) -> float:
+    return min(limits.timeout or 120.0, limits.max_timeout)

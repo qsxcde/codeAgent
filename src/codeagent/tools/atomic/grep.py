@@ -18,8 +18,10 @@ import re
 from pydantic import BaseModel, Field
 
 from codeagent.tools.base import AtomicTool
+from codeagent.tools.execution.search import run_rg
 from codeagent.tools.shared import (
     GovernedText,
+    ToolResourceLimits,
     resolve_to_cwd,
     truncate_head,
 )
@@ -150,6 +152,8 @@ def grep_files(
     literal: bool,
     context: int,
     limit: int | None,
+    *,
+    resource_limits: ToolResourceLimits | None = None,
 ) -> tuple[list[str], bool]:
     """在 ``search_path`` 下按 pattern 搜索,返回 ``(输出行, 是否达到匹配上限)``(升级缝)。"""
     pattern = pattern.strip()
@@ -160,6 +164,19 @@ def grep_files(
         raise ValueError(f"路径不存在: {target}")
 
     limit = limit if limit is not None else DEFAULT_LIMIT
+    limits = resource_limits or ToolResourceLimits()
+    external = run_rg(
+        target,
+        pattern,
+        glob,
+        ignore_case,
+        literal,
+        context,
+        limit,
+        limits,
+    )
+    if external is not None:
+        return external
     flags = re.IGNORECASE if ignore_case else 0
 
     if pattern.isascii():
@@ -208,6 +225,7 @@ class GrepTool(AtomicTool):
                 args.literal,
                 args.context,
                 args.limit,
+                resource_limits=self.resource_limits,
             )
         except OSError as exc:
             raise ValueError(f"搜索失败: {exc}")
