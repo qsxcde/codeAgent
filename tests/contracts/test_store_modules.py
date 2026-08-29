@@ -1,63 +1,61 @@
-"""Tests for the split session-store module boundaries."""
+"""Tests for the canonical session persistence module boundaries."""
 
-from codeagent.session import session as session_module
-from codeagent.session import store as store_module
+from __future__ import annotations
+
+import importlib.util
+
 from codeagent.core.contracts.messages import Message
-from codeagent.session.memory_store import MemoryStore
+from codeagent.session import session as session_module
+from codeagent.session.persistence import (
+    CompactionEntry,
+    CompactionState,
+    JsonFileStore,
+    MemoryStore,
+    SessionRef,
+    SessionStore,
+    UsageStats,
+)
+from codeagent.session.persistence.codec import _dict_to_message, _message_to_dict
+from codeagent.session.persistence.index import SessionIndex
+from codeagent.session.persistence.jsonl_store import JsonFileStore as JsonlStore
+from codeagent.session.persistence.memory_store import MemoryStore as InMemoryStore
+from codeagent.session.persistence.models import SessionRef as PersistenceSessionRef
+from codeagent.session.persistence.protocol import SessionStore as PersistenceSessionStore
+from codeagent.session.persistence.records import MessageRecord
+from codeagent.session.runtime import SessionRuntime
 from codeagent.session.session_persistence import SessionPersistence
-from codeagent.session.session_runtime import SessionRuntime
-from codeagent.session.store import UsageStats
 
 
-def test_store_facade_preserves_public_symbols() -> None:
-    from codeagent.session.json_file_store import JsonFileStore
-    from codeagent.session.memory_store import MemoryStore
-    from codeagent.session.store_codec import (
-        _dict_to_message,
-        _message_to_dict,
-    )
-    from codeagent.session.store_models import (
-        CompactionEntry,
-        CompactionState,
-        SessionRef,
-        SessionStore,
-        UsageStats,
-    )
+LEGACY_MODULES = (
+    "codeagent.session.bus",
+    "codeagent.session.json_file_store",
+    "codeagent.session.memory_store",
+    "codeagent.session.session_runtime",
+    "codeagent.session.store",
+    "codeagent.session.store_codec",
+    "codeagent.session.store_index",
+    "codeagent.session.store_models",
+    "codeagent.session.tree",
+)
 
-    assert store_module.JsonFileStore is JsonFileStore
-    assert store_module.MemoryStore is MemoryStore
-    assert store_module.CompactionEntry is CompactionEntry
-    assert store_module.CompactionState is CompactionState
-    assert store_module.SessionRef is SessionRef
-    assert store_module.SessionStore is SessionStore
-    assert store_module.UsageStats is UsageStats
+
+def test_canonical_persistence_modules_expose_public_symbols() -> None:
+    assert JsonFileStore is JsonlStore
+    assert MemoryStore is InMemoryStore
+    assert SessionRef is PersistenceSessionRef
+    assert SessionStore is PersistenceSessionStore
+    assert CompactionEntry is not None
+    assert CompactionState is not None
+    assert UsageStats is not None
+    assert SessionIndex is not None
+    assert MessageRecord is not None
     assert callable(_dict_to_message)
     assert callable(_message_to_dict)
 
 
-def test_new_persistence_modules_are_the_canonical_store_implementation() -> None:
-    from codeagent.session.json_file_store import JsonFileStore
-    from codeagent.session.memory_store import MemoryStore
-    from codeagent.session.persistence.codec import _dict_to_message, _message_to_dict
-    from codeagent.session.persistence.index import SessionIndex
-    from codeagent.session.persistence.jsonl_store import JsonFileStore as NewJsonFileStore
-    from codeagent.session.persistence.memory_store import MemoryStore as NewMemoryStore
-    from codeagent.session.persistence.models import SessionRef
-    from codeagent.session.persistence.protocol import SessionStore
-    from codeagent.session.persistence.records import MessageRecord
-    from codeagent.session.store_codec import _dict_to_message as LegacyDictToMessage
-    from codeagent.session.store_codec import _message_to_dict as LegacyMessageToDict
-    from codeagent.session.store_index import SessionIndex as LegacySessionIndex
-    from codeagent.session.store_models import SessionRef as LegacySessionRef
-
-    assert JsonFileStore is NewJsonFileStore
-    assert MemoryStore is NewMemoryStore
-    assert LegacyDictToMessage is _dict_to_message
-    assert LegacyMessageToDict is _message_to_dict
-    assert LegacySessionIndex is SessionIndex
-    assert LegacySessionRef is SessionRef
-    assert SessionStore is not None
-    assert MessageRecord is not None
+def test_legacy_session_modules_are_removed() -> None:
+    for module_name in LEGACY_MODULES:
+        assert importlib.util.find_spec(module_name) is None
 
 
 def test_persistence_locking_shares_a_lock_per_path() -> None:

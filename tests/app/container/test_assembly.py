@@ -94,7 +94,7 @@ def test_create_tui_app_injects_rebuild_config():
     """组合根注入 rebuild 回调:/provider /model /effort 热切换链路(T-44)。"""
     with patch("codeagent.app.composition.model.selection.create_llm") as mock_llm:
         from codeagent.ai.providers.fake import FakeClient
-        from codeagent.session.store import MemoryStore
+        from codeagent.session.persistence import MemoryStore
 
         mock_llm.return_value = FakeClient(response="测试回复")
         from codeagent.app.container import create_tui_app

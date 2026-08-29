@@ -9,11 +9,11 @@ import pytest
 from codeagent.core.contracts.events import AgentEvent, EventType
 
 
-def test_legacy_runtime_entrypoint_reexports_controller() -> None:
-    from codeagent.session.runtime.controller import SessionRuntime
-    from codeagent.session.session_runtime import SessionRuntime as LegacyRuntime
+def test_runtime_entrypoint_is_the_canonical_controller() -> None:
+    from codeagent.session.runtime import SessionRuntime
+    from codeagent.session.runtime.controller import SessionRuntime as Controller
 
-    assert LegacyRuntime is SessionRuntime
+    assert SessionRuntime is Controller
 
 
 def test_runtime_accepts_an_injected_agent_factory() -> None:

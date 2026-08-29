@@ -7,13 +7,13 @@ session facade remains responsible for events and publishing the new state.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
 from codeagent.core.contracts.messages import Message
 from codeagent.session.compaction.details import extract_file_ops
 from codeagent.session.compaction.policy import find_cut_point
+from codeagent.session.compaction.summarizer import Summarizer
 from codeagent.session.persistence.models import CompactionEntry
 
 
@@ -32,9 +32,9 @@ class CompactionService:
 
     def __init__(
         self,
-        summarizer: Any,
+        summarizer: Summarizer | None,
         budget: int,
-        append_entry: Callable[[CompactionEntry], str],
+        append_entry: Callable[[CompactionEntry], Awaitable[str]],
     ) -> None:
         self._summarizer = summarizer
         self._budget = budget
@@ -76,7 +76,7 @@ class CompactionService:
             parent_id=parent_id,
             first_kept_entry_id=kept[0].id if kept else "",
         )
-        entry_id = self._append_entry(entry)
+        entry_id = await self._append_entry(entry)
         return CompactionResult(
             kept_history=kept,
             summary=summary,

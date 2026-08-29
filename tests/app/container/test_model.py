@@ -255,7 +255,7 @@ async def test_tui_app_with_store_persists_session_and_usage():
     usage 无落库点、/status 显示「用量: (无)」。store 注入后本轮 usage
     落库并经 session.usage 读取到聚合值。
     """
-    from codeagent.session.store import MemoryStore
+    from codeagent.session.persistence import MemoryStore
 
     store = MemoryStore()
     import asyncio

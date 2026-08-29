@@ -10,7 +10,7 @@ from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
 from codeagent.core import AgentLoopConfig, EventType
 from codeagent.session import SessionManager
-from codeagent.session.store import MemoryStore
+from codeagent.session.persistence import MemoryStore
 
 
 def _manager(client: FakeClient | None = None, store=None, **kwargs) -> SessionManager:
@@ -446,7 +446,7 @@ async def test_fork_subscription_follows():
 async def test_fork_compacted_session_restores_summary():
     """fork 已压缩会话:新会话恢复摘要状态(回归:此前摘要丢失,上下文信息缺失)。"""
     from codeagent.session.compaction import find_cut_point
-    from codeagent.session.store import CompactionEntry
+    from codeagent.session.persistence import CompactionEntry
 
     store = MemoryStore()
     mgr = _manager(store=store)

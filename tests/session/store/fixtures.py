@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
 from codeagent.core.contracts.messages import Message, ToolCall
-from codeagent.session.store import (
+from codeagent.session.persistence import (
     CURRENT_VERSION,
     CompactionEntry,
     JsonFileStore,

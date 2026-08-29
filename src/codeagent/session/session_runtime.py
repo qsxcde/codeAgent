@@ -1,5 +1,0 @@
-"""Compatibility facade for the session runtime controller."""
-
-from codeagent.session.runtime.controller import SessionRuntime
-
-__all__ = ["SessionRuntime"]

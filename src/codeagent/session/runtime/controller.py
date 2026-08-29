@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import fields, replace
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from codeagent.core import Agent, AgentContext, ToolDecision
+from codeagent.core import Agent
 from codeagent.core.contracts.events import AgentEvent, EventType
-from codeagent.core.contracts.messages import Message
+from codeagent.core.context.model import AgentContext
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.persistence.models import UsageStats
 from codeagent.session.runtime.confirmation import ConfirmationCoordinator
-from codeagent.session.runtime.event_mapper import EventMapper, SideEffectObserver
+from codeagent.session.runtime.event_mapper import SideEffectObserver
 from codeagent.session.runtime.state import (
     CommitStatus,
     RunOutcome,
@@ -21,6 +21,8 @@ from codeagent.session.runtime.state import (
     RunState,
     RuntimeFailure,
 )
+from codeagent.session.runtime.execution import SessionExecutionMixin
+from codeagent.session.runtime.event_lifecycle import RuntimeEventMixin
 
 AgentFactory = Callable[[AgentContext, AgentLoopConfig, int], Agent]
 
@@ -31,7 +33,7 @@ def _default_agent_factory(
     return Agent(context, config, recursion_limit=recursion_limit)
 
 
-class SessionRuntime:
+class SessionRuntime(RuntimeEventMixin, SessionExecutionMixin):
     """Own mutable state associated with one active AgentSession run."""
 
     def __init__(
@@ -135,99 +137,6 @@ class SessionRuntime:
         self.turn_usage = UsageStats()
         return run_id
 
-    async def execute(
-        self,
-        config: AgentLoopConfig,
-        text: str,
-        *,
-        history: list[Message],
-        recursion_limit: int,
-        tool_timeout: float | None,
-        policy: Any = None,
-        transform_context: Callable[[list[Message]], Any] | None = None,
-    ) -> list[Message]:
-        if self.active_run_id is None:
-            raise RuntimeError("run must be started before execution")
-        run_id = self.active_run_id
-        self.current_task = asyncio.current_task()
-        try:
-            context = AgentContext(messages=list(history), tools=list(config.tools))
-
-            async def before_tool_call(call, _context):
-                if policy is None:
-                    return ToolDecision.allow()
-                decision = policy.decide(call.name, call.args)
-                if decision.action == "allow":
-                    return ToolDecision.allow()
-                if decision.action == "deny":
-                    return ToolDecision.block(decision.reason)
-                request_id = str(uuid.uuid4())
-                self.confirmation.register(
-                    request_id, timeout=self._confirmation_timeout
-                )
-                self._handle_event(
-                    AgentEvent(
-                        EventType.CONFIRMATION_REQUESTED,
-                        payload={
-                            "request_id": request_id,
-                            "tool": call.name,
-                            "args": call.args,
-                            "reason": decision.reason,
-                        },
-                    ),
-                    run_id,
-                )
-                approved = await self.confirmation.wait(
-                    request_id, timeout=self._confirmation_timeout
-                )
-                return (
-                    ToolDecision.allow()
-                    if approved
-                    else ToolDecision.block("用户拒绝执行")
-                )
-
-            pending_steer: list[str] = []
-            while not self.inject_queue.empty():
-                pending_steer.append(self.inject_queue.get_nowait())
-            # ``config`` may be the composition root's lazy proxy rather than
-            # the dataclass itself. Copy declared fields dynamically so lazy
-            # configuration and newly added AgentLoopConfig fields follow the
-            # same path without silently dropping execution options.
-            config_values = {
-                item.name: getattr(config, item.name)
-                for item in fields(AgentLoopConfig)
-            }
-            config_values.update(
-                {
-                    "tools": list(config_values["tools"]),
-                    "before_tool_call": before_tool_call,
-                    "tool_timeout": tool_timeout,
-                    # A session-level transform overrides the config-level
-                    # hook; otherwise preserve the hook already assembled in
-                    # AgentLoopConfig so the runtime path matches core.
-                    "transform_context": transform_context
-                    or config_values["transform_context"],
-                }
-            )
-            agent_config = AgentLoopConfig(**config_values)
-            self.agent = self._agent_factory(
-                context,
-                agent_config,
-                recursion_limit,
-            )
-            set_run_id = getattr(self.agent, "set_run_id", None)
-            if callable(set_run_id):
-                set_run_id(run_id)
-            for steer in pending_steer:
-                self.agent.steer(steer)
-            self.agent.subscribe(lambda event: self._handle_event(event, run_id))
-            return await self.agent.prompt(text)
-        finally:
-            # The session owns post-execution commit and compaction as part
-            # of the same run. Keep the task reference until finish_run so
-            # abort()/wait_for_idle() also cover that finalization window.
-            pass
-
     def _agent_steer(self, text: str) -> None:
         if self.phase is RunPhase.FINALIZING:
             # The model execution boundary is closed. A late steer belongs to
@@ -237,67 +146,6 @@ class SessionRuntime:
             self.agent.steer(text)
         else:
             self.inject_queue.put_nowait(text)
-
-    def _handle_event(self, event: AgentEvent, run_id: str) -> None:
-        if self._state.phase is RunPhase.IDLE or self._state.run_id != run_id:
-            return
-        for item in EventMapper.map_agent_event(event):
-            if item.run_id is not None and item.run_id != run_id:
-                continue
-            metadata = dict(item.metadata or {})
-            metadata.setdefault("run_id", run_id)
-            item = replace(item, metadata=metadata, run_id=item.run_id or run_id)
-            self.observe_event(item)
-            metadata = dict(item.metadata or {})
-            metadata.setdefault("phase", self.phase.value)
-            metadata["sequence"] = self._state.next_sequence()
-            item = replace(item, metadata=metadata, phase=self.phase.value)
-            # The core error/aborted notification is an internal process event.
-            # Session emits the single structured terminal event in AgentSession.
-            if item.type in {EventType.ERROR, EventType.ABORTED}:
-                continue
-            if self._event_handler is not None:
-                self._event_handler(item, run_id)
-
-    @staticmethod
-    def _map_agent_event(event: AgentEvent) -> list[AgentEvent]:
-        return EventMapper.map_agent_event(event)
-
-    def observe_event(self, event: AgentEvent) -> None:
-        self._side_effects.observe(event)
-        self._advance_phase(event)
-
-    def _advance_phase(self, event: AgentEvent) -> None:
-        """Advance lifecycle state from observable core/session events."""
-        target: RunPhase | None = None
-        if event.type == EventType.MESSAGE_START:
-            target = RunPhase.MODEL_WAIT
-        elif event.type in {EventType.TOOL_EXECUTION_START, EventType.TOOL_STARTED}:
-            target = RunPhase.TOOL_RUNNING
-        elif event.type == EventType.CONFIRMATION_REQUESTED:
-            target = RunPhase.AWAITING_CONFIRMATION
-        elif event.type == EventType.ERROR:
-            target = RunPhase.FAILED
-        elif event.type == EventType.ABORTED:
-            target = RunPhase.CANCELLED
-        elif event.type == EventType.TURN_END and (event.metadata or {}).get("tool_results"):
-            target = RunPhase.CONTINUING
-        if target is None or self._state.phase is RunPhase.IDLE:
-            return
-        try:
-            self._state.transition(target)
-        except ValueError:
-            # A late event from an already terminal operation must not corrupt
-            # the current run state. The event is still available to the
-            # caller when it is not a stale run id.
-            if self._state.phase in {
-                RunPhase.COMPLETED,
-                RunPhase.FAILED,
-                RunPhase.CANCELLED,
-                RunPhase.FINALIZING,
-            }:
-                return
-            raise
 
     def set_failure(self, failure: RuntimeFailure) -> None:
         self._state.failure = failure

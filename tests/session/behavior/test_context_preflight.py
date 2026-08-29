@@ -8,7 +8,7 @@ from codeagent.core import (
     StreamEvent,
 )
 from codeagent.session import AgentSession, EventBus
-from codeagent.session.store import MemoryStore
+from codeagent.session.persistence import MemoryStore
 
 
 def _snapshot(headroom: int) -> ContextBudgetSnapshot:

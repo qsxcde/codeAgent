@@ -11,7 +11,7 @@ from codeagent.app.tui.presentation.status import FooterInfo
 from codeagent.app.tui.application import TuiApp
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.messages import Message
-from codeagent.session.store import UsageStats
+from codeagent.session.persistence import UsageStats
 from tests.fixtures.tui import FakeBackend as StubBackend
 
 class FakeSession:

@@ -1,7 +1,7 @@
 """会话树纯函数测试(session-tree):fork 链组织 / 孤儿独立根 / 排序 / 环诊断。"""
 
-from codeagent.session.store import SessionRef
-from codeagent.session.tree import SessionNode, build_tree
+from codeagent.session.navigation import SessionNode, build_tree
+from codeagent.session.persistence import SessionRef
 
 
 def _ref(session_id: str, parent: str | None = None, timestamp: str = "t", title: str = "") -> SessionRef:

@@ -51,7 +51,7 @@ def test_list_sessions_empty(fake_provider_env, capsys):
 def test_list_sessions_shows_refs(fake_provider_env, capsys):
     from codeagent.app.config import CONFIG_DIR
     from codeagent.core.contracts.messages import Message
-    from codeagent.session.store import JsonFileStore
+    from codeagent.session.persistence import JsonFileStore
 
     store = JsonFileStore(CONFIG_DIR / "sessions")
     store.create("s1", model="deepseek-v4-flash")
@@ -67,7 +67,7 @@ def test_session_flag_resumes_existing(fake_provider_env, capsys):
     """--session <id>:恢复既有会话,新消息追加到同一会话文件。"""
     from codeagent.app.config import CONFIG_DIR
     from codeagent.core.contracts.messages import Message
-    from codeagent.session.store import JsonFileStore
+    from codeagent.session.persistence import JsonFileStore
 
     store = JsonFileStore(CONFIG_DIR / "sessions")
     store.create("s1")
@@ -87,7 +87,7 @@ def test_continue_flag_appends_to_recent(fake_provider_env, capsys):
     """-c:继续最近会话(唯一会话时即该会话),新消息追加到同一文件。"""
     from codeagent.app.config import CONFIG_DIR
     from codeagent.core.contracts.messages import Message
-    from codeagent.session.store import JsonFileStore
+    from codeagent.session.persistence import JsonFileStore
 
     store = JsonFileStore(CONFIG_DIR / "sessions")
     store.create("recent1")

@@ -5,7 +5,7 @@ from codeagent.app.container import ChatModelPort
 from codeagent.core import AgentLoopConfig, EventType
 from codeagent.session import AgentSession, EventBus
 from codeagent.session.persistence.models import UsageStats
-from codeagent.session.store import MemoryStore
+from codeagent.session.persistence import MemoryStore
 
 
 def _session(model: ChatModelPort, store: MemoryStore) -> AgentSession:

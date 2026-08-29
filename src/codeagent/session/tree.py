@@ -1,5 +1,0 @@
-"""Compatibility facade for session tree navigation."""
-
-from codeagent.session.navigation.tree import SessionNode, build_tree
-
-__all__ = ["SessionNode", "build_tree"]

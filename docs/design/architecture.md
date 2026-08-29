@@ -179,6 +179,9 @@ codeagent/
 `AgentLoopConfig._runtime_owner`，不再通过模块级可变 registry 持有。
 `tests/contracts/test_app_architecture.py` 同时检查 app 导入图无环和该所有权约束。
 
+会话子模块的规范入口、异步持久化边界和已删除兼容路径见
+[`session-layout.md`](session-layout.md)。
+
 ### 4.3 配置命名空间(重要)
 
 `~/.codeagent/.env` 是共享文件,但全局 `Settings` 与各 provider 的 `Config` **各自解析、各自只认自己的键**:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from codeagent.core.contracts.messages import Message
+from codeagent.session.persistence.async_boundary import AsyncPersistenceBoundary
 from codeagent.session.persistence.commit import SessionCommitter
 from codeagent.session.persistence.models import (
     CompactionEntry,
@@ -46,6 +47,7 @@ class SessionPersistence:
         self._session_id = session_id
         self._defer_persistence = defer_persistence
         self._persistence_options = dict(persistence_options or {})
+        self._async_boundary = AsyncPersistenceBoundary()
         self._persisted = store is None
         self._committer = (
             SessionCommitter(
@@ -113,6 +115,10 @@ class SessionPersistence:
             return entry.id
         return self._committer.compaction(entry)
 
+    async def append_compaction_async(self, entry: CompactionEntry) -> str:
+        """Append a compaction entry without blocking the event loop."""
+        return await self._async_boundary.run(lambda: self.append_compaction(entry))
+
     def commit_turn(
         self,
         messages: list[Message],
@@ -124,3 +130,19 @@ class SessionPersistence:
         if self._committer is None:
             return
         self._committer.turn(messages, usage, context_tokens=context_tokens)
+
+    async def commit_turn_async(
+        self,
+        messages: list[Message],
+        usage: UsageStats,
+        *,
+        context_tokens: int | None,
+    ) -> None:
+        """Commit one turn without blocking the event loop."""
+        await self._async_boundary.run(
+            lambda: self.commit_turn(
+                messages,
+                usage,
+                context_tokens=context_tokens,
+            )
+        )

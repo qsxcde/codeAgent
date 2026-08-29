@@ -8,7 +8,7 @@ from codeagent.app.container import ChatModelPort
 from codeagent.app.composition.tools.adapter import adapt_tools
 from codeagent.core import AgentLoopConfig, EventType, Message, RecursionLimitError
 from codeagent.session import AgentSession, EventBus
-from codeagent.session.store import MemoryStore
+from codeagent.session.persistence import MemoryStore
 from codeagent.tools.atomic import (
     BashTool,
     EditTool,
