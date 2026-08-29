@@ -30,4 +30,4 @@
 
 - [x] 5.1 运行预算、模型目录、core loop、session 相关窄测试并修复回归。
 - [x] 5.2 运行 `openspec validate --changes` 与 `openspec status --change "context-budget-contract"`,确认所有规划产物完整且变更可进入 apply 阶段。
-- [ ] 5.3 在实现完成后运行项目要求的完整测试与导入边界检查,记录结果后再归档本变更。
+- [x] 5.3 在实现完成后运行项目要求的完整测试与导入边界检查,记录结果后再归档本变更。

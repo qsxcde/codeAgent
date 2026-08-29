@@ -8,7 +8,7 @@
 
 ### Requirement: ReAct 循环执行
 
-Agent Runtime SHALL 以纯内存循环执行“模型响应→工具执行→继续或结束”:模型产出无工具调用的最终消息后结束;模型产出工具调用时,系统 SHALL 执行工具、将结果按调用顺序加入当前 Agent 上下文并继续请求模型;循环 SHALL 有最大轮数上限。模型适配器 SHALL 在进入 core 前将 provider 原始流事件和工具参数转换为 core 统一形状,core 不直接解析 provider 协议。
+Agent Runtime SHALL 以纯内存循环执行“模型响应→工具执行→继续或结束”:模型产出无工具调用的最终消息后结束;模型产出工具调用时,系统 SHALL 执行工具、将结果按调用顺序加入当前 Agent 上下文并继续请求模型;循环 SHALL 有最大轮数上限。模型适配器 SHALL 在进入 core 前将 provider 原始流事件和工具参数转换为 core 统一形状,core 不直接解析 provider 协议。每次模型请求 SHALL 在最终临时上下文准备完成后、调用模型前执行上下文预算前置判定；判定阻断时不得进入模型或工具副作用路径。
 
 #### Scenario: 直接回复结束循环
 
@@ -34,6 +34,11 @@ Agent Runtime SHALL 以纯内存循环执行“模型响应→工具执行→继
 
 - **WHEN** 调用方从最后一条 user 或 tool result 消息继续执行
 - **THEN** Agent Runtime 不重复追加原始 user 消息,直接从已有上下文开始下一轮模型调用
+
+#### Scenario: 请求前预算阻断
+
+- **WHEN** 最终模型上下文被预算前置判定为超限或不确定策略要求阻断
+- **THEN** Agent Runtime 在调用模型前发布结构化预算错误并结束本轮,不执行新的工具调用
 
 ### Requirement: 消息归约
 
@@ -95,7 +100,7 @@ Agent Runtime SHALL 在每个工具调用执行前提供通用的 `before_tool_c
 
 ### Requirement: 事件契约
 
-Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流和工具执行生命周期;核心事件至少包括 `agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_update`、`message_end`、`tool_execution_start`、`tool_execution_update`、`tool_execution_end`、`usage`、`error` 和 `aborted`。每个属于一次运行的事件 SHALL 携带稳定的 `run_id`,并在 session 适配边界补充 `session_id`;事件 SHALL 能区分过程事件与唯一终态。Session started、restore、compaction、persistence 和 confirmation 等事件 SHALL 由 session/app 层定义或适配,不再作为 core Agent 事件的职责。事件负载 SHALL 使用稳定的结构化字段,订阅方无需解析错误文本判断工具状态。
+Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流和工具执行生命周期;核心事件至少包括 `agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_update`、`message_end`、`tool_execution_start`、`tool_execution_update`、`tool_execution_end`、`usage`、`context_budget`、`context_preflight`、`error` 和 `aborted`。每个属于一次运行的事件 SHALL 携带稳定的 `run_id`,并在 session 适配边界补充 `session_id`;事件 SHALL 能区分过程事件与唯一终态。Session started、restore、compaction、persistence 和 confirmation 等事件 SHALL 由 session/app 层定义或适配,不再作为 core Agent 事件的职责。事件负载 SHALL 使用稳定的结构化字段,订阅方无需解析错误文本判断工具状态或预算状态。
 
 #### Scenario: Agent 生命周期可订阅
 
@@ -116,6 +121,11 @@ Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流�
 
 - **WHEN** Agent 执行模型请求或工具调用
 - **THEN** 订阅方可通过 Agent 生命周期事件感知文本、thinking、工具调用和工具结果进度,无需等待最终返回值
+
+#### Scenario: 预算判定可订阅
+
+- **WHEN** Agent 准备一次模型请求并完成预算前置判定
+- **THEN** 订阅方收到包含判定状态、输入估算、输入预算、余量和窗口来源的 `context_preflight` 事件
 
 #### Scenario: 失败与取消语义
 
@@ -144,7 +154,7 @@ Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流�
 
 ### Requirement: 受控工具执行
 
-工具调用 SHALL 经统一的 AgentTool 执行协议运行,执行器 SHALL 支持可配置的并行或串行模式、运行期并发上限、超时、取消和进度更新。系统 SHALL 保持同一批工具结果向模型回填时的调用顺序;达到并发上限的调用 SHALL 等待;取消或超时 SHALL 触发工具清理,并明确报告清理已确认、清理失败或清理不确定的状态。对于无法抢占的同步工具,执行器 SHALL 不得把停止等待误报为工具已经终止。
+工具调用 SHALL 只能经统一的 `AgentTool.execute(...)` 协议运行,执行器不得根据 `Args`、`invoke`、`ainvoke`、`invoke_async` 或 `args_schema` 等具体工具实现属性选择兼容路径。执行器 SHALL 支持可配置的并行或串行模式、运行期并发上限、超时、取消和进度更新。系统 SHALL 保持同一批工具结果向模型回填时的调用顺序;达到并发上限的调用 SHALL 等待;取消或超时 SHALL 触发工具清理,并明确报告清理已确认、清理失败或清理不确定的状态。对于无法抢占的同步工具,执行器 SHALL 不得把停止等待误报为工具已经终止。具体工具的旧输入 schema 和同步/异步执行方式 SHALL 在进入 core 前由 tools 或组合根适配为 `AgentTool`。
 
 #### Scenario: 并发上限
 
@@ -155,6 +165,16 @@ Agent Runtime SHALL 以结构化事件暴露 Agent、turn、message、模型流�
 
 - **WHEN** Agent 配置为 parallel 或 sequential,或单个工具声明覆盖模式
 - **THEN** 执行器按有效模式运行,并在事件中保持真实完成顺序与回填顺序的语义可区分
+
+#### Scenario: 严格 AgentTool 调用
+
+- **WHEN** core 收到一个实现 `AgentTool` 的工具
+- **THEN** 执行器只调用其 `execute(...)` 入口,并将返回结果按统一工具结果契约归一化,不读取具体工具类的旧 schema 或 invoke 方法
+
+#### Scenario: 未适配的旧工具被拒绝
+
+- **WHEN** 调用方把只提供 `Args`/`invoke` 或 `ainvoke` 而未实现 `AgentTool.execute(...)` 的工具传给 core
+- **THEN** core 返回可诊断的工具契约错误或在装配边界拒绝该工具,不得隐式选择旧兼容路径执行
 
 #### Scenario: 工具超时
 
@@ -212,12 +232,17 @@ Agent Runtime SHALL 支持 prompt、continue、abort、steer 和 follow-up 五�
 
 ### Requirement: Agent Runtime 扩展钩子
 
-Agent Runtime SHALL 在每次模型请求前提供 `transform_context` 上下文转换点,并在工具执行前后提供 `before_tool_call`、`after_tool_call` 钩子;扩展可以修改本次模型可见上下文、阻止或修饰工具结果,但不得直接依赖 AI provider、Session 存储、MCP 客户端或 Skill 文件格式。扩展异常 SHALL 产生可诊断的 Agent 错误并遵循取消与回滚语义。
+Agent Runtime SHALL 在每次模型请求前提供 `transform_context` 上下文转换点,并在工具执行前后提供 `before_tool_call`、`after_tool_call` 钩子;扩展可以修改本次模型可见上下文、阻止或修饰工具结果,但不得直接依赖 AI provider、Session 存储、MCP 客户端或 Skill 文件格式。对于需要预算信息的上下文扩展,Runtime SHALL 提供与 provider、session 和工具实现解耦的请求预算视图;扩展返回的上下文 SHALL 只作用于当前请求,不得改写持久化历史。已有只接收消息列表的 `transform_context` 扩展 SHALL 继续可用。扩展异常 SHALL 产生可诊断的 Agent 错误并遵循取消与回滚语义。
 
 #### Scenario: 上下文扩展
 
 - **WHEN** 注册了 `transform_context` 扩展
 - **THEN** 每次模型请求前扩展可以基于当前消息生成模型可见上下文,而不修改 session 持久化的原始消息
+
+#### Scenario: 预算感知上下文扩展
+
+- **WHEN** 注册了需要预算信息的上下文扩展
+- **THEN** 扩展收到中立的请求预算视图并可以生成当前请求的临时上下文,不得要求 core 直接提供 provider、session、MCP 或 Skill 具体实现
 
 #### Scenario: 工具前置拦截
 
@@ -233,3 +258,8 @@ Agent Runtime SHALL 在每次模型请求前提供 `transform_context` 上下文
 
 - **WHEN** 上下文或工具扩展抛出异常
 - **THEN** Agent 发出带错误类型和阶段信息的错误事件,调用方可以回滚本轮且不得静默继续执行
+
+#### Scenario: 预算计算失败
+
+- **WHEN** 预算感知扩展无法解析请求组成或收到不确定的模型窗口
+- **THEN** Runtime 发出带阶段和不确定性信息的诊断错误或受控结果,不得把未确认的预算当作精确值继续发送请求

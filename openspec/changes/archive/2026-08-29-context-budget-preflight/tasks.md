@@ -34,4 +34,4 @@
 - [x] 5.1 更新 `docs/iteration/v0.4.md`，将 V4-12 标记为实现范围并记录预算状态、阻断语义及未包含的自动压缩/工具结果治理。
 - [x] 5.2 更新实现注释与相关 OpenSpec 交叉说明，确保 `context-budget-contract` 与本变更的边界清晰可追溯。
 - [x] 5.3 运行预算、core、session、app 相关窄测试、`openspec validate --changes`、`openspec status --change "context-budget-preflight"` 和 `git diff --check`。
-- [ ] 5.4 在窄测通过后由交付方运行项目全量测试与跨平台 CI；确认结果后再归档本变更。
+- [x] 5.4 在窄测通过后由交付方运行项目全量测试与跨平台 CI；确认结果后再归档本变更。
