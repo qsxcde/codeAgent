@@ -31,7 +31,7 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self.transcript = Transcript()
-        self.status = StatusBar()
+        self.status = StatusBar(clock=clock)
         self.running = False
         self._clock = clock
         self._assistant: AssistantBlock | None = None
@@ -92,6 +92,16 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
     def advance_activity(self) -> None:
         if self.activity_visible:
             self.activity_frame += 1
+
+    @property
+    def status_clock_active(self) -> bool:
+        """Return whether the status bar has an active elapsed value."""
+        return self.status.status_clock_active
+
+    def refresh_status_clock(self, now: float | None = None) -> bool:
+        """Refresh status-bar clocks without changing transcript or runtime state."""
+        current = self._clock() if now is None else now
+        return self.status.refresh_status_clock(current)
 
     def performance_snapshot(self) -> dict[str, int | float]:
         """Return content-free counters for offline performance measurements."""

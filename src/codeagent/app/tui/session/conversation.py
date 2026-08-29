@@ -71,10 +71,12 @@ class TuiConversationCoordinator:
                 self._backend.set_input_text("")
             return
         if self._task_active and self._task_supervisor is not None:
+            self._render_coordinator.stop_status_timer()
             self._task_supervisor.cancel()
             self.model.append_info("正在取消当前任务")
             self._schedule_render()
         elif self.model.running:
+            self._render_coordinator.stop_status_timer()
             session = self._manager.current
             if session is not None:
                 session.abort()
@@ -91,8 +93,10 @@ class TuiConversationCoordinator:
         """Ctrl+C / Ctrl+Q:退出——运行中先中止当前轮(未完成轮次不落盘,
         既有回滚语义),再打印完整文档退出。"""
         if self._task_active and self._task_supervisor is not None:
+            self._render_coordinator.stop_status_timer()
             self._task_supervisor.cancel()
         elif self.model.running:
+            self._render_coordinator.stop_status_timer()
             session = self._manager.current
             if session is not None:
                 session.abort()
@@ -116,6 +120,7 @@ class TuiConversationCoordinator:
             TaskPhase.NO_CHANGES,
         }:
             self._task_active = False
+        self._render_coordinator.sync_status_timer()
         self._schedule_render()
 
 

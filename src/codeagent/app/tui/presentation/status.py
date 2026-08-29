@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .primitives import (
-    Component, RichLine, _cell_width, _format_token_count, _seg, _truncate_spans,
+    Component, RichLine, _cell_width, _seg, _truncate_spans,
 )
 from ..state.runtime import RuntimePhase, RuntimeSnapshot, phase_label
 from .theme import ACCENT, DIM, STATUS_MODEL, STATUS_PATH, WARNING
+from .status_clock import TaskStatusClock
+from .status_context import render_context_spans
 
 
 class StatusBar(Component):
@@ -21,7 +25,21 @@ class StatusBar(Component):
     _WIDE_SESSION_ZONE_WIDTH = 38
     _ZONE_DIVIDER = "│"
 
-    def __init__(self) -> None:
+    _ACTIVE_RUNTIME_PHASES = frozenset(
+        {
+            RuntimePhase.WAITING_MODEL,
+            RuntimePhase.STREAMING,
+            RuntimePhase.TOOL_RUNNING,
+            RuntimePhase.AWAITING_CONFIRMATION,
+            RuntimePhase.COMPACTING,
+            RuntimePhase.CANCELLING,
+            RuntimePhase.RESTORING,
+        }
+    )
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._task_clock = TaskStatusClock(clock)
         self.model = ""
         self.effort = ""
         self.cwd = ""
@@ -32,12 +50,31 @@ class StatusBar(Component):
         self.runtime = RuntimeSnapshot()
         self.runtime_visible = False
         self.new_output_count = 0
-        self.task_phase = ""
         self.task_command = ""
         self.task_attempt = 0
         self.task_max_attempts = 0
         self.task_message = ""
         self.mode = ""
+
+    @property
+    def task_phase(self) -> str:
+        return self._task_clock.phase
+
+    @task_phase.setter
+    def task_phase(self, phase: str) -> None:
+        self._task_clock.phase = phase
+
+    @property
+    def task_started_at(self) -> float | None:
+        return self._task_clock.started_at
+
+    @property
+    def task_elapsed_ms(self) -> int:
+        return self._task_clock.elapsed_ms
+
+    @property
+    def task_elapsed_frozen(self) -> bool:
+        return self._task_clock.elapsed_frozen
 
     def set_task_status(
         self,
@@ -49,6 +86,7 @@ class StatusBar(Component):
         message: str = "",
     ) -> None:
         """更新任务级验证状态，和单轮 runtime 状态相互独立。"""
+        self._task_clock.update(phase)
         self.task_phase = phase
         self.task_command = command
         self.task_attempt = attempt
@@ -66,6 +104,21 @@ class StatusBar(Component):
     def refresh_runtime(self, now: float | None = None) -> None:
         """只刷新阶段计时，不改变其它状态。"""
         self.apply_snapshot(self.runtime, now)
+
+    @property
+    def status_clock_active(self) -> bool:
+        """Return whether a visible elapsed value still changes over time."""
+        task_active = self._task_clock.is_active
+        runtime_active = self.runtime_visible and self.runtime.phase in self._ACTIVE_RUNTIME_PHASES
+        return task_active or runtime_active
+
+    def refresh_status_clock(self, now: float | None = None) -> bool:
+        """Refresh independent task/runtime elapsed values and return active state."""
+        current = self._clock() if now is None else now
+        if self.runtime_visible:
+            self.apply_snapshot(self.runtime, now=current)
+        self._task_clock.refresh(current)
+        return self.status_clock_active
 
     def render(self, width: int) -> list[RichLine]:
         session_width, runtime_width, context_width = self._zone_widths(width)
@@ -199,7 +252,10 @@ class StatusBar(Component):
 
         if runtime_width <= 0:
             return []
-        timer = self._elapsed_label() if self.runtime_visible else "  —   "
+        if self.task_phase:
+            timer = self._elapsed_label(self.task_elapsed_ms)
+        else:
+            timer = self._elapsed_label() if self.runtime_visible else "  —   "
         timer_width = self._TIMER_WIDTH
         if runtime_width <= timer_width + 1:
             return spans
@@ -208,52 +264,21 @@ class StatusBar(Component):
         used = sum(_cell_width(span.text) for span in content)
         return content + [_seg(" " * max(1, content_width - used), fg=DIM), _seg(timer, fg=DIM)]
 
-    def _elapsed_label(self) -> str:
-        seconds = min(999.9, max(0.0, self.runtime.elapsed_ms / 1000))
+    def _elapsed_label(self, elapsed_ms: int | None = None) -> str:
+        elapsed = self.runtime.elapsed_ms if elapsed_ms is None else elapsed_ms
+        seconds = min(999.9, max(0.0, elapsed / 1000))
         if seconds < 100:
             return f" {seconds:04.1f}s"
         return f"{seconds:05.1f}s"
 
     def _context_spans(self, width: int) -> RichLine:
         """Render a right-aligned context meter appropriate for the zone budget."""
-        if self.context_window is None or self.context_window <= 0:
-            return [_seg("上下文 —", fg=DIM)]
-        window = self.context_window
-        used = self.context_tokens
-        if used is None:
-            filled = 0
-            used_label = "—"
-            percent_label = ""
-        else:
-            ratio = max(0.0, min(1.0, used / window))
-            filled = round(ratio * self._CONTEXT_BAR_WIDTH)
-            percent = ratio * 100
-            used_label = _format_token_count(max(0, used))
-            percent_label = f"{percent:.1f}%"
-
-        if width >= 28:
-            meter = "▰" * filled + "▱" * (self._CONTEXT_BAR_WIDTH - filled)
-            label = f"上下文 {used_label} / {_format_token_count(window)}"
-            if percent_label:
-                label += f" · {percent_label}"
-            return [_seg(f"{meter} ", fg=ACCENT), _seg(label, fg=ACCENT)]
-        if width >= 18:
-            if used is None:
-                return [_seg(f"上下文 — / {_format_token_count(window)}", fg=ACCENT)]
-            meter_width = 4
-            compact_filled = round((filled / self._CONTEXT_BAR_WIDTH) * meter_width)
-            meter = "▰" * compact_filled + "▱" * (meter_width - compact_filled)
-            label = f"{used_label}/{_format_token_count(window)}"
-            if percent_label and width >= 22:
-                label += f" {percent_label}"
-            return [_seg(f"{meter} ", fg=ACCENT), _seg(label, fg=ACCENT)]
-        if width >= 12:
-            label = f"{used_label}/{_format_token_count(window)}"
-            return [_seg(label, fg=ACCENT)]
-        if width >= 8:
-            label = percent_label or f"/{_format_token_count(window)}"
-            return [_seg(label, fg=ACCENT)]
-        return [_seg(percent_label[:width] or "—", fg=ACCENT)]
+        return render_context_spans(
+            width,
+            self.context_tokens,
+            self.context_window,
+            meter_width=self._CONTEXT_BAR_WIDTH,
+        )
 
 
 @dataclass(frozen=True)
@@ -269,4 +294,3 @@ class FooterInfo:
     effort: str = ""
     provider: str = ""
     cwd: str = ""
-

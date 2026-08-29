@@ -309,6 +309,7 @@ async def test_render_coalescing():
                 break
             await asyncio.sleep(0)
         assert len(backend.renders) - before == 1
+        app._render_coordinator.stop_status_timer()
 
     await (_run())
 
@@ -329,6 +330,7 @@ async def test_render_scheduler_delays_frames_inside_target_interval():
         assert len(backend.renders) == before
         await asyncio.sleep(0.04)
         assert len(backend.renders) == before + 1
+        app._render_coordinator.stop_status_timer()
 
     await (scenario())
 
@@ -346,8 +348,49 @@ async def test_activity_timer_runs_only_while_visible():
         manager.current._emit(AgentEvent(EventType.TEXT_DELTA, payload="reply"))
         await asyncio.sleep(0)
         assert app._activity_task is None
+        app._render_coordinator.stop_status_timer()
 
     await (_run())
+
+
+async def test_status_timer_does_not_block_input_and_esc_stops_it():
+    """状态计时刷新不占用交互回调,Esc 立即回收计时任务。"""
+    app, backend, manager = _make_app()
+    app.model.running = True
+    app.model.status.set_task_status("verifying", command="pytest")
+    app._render_coordinator.sync_status_timer()
+    await asyncio.sleep(0)
+    assert app._render_coordinator.status_task is not None
+
+    app._on_input_changed("draft")
+    app._on_scroll(1)
+    app._show_confirmation(
+        {
+            "request_id": "status-r1",
+            "tool": "bash",
+            "summary": "echo ok",
+            "reason": "状态栏计时回归",
+        }
+    )
+    app._on_confirmation_response(True)
+    backend.interrupt()
+    await asyncio.sleep(0)
+
+    assert manager.current.aborted is True
+    assert manager.current.approvals == [("status-r1", True)]
+    assert app._render_coordinator.status_task is None
+
+
+async def test_shutdown_stops_status_timer():
+    app, _, _ = _make_app()
+    app.model.status.set_task_status("verifying", command="pytest")
+    app._render_coordinator.sync_status_timer()
+    await asyncio.sleep(0)
+    assert app._render_coordinator.status_task is not None
+
+    await app.shutdown()
+
+    assert app._render_coordinator.status_task is None
 
 
 

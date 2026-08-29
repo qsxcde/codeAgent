@@ -196,6 +196,7 @@ class TuiApp(
                 self._clear_confirmation()
         self.model.apply(event)
         self._sync_activity_timer()
+        self._render_coordinator.sync_status_timer()
 
     def _on_event(self, event: Any) -> None:
         if self._shutdown_complete or self._shutdown_started:
@@ -221,6 +222,7 @@ class TuiApp(
         self._shutdown_started = True
         self._accepting_input = False
         self._stop_activity_timer()
+        self._render_coordinator.stop_status_timer()
         self._render_coordinator.cancel_pending_render()
         self._clear_confirmation()
 
@@ -281,9 +283,6 @@ class TuiApp(
 
     def _stop_activity_timer(self) -> None:
         self._render_coordinator.stop_activity_timer()
-
-    async def _animate_activity(self) -> None:
-        await self._render_coordinator.animate_activity()
 
     def _schedule_render(self) -> None:
         self._render_coordinator.schedule_render()

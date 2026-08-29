@@ -10,6 +10,7 @@ from ..ports.backend import TuiBackend
 from ..state.model import TuiModel
 from .event_buffer import TuiEventBuffer
 from .scheduler import FrameScheduler, ResizeDebouncer
+from .status_timer import StatusTimer
 
 
 class TuiRenderCoordinator:
@@ -23,6 +24,7 @@ class TuiRenderCoordinator:
         sync_status: Callable[[], None] | None = None,
         before_render: Callable[[], None] | None = None,
         target_fps: float = 30.0,
+        status_refresh_interval: float = 0.25,
     ) -> None:
         self.model = model
         self.backend = backend
@@ -30,6 +32,7 @@ class TuiRenderCoordinator:
         self._before_render = before_render
         self.frame_scheduler = FrameScheduler(target_fps=target_fps)
         self.resize_debouncer = ResizeDebouncer(self.schedule_render)
+        self.status_timer = StatusTimer(model, self.schedule_render, status_refresh_interval)
         self.render_pending = False
         self._render_handle: asyncio.Handle | None = None
         self._render_task: asyncio.Task[None] | None = None
@@ -66,6 +69,11 @@ class TuiRenderCoordinator:
         owner = getattr(before_render, "__self__", None)
         buffer = getattr(owner, "_event_buffer", None)
         return int(getattr(buffer, "flush_count", 0))
+
+    @property
+    def status_task(self) -> asyncio.Task[None] | None:
+        """Return the owned low-frequency status timer task, if any."""
+        return self.status_timer.task
 
     def schedule_render(self) -> None:
         """合并渲染请求，并通过帧调度器限制刷新频率。"""
@@ -117,6 +125,7 @@ class TuiRenderCoordinator:
         try:
             if self._before_render is not None:
                 self._before_render()
+            self.model.refresh_status_clock()
             width, height = self.backend.transcript_size()
             if width <= 0 or height <= 0:
                 return
@@ -138,6 +147,7 @@ class TuiRenderCoordinator:
             self._render_handle.cancel()
             self._render_handle = None
         self._cancel_render_task()
+        self.stop_status_timer()
         self.render_pending = False
         self.frame_scheduler.pending = False
 
@@ -172,6 +182,7 @@ class TuiRenderCoordinator:
         try:
             if self._before_render is not None:
                 self._before_render()
+            self.model.refresh_status_clock()
             width, height = self.backend.transcript_size()
             if width <= 0 or height <= 0:
                 return
@@ -265,3 +276,11 @@ class TuiRenderCoordinator:
         finally:
             if self.activity_task is asyncio.current_task():
                 self.activity_task = None
+
+    def stop_status_timer(self) -> None:
+        """Stop the status clock task and release its event-loop handle."""
+        self.status_timer.stop()
+
+    def sync_status_timer(self) -> None:
+        """Run a low-frequency clock refresh while runtime or task state is active."""
+        self.status_timer.sync()

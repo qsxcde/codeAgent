@@ -111,7 +111,7 @@ TUI SHALL 为不同消息类型提供可区分的视觉样式：用户消息（�
 
 ### Requirement: 底部状态栏稳定布局
 
-TUI 底部状态栏 SHALL 由会话信息区、运行状态区和上下文信息区组成；运行阶段、阶段耗时、当前操作、任务状态或临时提示变化时，各区域的起始位置 SHALL 保持稳定，不得因前一个区域内容长度变化而整体横向跳动。
+TUI 底部状态栏 SHALL 由会话信息区、运行状态区和上下文信息区组成；运行阶段、阶段耗时、当前操作、任务状态或临时提示变化时，各区域的起始位置 SHALL 保持稳定，不得因前一个区域内容长度变化而整体横向跳动。动态字段的值刷新 SHALL 只更新所属槽位，不改变其它槽位的边界。
 
 #### Scenario: 运行阶段切换不移动固定区域
 
@@ -142,6 +142,11 @@ TUI 底部状态栏 SHALL 由会话信息区、运行状态区和上下文信息
 
 - **WHEN** 终端宽度不足以同时显示所有状态栏字段
 - **THEN** TUI SHALL 优先保留运行阶段、当前操作和上下文占用，并在固定区域内截断或隐藏模型、思考强度、工作目录及次要诊断，不得产生横向溢出或覆盖
+
+#### Scenario: 活动耗时更新不改变槽位
+
+- **WHEN** runtime 或任务处于活动阶段且一段时间内没有新的 Agent 事件
+- **THEN** 状态栏 SHALL 以受控的低频刷新更新对应阶段耗时，输入、取消、滚动和确认操作不因计时刷新而阻塞，所有区域边界保持不变
 
 ### Requirement: Markdown 正文渲染
 
@@ -805,7 +810,7 @@ TUI SHALL 支持 `/ask`、`/plan`、`/code` 和 `/mode <ask|plan|code|auto>` 命
 
 ### Requirement: 任务验证状态栏
 
-任务进入验证或修复阶段时，TUI SHALL 在底部状态栏显示当前阶段、验证命令、尝试次数和耗时；状态栏 SHALL 显示 `verified`、`unverified`、`failed`、`cancelled` 或 `no_changes` 的简洁终态摘要。长命令 SHALL 截断显示，完整诊断可在可展开的任务详情中查看。
+任务进入验证或修复阶段时，TUI SHALL 在底部状态栏显示当前阶段、验证命令、尝试次数和耗时；该耗时 SHALL 从当前验证或修复阶段开始计算，不得复用已经结束的 Agent runtime 阶段计时。活动阶段无新事件时耗时 SHALL 持续更新，进入 `verified`、`unverified`、`failed`、`cancelled` 或 `no_changes` 终态后 SHALL 冻结并停止相关刷新。状态栏 SHALL 显示这些终态的简洁摘要。长命令 SHALL 截断显示，完整诊断可在可展开的任务详情中查看。
 
 #### Scenario: 显示验证进度
 
@@ -821,6 +826,16 @@ TUI SHALL 支持 `/ask`、`/plan`、`/code` 和 `/mode <ask|plan|code|auto>` 命
 
 - **WHEN** 验证命令失败且修复次数已耗尽
 - **THEN** TUI 显示 `failed`、失败命令和简短错误尾部，并保持输入可用
+
+#### Scenario: 验证耗时独立于 Agent 阶段
+
+- **WHEN** Agent 回合已经结束且验证命令持续运行，没有新的 Agent 事件
+- **THEN** 状态栏显示从验证开始累计的耗时，并持续更新，不显示上一 Agent 阶段的旧计时
+
+#### Scenario: 任务终态冻结耗时
+
+- **WHEN** 任务进入 `verified`、`unverified`、`failed`、`cancelled` 或 `no_changes`
+- **THEN** 状态栏保留对应终态摘要和最终耗时，后续时间流逝不会继续改变该耗时，也不会继续调度任务状态刷新
 
 ### Requirement: 任务级打断
 
