@@ -7,6 +7,7 @@ import json
 import uuid
 from typing import Any, AsyncIterator
 
+from codeagent.ai.errors import classify_provider_error
 from codeagent.ai.model.types import (
     ChatMessage,
     ChatResponse,
@@ -91,8 +92,13 @@ class OpenAICompatStreamingMixin:
                     yield event
                 return
             except Exception as exc:  # noqa: BLE001 - retry then re-raise original
-                if yielded or not self._is_retryable(exc) or attempt == self._max_retries:
-                    raise
+                classified = classify_provider_error(
+                    exc,
+                    provider=self._provider,
+                    model=self._model,
+                )
+                if yielded or not classified.retryable or attempt == self._max_retries:
+                    raise classified from exc
                 await asyncio.sleep(min(2**attempt, 10.0))
 
     async def _stream_attempt(

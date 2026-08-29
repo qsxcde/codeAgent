@@ -15,6 +15,12 @@ from codeagent.ai.model import (
     ToolDefinition,
     Transport,
 )
+from codeagent.ai.errors import (
+    ProviderError,
+    ProviderErrorKind,
+    ProviderHTTPError,
+    classify_provider_error,
+)
 
 __all__ = [
     "ChatClient",
@@ -26,4 +32,8 @@ __all__ = [
     "ToolCall",
     "ToolDefinition",
     "Transport",
+    "ProviderError",
+    "ProviderErrorKind",
+    "ProviderHTTPError",
+    "classify_provider_error",
 ]

@@ -58,6 +58,7 @@ def make_llm(
         base_url=cfg.base_url,
         api_key=cfg.api_key,
         model=spec.id,
+        provider=PROVIDER_NAME,
         reasoning_effort=effort if spec.reasoning else None,
         max_tokens=spec.max_tokens,
     )

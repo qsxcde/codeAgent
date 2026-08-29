@@ -109,7 +109,11 @@ def test_json_store_query_does_not_change_session_files(tmp_path):
     assert index_path.read_bytes() == index_before
 
 
-def test_memory_store_query_filters_and_preserves_order():
+def test_memory_store_query_filters_and_preserves_order(monkeypatch):
+    timestamps = iter(("2026-08-30T00:00:00.000", "2026-08-30T00:00:00.000"))
+    monkeypatch.setattr(
+        "codeagent.session.persistence.memory_store._now", lambda: next(timestamps)
+    )
     store = MemoryStore()
     store.create("s2", model="Qwen")
     store.set_meta("s2", "name", "Auth follow-up")

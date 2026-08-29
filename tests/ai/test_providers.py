@@ -136,6 +136,7 @@ def test_create_llm_deepseek(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     model = create_llm("deepseek", "deepseek-v4-pro")
     assert isinstance(model, OpenAICompatClient)
+    assert model.provider_id == "deepseek"
     assert model.model_id == "deepseek-v4-pro"
     assert model.reasoning_effort == "high"
 

@@ -39,7 +39,7 @@
 - 入口:`pyproject.toml` 中 `codeagent = "codeagent.app.main:main"`。
 - **已完成(v0.1~v0.3 阶段 1~4)**:
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 保存 provider 选择和工具资源限制，工具资源由组合根解析为不可变 `ToolResourceLimits`。
-- `ai/` 层:模型基础设施(provider / catalog / model / transport),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);provider/model/effort 选择位于 `app/composition/model/selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
+- `ai/` 层:模型基础设施(provider / catalog / model / transport / errors),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);`errors.py` 统一分类网络、超时、限流、认证、参数、服务端和未知失败并提供脱敏诊断;provider/model/effort 选择位于 `app/composition/model/selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;`ToolResourceLimits` 在组合根统一注入并发、超时、输出字节/行、预览内存和清理等待上限；`grep`/`find` 只把 `rg`/`fd` 作为不经 shell 的可选加速，失败时回退纯 Python；bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security/` 提供执行前安全分类器(deny > ask > allow)，`tools/capabilities.py` 在组合根生成只读环境能力快照。
 - `core/` Agent Runtime:根级 `agent.py` 为运行时外壳，`contracts/`、`context/`、`model/`、`execution/`、`orchestration/`、`observation.py` 和 `support/` 按职责组织纯内存、全异步实现；模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;会话标题支持自动派生和 append-only `name` 元数据重命名;`SessionQuery` 统一标题/id、模型、时间、运行状态和归档范围筛选,管理器为驻留会话叠加只读运行态;归档使用 append-only 元数据,删除由存储边界完成路径保护和索引清理;恢复报告区分 healthy/degraded/unavailable,有效损坏记录局部降级,结构性错误携带可操作建议;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
@@ -52,7 +52,7 @@
 - 会话树(v0.3 阶段 4):`build_tree` 纯函数、`/tree` 导航及 `/sessions list` 父子缩进展示。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
 - 安全确认环(v0.2):执行前 `ApprovalPolicy`(组合根把 `tools/security.py` 分类器适配为端口),`ask` 由循环 emit `confirmation_requested` 并等待会话确认队列;headless 缺省 deny(fail closed),`--yes` 逃生舱。
- - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1499 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
+ - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1506 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
  - TUI 性能验收:`benchmark/` 使用 schema v2 的固定离线 fixture 测量提交首帧、首 token、帧 p50/p95、控制延迟、峰值 Python 分配和协调器的 dropped/over-budget 计数；`compare_benchmark.py` 只在 schema、平台、Python、视口和 fixture 一致时比较，`update_tui_baseline.py` 负责生成受约束的 Linux/Python 3.12 候选基线。
 
 **v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
@@ -110,6 +110,7 @@ codeagent/
 │   │   ├── transport/                #   OpenAI 兼容传输层
 │   │   │   ├── sse.py                 #     SSEParser(thinking/usage 全量透传)
 │   │   │   └── openai_compat.py      #     OpenAICompatClient(httpx,重试/流式)
+│   │   ├── errors.py                  #   Provider 错误分类与安全诊断
 │   │   └── providers/                #   每 provider 一个文件,配置+工厂自包含
 │   │       ├── deepseek.py / openai.py / qwen.py / glm.py / kimi.py / minimax.py
 │   │       └── fake.py               #   FakeClient + make_llm(离线测试)
@@ -147,7 +148,7 @@ codeagent/
 │   └── resources/                    # [资源层]  ← Pi 资源系统(v0.3 已启用 skills)
 │       └── skills/ prompts/          #   *.md 技能文件 / 提示词模板
 │
-└── tests/                            # 按行为域分包,1499 passed(2026-08-30)
+└── tests/                            # 按行为域分包,1506 passed(2026-08-30)
     ├── conftest.py / fixtures/       # 全局 marker、隔离环境和共享离线夹具
     ├── contracts/                    # AI、core、session、tools 边界契约
     ├── ai/ / core/ / mcp/            # 模型、编排和 MCP 行为

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import SecretStr
 
+from codeagent.ai.errors import classify_provider_error
 from codeagent.ai.model.types import (
     ChatMessage,
     ChatResponse,
@@ -47,6 +48,7 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
         base_url: str,
         api_key: SecretStr | str,
         model: str,
+        provider: str | None = None,
         reasoning_effort: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
@@ -74,6 +76,7 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
         self._base_url = base_url.rstrip("/")
         # 统一存 SecretStr:repr/日志/回溯不泄露明文(M7)
         self._api_key = api_key if isinstance(api_key, SecretStr) else SecretStr(api_key)
+        self._provider = provider
         self._model = model
         self._reasoning_effort = reasoning_effort
         self._max_tokens = max_tokens
@@ -102,6 +105,11 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
     @property
     def model_id(self) -> str:
         return self._model
+
+    @property
+    def provider_id(self) -> str | None:
+        """返回用于错误诊断的 Provider 标识。"""
+        return self._provider
 
     @property
     def reasoning_effort(self) -> str | None:
@@ -173,10 +181,7 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
     @staticmethod
     def _is_retryable(exc: Exception) -> bool:
         """429 / 5xx / 传输层错误可重试;4xx(除 429)不重试。"""
-        if isinstance(exc, httpx.HTTPStatusError):
-            status = exc.response.status_code
-            return status == 429 or status >= 500
-        return isinstance(exc, (httpx.TransportError, httpx.TimeoutException))
+        return classify_provider_error(exc).retryable
 
     async def generate(
         self,
@@ -203,8 +208,13 @@ class OpenAICompatClient(OpenAICompatStreamingMixin):
                 data = resp.json()
                 break
             except Exception as exc:  # noqa: BLE001 - 重试判定
-                if attempt == self._max_retries or not self._is_retryable(exc):
-                    raise
+                classified = classify_provider_error(
+                    exc,
+                    provider=self._provider,
+                    model=self._model,
+                )
+                if attempt == self._max_retries or not classified.retryable:
+                    raise classified from exc
                 await asyncio.sleep(min(2 ** attempt, 10.0))
 
         tool_calls: list[ToolCall] = []
