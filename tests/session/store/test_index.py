@@ -24,6 +24,19 @@ def test_session_index_is_created_and_rebuilt_when_corrupt(tmp_path):
     assert rebuilt["usage"]["input_tokens"] == 7
 
 
+def test_query_rebuilds_corrupt_index_before_filtering(tmp_path):
+    """查询使用回源重建后的标题和模型索引,不因损坏缓存丢失会话。"""
+    store = _store(tmp_path)
+    store.create("s1", model="DeepSeek")
+    store.append_message("s1", Message(role="user", content="Auth work"))
+    index_path = tmp_path / "sessions" / "s1.index.json"
+    index_path.write_text("not-json\n", encoding="utf-8")
+
+    refs = store.list(SessionQuery(text="auth", model="deepseek"))
+
+    assert [ref.id for ref in refs] == ["s1"]
+
+
 
 def test_semantically_incomplete_index_is_rebuilt(tmp_path):
     """索引字段不完整时不能命中缓存,必须从 JSONL 重建。"""
@@ -187,4 +200,3 @@ def test_list_sessions_sorted(tmp_path):
     store.create("s1")
     ids = [r.id for r in store.list()]
     assert set(ids) == {"s1", "s2"}
-

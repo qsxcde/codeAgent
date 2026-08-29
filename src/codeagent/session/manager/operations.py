@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from codeagent.core.contracts.ports import ApprovalPolicy
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.compaction.summarizer import Summarizer
 from codeagent.session.contracts import SessionCloser
-from codeagent.session.persistence.models import SessionRef, SessionStore
+from codeagent.session.persistence.models import SessionQuery, SessionRef, SessionStore
 from codeagent.session.persistence.codec import normalize_title
+from codeagent.session.runtime.state import RunPhase
 
 if TYPE_CHECKING:
     from codeagent.session.session import AgentSession
@@ -228,8 +230,32 @@ class SessionManagerOperations:
             return None
         return asyncio.create_task(self.close())
 
-    def list(self) -> list[SessionRef]:
-        return [] if self._store is None else self._store.list()
+    def list(self, query: SessionQuery | None = None) -> list[SessionRef]:
+        """List persisted sessions and overlay status for resident sessions."""
+        if self._store is None:
+            return []
+        storage_query = query.without_status() if query is not None else None
+        refs = self._store.list(storage_query)
+        result: list[SessionRef] = []
+        for ref in refs:
+            session = self._sessions.get(ref.id)
+            status = self._runtime_status(session)
+            enriched = replace(ref, status=status)
+            if query is None or query.matches(enriched):
+                result.append(enriched)
+        return result
+
+    @staticmethod
+    def _runtime_status(session: AgentSession | None) -> str:
+        if session is None:
+            return "idle"
+        if session.is_running:
+            return "running"
+        outcome = session.last_outcome
+        phase = getattr(outcome, "phase", None)
+        if phase in {RunPhase.COMPLETED, RunPhase.FAILED, RunPhase.CANCELLED}:
+            return phase.value
+        return "idle"
 
 
 __all__ = ["SessionManagerOperations"]

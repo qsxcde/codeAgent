@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+import shlex
 
 from ..commands.parser import Command
 from codeagent.session.navigation.tree import SessionNode, build_tree
+from codeagent.session.persistence import SessionQuery
 
 
 class SessionCommandsMixin:
@@ -42,7 +43,21 @@ class SessionCommandsMixin:
             self._open_inline_picker("sessions")
             return
         action = cmd.args[0]
-        if action == "list":
+        if action == "search":
+            if len(cmd.args) < 2:
+                self.model.append_info("用法: /sessions search <text>")
+                return
+            self._show_session_query(
+                SessionQuery(text=" ".join(cmd.args[1:])), "搜索结果"
+            )
+        elif action == "filter":
+            try:
+                query = self._parse_session_filter(cmd.raw_args)
+            except (TypeError, ValueError) as exc:
+                self.model.append_info(f"筛选失败: {exc}")
+                return
+            self._show_session_query(query, "筛选结果")
+        elif action == "list":
             refs = self._manager.list()
             if not refs:
                 self.model.append_info("(暂无会话)")
@@ -78,6 +93,49 @@ class SessionCommandsMixin:
                 return
             self._hydrate_current_session()
             self.model.append_info(f"已切换到会话: {session.session_id}")
+
+    @staticmethod
+    def _parse_session_filter(raw_args: str) -> SessionQuery:
+        """Parse ``key=value`` filters while preserving quoted values."""
+        try:
+            parts = shlex.split(raw_args, comments=False, posix=True)
+        except ValueError as exc:
+            raise ValueError(f"筛选语法无效: {exc}") from exc
+        if len(parts) < 2 or parts[0] != "filter":
+            raise ValueError("用法: /sessions filter key=value...")
+        values: dict[str, str] = {}
+        allowed = {"title", "model", "status", "after", "before"}
+        for part in parts[1:]:
+            key, separator, value = part.partition("=")
+            key = key.casefold()
+            if not separator or key not in allowed or not value:
+                raise ValueError(
+                    "筛选项必须是 title/model/status/after/before=值"
+                )
+            if key in values:
+                raise ValueError(f"筛选项重复: {key}")
+            values[key] = value
+        return SessionQuery(
+            text=values.get("title", ""),
+            model=values.get("model", ""),
+            after=values.get("after", ""),
+            before=values.get("before", ""),
+            status=values.get("status", ""),
+        )
+
+    def _show_session_query(self, query: SessionQuery, label: str) -> None:
+        refs = self._manager.list(query)
+        if not refs:
+            self.model.append_info(f"{label}: 无匹配会话")
+            return
+        lines = [f"{label} ({len(refs)}):"]
+        for ref in refs:
+            title = ref.title or "(无标题)"
+            model = ref.model or "(未设置模型)"
+            activity = ref.last_activity_at or ref.timestamp or "(未知)"
+            status = getattr(ref, "status", "idle")
+            lines.append(f"- {title} | {model} | {activity} | {status} | {ref.id}")
+        self.model.append_info("\n".join(lines))
 
     def _cmd_tree(self, cmd: Command) -> None:
         if cmd.args:

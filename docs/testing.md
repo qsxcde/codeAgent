@@ -4,7 +4,7 @@
 
 截至 2026-08-28 应用层包布局变更复核后：
 
-- `uv run pytest -q`：**1382 passed**（2026-08-30，macOS，32.69s）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试和会话标题重启/分叉回归。
+- `uv run pytest -q`：**1394 passed**（2026-08-30，macOS）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试、会话标题重启/分叉回归和会话查询双后端/TUI 回归。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
 - 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 1037 passed，硬下限为 77.9%。
 - package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
@@ -19,6 +19,8 @@
 工具生命周期回归按 `tool_call_id` 验证 queued → running → terminal 的单向归约，覆盖确认、拒绝、超时、取消无结果、清理不确定、迟到/重复结果和输出截断；`TOOL_FINISHED` 只确定执行状态，`TOOL_RESULT` 只补充输出事实。
 
 会话标题回归覆盖自动派生、显式名称优先、单行归一化、长度限制、空标题拒绝、延迟落盘空会话命名，以及 JsonFileStore/MemoryStore 的重启、索引重建、压缩和分叉语义。`/name` 的失败路径必须在 TUI 内反馈，且不得发起模型请求或改写聊天历史。
+
+会话查询回归覆盖 `SessionQuery` 的标题/id、模型、时间和状态匹配，JsonFileStore 的有效索引命中、损坏索引回源、坏文件隔离及只读文件保证，MemoryStore 的同序行为，SessionManager 的驻留运行态叠加与重启 idle，以及 TUI `/sessions search`、`/sessions filter` 的引号值、组合条件、错误/空态和模型请求隔离。
 
 本次收口会使旧平铺导入路径失效；`tests/contracts/test_app_package_layout.py` 会同时检查旧模块不存在和规范模块可导入。
 

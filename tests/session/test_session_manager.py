@@ -11,7 +11,8 @@ from codeagent.app.container import ChatModelPort
 from codeagent.core import AgentLoopConfig, EventType
 from codeagent.session import SessionManager
 from codeagent.session.compaction import CompactionPolicyConfig
-from codeagent.session.persistence import CompactionEntry, MemoryStore
+from codeagent.session.persistence import CompactionEntry, MemoryStore, SessionQuery
+from codeagent.session.runtime.state import RunPhase
 
 
 def _manager(client: FakeClient | None = None, store=None, **kwargs) -> SessionManager:
@@ -96,6 +97,49 @@ async def test_manager_rename_preserves_compaction_and_fork_relationship():
     assert store.load_context(root.session_id) == before_context
     assert store.get(root.session_id).title == "重构根会话"
     assert store.get(child.session_id).parent_session == root.session_id
+
+
+async def test_manager_query_overlays_runtime_status_and_restart_idle():
+    """管理器为驻留会话提供运行态,新管理器不伪造旧运行终态。"""
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    session = mgr.create()
+    await session.run("完成一轮")
+
+    assert session.is_running is False
+    assert [ref.id for ref in mgr.list(SessionQuery(status="completed"))] == [session.session_id]
+
+    session._runtime.start_run()
+    assert session.is_running is True
+    assert [ref.id for ref in mgr.list(SessionQuery(status="running"))] == [session.session_id]
+    session._runtime.finish_run(RunPhase.CANCELLED)
+    assert [ref.id for ref in mgr.list(SessionQuery(status="cancelled"))] == [session.session_id]
+    session._runtime.start_run()
+    session._runtime.finish_run(RunPhase.FAILED)
+    assert [ref.id for ref in mgr.list(SessionQuery(status="failed"))] == [session.session_id]
+
+    restarted = _manager(store=store)
+    idle_refs = restarted.list(SessionQuery(status="idle"))
+    assert [ref.id for ref in idle_refs] == [session.session_id]
+
+
+async def test_manager_query_is_read_only_for_session_state():
+    """查询不会切换当前会话或触碰消息、活动时间和压缩上下文。"""
+    store = MemoryStore()
+    mgr = _manager(store=store)
+    session = mgr.create()
+    await session.run("保持不变")
+    before_ref = store.get(session.session_id)
+    before_messages = store.load_messages(session.session_id)
+    before_context = store.load_context(session.session_id)
+
+    refs = mgr.list(SessionQuery(text="保持"))
+
+    assert [ref.id for ref in refs] == [session.session_id]
+    assert mgr.current is session
+    assert store.get(session.session_id) == before_ref
+    assert store.load_messages(session.session_id) == before_messages
+    assert store.load_context(session.session_id) == before_context
 
 
 def test_manager_passes_compaction_policy_to_adopted_session():

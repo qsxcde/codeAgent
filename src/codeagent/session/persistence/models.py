@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any, Protocol
 
 from codeagent.core.contracts.messages import Message, new_id
@@ -13,10 +14,13 @@ __all__ = [
     "CURRENT_VERSION",
     "CompactionEntry",
     "CompactionState",
+    "SessionQuery",
     "SessionRef",
     "SessionStore",
     "UsageStats",
 ]
+
+SESSION_STATUSES = frozenset({"idle", "running", "completed", "failed", "cancelled"})
 
 @dataclass(frozen=True)
 class UsageStats:
@@ -41,6 +45,7 @@ class SessionRef:
       外部构造的旧引用,存储后端会回退到 ``timestamp``;
     - ``model`` / ``effort``:会话创建时的模型配置(header 记录,读侧透传);
     - ``title``:派生标题(显式命名优先,否则首条用户消息截断)。
+    - ``status``:运行态展示值;旧引用和持久化索引缺省为 ``idle``。
     """
 
     id: str
@@ -51,6 +56,60 @@ class SessionRef:
     effort: str = ""
     title: str = ""
     last_activity_at: str = ""
+    status: str = "idle"
+
+
+@dataclass(frozen=True)
+class SessionQuery:
+    """会话列表查询条件(只读,不改变会话或持久化内容)。"""
+
+    text: str = ""
+    model: str = ""
+    after: str = ""
+    before: str = ""
+    status: str = ""
+
+    def __post_init__(self) -> None:
+        for field_name in ("text", "model", "after", "before", "status"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str):
+                raise TypeError(f"查询字段必须是字符串: {field_name}")
+            object.__setattr__(self, field_name, value.strip())
+        if self.status and self.status.casefold() not in SESSION_STATUSES:
+            allowed = ", ".join(sorted(SESSION_STATUSES))
+            raise ValueError(f"未知会话状态: {self.status}; 可选值: {allowed}")
+        if self.status:
+            object.__setattr__(self, "status", self.status.casefold())
+        for field_name in ("after", "before"):
+            value = getattr(self, field_name)
+            if value:
+                try:
+                    datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise ValueError(f"时间格式无效: {value}") from exc
+        if self.after and self.before and self.after > self.before:
+            raise ValueError("时间范围无效: after 不能晚于 before")
+
+    def matches(self, ref: SessionRef) -> bool:
+        """判断一个列表引用是否满足条件。"""
+        if self.text:
+            haystack = f"{ref.title} {ref.id}".casefold()
+            if self.text.casefold() not in haystack:
+                return False
+        if self.model and self.model.casefold() not in ref.model.casefold():
+            return False
+        activity = ref.last_activity_at or ref.timestamp
+        if self.after and activity < self.after:
+            return False
+        if self.before and activity > self.before:
+            return False
+        if self.status and getattr(ref, "status", "idle") != self.status:
+            return False
+        return True
+
+    def without_status(self) -> SessionQuery:
+        """返回供持久化层使用的查询,运行态状态留给会话管理器覆盖。"""
+        return replace(self, status="")
 
 
 @dataclass
@@ -105,7 +164,7 @@ class SessionStore(Protocol):
 
     def get(self, session_id: str) -> SessionRef | None: ...
 
-    def list(self) -> list[SessionRef]: ...
+    def list(self, query: SessionQuery | None = None) -> list[SessionRef]: ...
 
     def load_messages(self, session_id: str) -> list[Message]: ...
 

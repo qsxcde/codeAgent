@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from codeagent.session.persistence.codec import _derive_title
-from codeagent.session.persistence.models import SessionRef
+from codeagent.session.persistence.models import SessionQuery, SessionRef
 
 
 class JsonlIndexingMixin:
@@ -88,9 +88,10 @@ class JsonlIndexingMixin:
             model=model,
             effort=effort,
             title=_derive_title(last_name, first_user),
+            status="idle",
         )
 
-    def list(self) -> list[SessionRef]:
+    def list(self, query: SessionQuery | None = None) -> list[SessionRef]:
         if not self._directory.exists():
             return []
         refs: list[SessionRef] = []
@@ -99,7 +100,7 @@ class JsonlIndexingMixin:
                 ref = self.get(path.stem)
             except ValueError:
                 continue
-            if ref is not None:
+            if ref is not None and (query is None or query.matches(ref)):
                 refs.append(ref)
         refs.sort(key=lambda ref: (ref.last_activity_at or ref.timestamp, ref.id))
         return refs

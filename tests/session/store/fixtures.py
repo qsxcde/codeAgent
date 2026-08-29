@@ -12,6 +12,8 @@ from codeagent.session.persistence import (
     CompactionEntry,
     JsonFileStore,
     MemoryStore,
+    SessionQuery,
+    SessionRef,
 )
 
 def _store(tmp_path):

@@ -11,7 +11,7 @@ from codeagent.app.tui.presentation.status import FooterInfo
 from codeagent.app.tui.application import TuiApp
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.messages import Message
-from codeagent.session.persistence import UsageStats
+from codeagent.session.persistence import SessionQuery, UsageStats
 from tests.fixtures.tui import FakeBackend as StubBackend
 
 class FakeSession:
@@ -25,6 +25,8 @@ class FakeSession:
         self.approvals: list[tuple[str, bool]] = []
         self.run_texts: list[str] = []
         self.title = ""
+        self.model = "DeepSeek-V4"
+        self.status = "idle"
         # cost-transparency:缺省全零用量(load_usage 空态)。
         self.usage = UsageStats()
         self.history: list[Message] = []
@@ -63,6 +65,9 @@ class FakeRef:
         self.id = session.session_id
         self.timestamp = f"2026-08-21T00:00:00.{len(FakeSession._created):03d}"
         self.title = session.title or f"标题-{session.session_id}"
+        self.model = session.model
+        self.last_activity_at = self.timestamp
+        self.status = session.status
         self.parent_session = None  # session-tree:树视图读父会话 id
 
 
@@ -98,10 +103,10 @@ class FakeManager:
                 return session
         raise ValueError(f"会话不存在: {session_id}")
 
-    def list(self):
+    def list(self, query: SessionQuery | None = None):
         refs = [FakeRef(s) for s in self.sessions]
         refs.sort(key=lambda r: (r.timestamp, r.id))
-        return refs
+        return [ref for ref in refs if query is None or query.matches(ref)]
 
     def continue_recent(self):
         refs = self.list()

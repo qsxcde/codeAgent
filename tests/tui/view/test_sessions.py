@@ -209,6 +209,65 @@ def test_sessions_list_switch_and_new():
     assert "会话不存在" in text
 
 
+def test_sessions_search_matches_title_or_id_without_running_model():
+    """/sessions search 只查询列表,不把搜索文本提交给当前会话。"""
+    app, backend, manager = _make_app()
+    manager.current.title = "Auth migration"
+    before = list(manager.current.run_texts)
+
+    backend.submit("/sessions search auth")
+
+    text = _rendered_text(app, backend)
+    assert "搜索结果 (1)" in text
+    assert "Auth migration" in text
+    assert manager.current.session_id in text
+    assert manager.current.run_texts == before
+
+
+def test_sessions_filter_supports_quoted_combined_conditions():
+    """/sessions filter 支持带空格的标题和多个条件组合。"""
+    app, backend, manager = _make_app()
+    manager.current.title = "Auth module"
+    manager.current.model = "DeepSeek-V4"
+    manager.current.status = "completed"
+    matching_id = manager.current.session_id
+    other = manager.create()
+    other.title = "Auth unrelated"
+    other.model = "Qwen"
+    other.status = "idle"
+    before = list(manager.current.run_texts)
+
+    backend.submit(
+        '/sessions filter title="Auth module" model=deepseek status=completed'
+    )
+
+    text = _rendered_text(app, backend)
+    assert "筛选结果 (1)" in text
+    assert "Auth module" in text
+    assert "DeepSeek-V4" in text
+    assert "completed" in text.replace(" ", "")
+    assert matching_id in text
+    assert other.session_id not in text
+    assert manager.current.run_texts == before
+
+
+def test_sessions_query_reports_invalid_and_empty_results_inline():
+    """查询错误和空态就地反馈,不切换会话或发起模型请求。"""
+    app, backend, manager = _make_app()
+    current = manager.current
+    before = list(current.run_texts)
+
+    backend.submit("/sessions filter status=unknown")
+    assert "筛选失败" in _rendered_text(app, backend)
+    assert manager.current is current
+    assert manager.current.run_texts == before
+
+    backend.submit("/sessions search no-such-session")
+    assert "搜索结果: 无匹配会话" in _rendered_text(app, backend)
+    assert manager.current is current
+    assert manager.current.run_texts == before
+
+
 
 def test_switching_session_hydrates_transcript_and_context_status():
     """切换会话会替换 transcript,并同步目标会话的上下文占用。"""

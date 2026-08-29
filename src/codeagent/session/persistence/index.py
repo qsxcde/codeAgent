@@ -225,4 +225,5 @@ class SessionIndex:
             model=session.get("model", "") or "",
             effort=session.get("effort", "") or "",
             title=session.get("title", "") or "",
+            status="idle",
         )

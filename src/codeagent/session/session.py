@@ -180,6 +180,11 @@ class AgentSession(
         return self._persistence.persisted
 
     @property
+    def is_running(self) -> bool:
+        """Return whether this resident session currently owns an active run."""
+        return self._runtime.active_run_id is not None
+
+    @property
     def context_tokens(self) -> int | None:
         return self._last_input_tokens
 

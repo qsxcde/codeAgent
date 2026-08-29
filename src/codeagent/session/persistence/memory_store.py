@@ -11,6 +11,7 @@ from codeagent.session.persistence.codec import _derive_title, _now
 from codeagent.session.persistence.models import (
     CompactionEntry,
     CompactionState,
+    SessionQuery,
     SessionRef,
     UsageStats,
 )
@@ -55,10 +56,10 @@ class MemoryStore:
             return None
         return self._ref_with_title(session_id)
 
-    def list(self) -> list[SessionRef]:
+    def list(self, query: SessionQuery | None = None) -> list[SessionRef]:
         refs = [self._ref_with_title(sid) for sid in self._sessions]
         refs.sort(key=lambda r: (r.last_activity_at or r.timestamp, r.id))
-        return refs
+        return [ref for ref in refs if query is None or query.matches(ref)]
 
     def load_messages(self, session_id: str) -> list[Message]:
         if session_id not in self._sessions:
@@ -275,4 +276,5 @@ class MemoryStore:
             model=base.model,
             effort=base.effort,
             title=_derive_title(name or "", first_user),
+            status=base.status,
         )
