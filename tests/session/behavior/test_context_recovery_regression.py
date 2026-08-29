@@ -11,7 +11,14 @@ import pytest
 
 from codeagent.ai.providers.fake import FakeClient
 from codeagent.app.container import ChatModelPort
-from codeagent.core import AgentLoopConfig, Message, OutputCompleteness, ToolCall, ToolOutputMetadata
+from codeagent.core import (
+    AgentLoopConfig,
+    Message,
+    OutputCompleteness,
+    ToolCall,
+    ToolOutputMetadata,
+)
+from codeagent.core.context.diagnostics import ContextDiagnostics
 from codeagent.session import AgentSession, EventBus
 from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.session.persistence import CompactionEntry, JsonFileStore, MemoryStore
@@ -255,6 +262,7 @@ async def test_reopen_after_compaction_restores_logical_context_and_continues(
     )
 
     assert _logical_snapshot(restored) == expected
+    assert restored.context_diagnostics == ContextDiagnostics.empty()
     assert _physical_message_ids(recovery_store, "compacted") == physical_ids
     await restored.run("question-4")
 
@@ -417,6 +425,7 @@ async def test_compacted_fork_in_retained_window_reopens_and_continues(
     assert ref.parent_session == "source"
     assert child.summary == entry.summary
     assert [message.id for message in child.history] == [messages[2].id, messages[3].id]
+    assert child.context_diagnostics == ContextDiagnostics.empty()
     await child.run("child question")
 
     assert _physical_message_ids(recovery_store, "source") == source_ids
@@ -442,6 +451,7 @@ async def test_compacted_fork_before_boundary_keeps_summary_only(
     assert ref.parent_session == "source"
     assert child.summary == entry.summary
     assert child.history == []
+    assert child.context_diagnostics == ContextDiagnostics.empty()
     await child.run("branch question")
 
     assert sum("以下为会话历史摘要" in message["content"] for message in child_client.call_history[0]["messages"]) == 1

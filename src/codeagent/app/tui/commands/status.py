@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from codeagent.app.context_diagnostics import format_context_diagnostics
+from codeagent.core.context.diagnostics import ContextDiagnostics
+
 from .parser import Command
 from ..state.runtime import phase_label
 
@@ -31,6 +34,14 @@ class TuiStatusCommandCoordinator:
         self._append_context_lines(lines)
         lines.append(f"用量: {self._usage_line(session)}")
         self.model.append_info("\n".join(lines))
+
+    def _cmd_context(self, cmd: Command) -> None:
+        """Show the complete read-only context diagnostics block."""
+        session = self._manager.current
+        diagnostics = getattr(session, "context_diagnostics", None)
+        if not isinstance(diagnostics, ContextDiagnostics):
+            diagnostics = self.model.context_diagnostics
+        self.model.append_info("\n".join(format_context_diagnostics(diagnostics)))
 
     def _append_runtime_lines(self, lines: list[str], runtime: Any) -> None:
         render, output = self.model.render_stats, self.model.output_stats

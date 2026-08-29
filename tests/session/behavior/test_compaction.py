@@ -28,6 +28,11 @@ async def test_compact_summarizes_and_truncates_history():
     assert state.summary == sess._summary
     assert state.entry_id == sess._summary_entry_id
     assert [m.id for m in state.messages] == [m.id for m in sess.history]
+    compaction = sess.context_diagnostics.compaction
+    assert compaction is not None
+    assert compaction.status == "compacted"
+    assert compaction.cropped_range is not None
+    assert compaction.retained_range is not None
 
 
 
@@ -38,6 +43,8 @@ async def test_compact_noop_when_all_kept():
     await (sess.run("问"))
     assert await (sess.compact()) is False
     assert sess._summary is None
+    assert sess.context_diagnostics.compaction is not None
+    assert sess.context_diagnostics.compaction.status == "skipped"
 
 
 
@@ -64,6 +71,10 @@ async def test_compact_failure_emits_terminal_finished_event():
     finished = [event for event in seen if event.type == EventType.COMPACTION_FINISHED]
     assert finished and finished[-1].metadata["success"] is False
     assert finished[-1].metadata["error_code"] == "compaction_failed"
+    assert sess.context_diagnostics.compaction is not None
+    assert sess.context_diagnostics.compaction.status == "failed"
+    assert sess.context_diagnostics.last_failure is not None
+    assert sess.context_diagnostics.last_failure["code"] == "compaction_failed"
 
 
 

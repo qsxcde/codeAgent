@@ -17,6 +17,7 @@ from .runtime import RuntimePhase, RuntimeReducer, RuntimeSnapshot
 from ..presentation.status import StatusBar
 from .transcript import Transcript
 from codeagent.core.contracts.events import AgentEvent
+from codeagent.core.context.diagnostics import ContextDiagnostics
 
 _PROGRESSIVE_BLOCK_THRESHOLD = 32
 _PROGRESSIVE_BODY_THRESHOLD = 4096
@@ -41,6 +42,7 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
         self.activity_visible = False
         self.activity_frame = 0
         self.runtime = RuntimeSnapshot()
+        self.context_diagnostics = ContextDiagnostics.empty()
         self._runtime_reducer = RuntimeReducer(clock=clock)
         self.render_stats: dict[str, int | float] = {
             "frames": 0,
@@ -133,6 +135,10 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
             context_stale=stale,
         )
         self.status.apply_snapshot(self.runtime, now=self._clock())
+
+    def set_context_diagnostics(self, diagnostics: ContextDiagnostics) -> None:
+        """Replace the read-only context view supplied by the session layer."""
+        self.context_diagnostics = diagnostics
 
     def _ensure_assistant(self) -> AssistantBlock:
         if self._assistant is None:

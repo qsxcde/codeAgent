@@ -46,6 +46,8 @@ class CompactionResult:
     target_budget: int | None = None
     summarized_turns: int = 0
     kept_turns: int = 0
+    summarized_entry_ids: tuple[str, ...] = ()
+    kept_entry_ids: tuple[str, ...] = ()
 
 
 class CompactionService:
@@ -176,6 +178,8 @@ class CompactionService:
             target_budget=target,
             summarized_turns=plan.summarized_turns,
             kept_turns=plan.kept_turns,
+            summarized_entry_ids=tuple(message.id for message in window),
+            kept_entry_ids=tuple(message.id for message in kept),
         )
 
     async def _estimate_candidate(

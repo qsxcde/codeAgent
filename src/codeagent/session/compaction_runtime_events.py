@@ -49,6 +49,8 @@ class SessionCompactionEventsMixin:
             "summarized_turns": result.summarized_turns,
             "kept_turns": result.kept_turns,
             "summary_entry_id": result.summary_entry_id,
+            "summarized_entry_ids": list(result.summarized_entry_ids),
+            "kept_entry_ids": list(result.kept_entry_ids),
         }
 
     def _emit_skipped_compaction(

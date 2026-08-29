@@ -6,9 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from codeagent.core.context.budget import ContextBudgetSnapshot
-from codeagent.core.context.preflight import ContextPreflightResult
-from codeagent.session.persistence.models import UsageStats
+from codeagent.session.runtime.context_state import SessionBudgetState
 
 class RunPhase(StrEnum):
     """Observable phases owned by the session runtime."""
@@ -205,35 +203,6 @@ class RunState:
         """Return the next monotonic event sequence number for this run."""
         self.sequence += 1
         return self.sequence
-
-
-@dataclass
-class SessionBudgetState:
-    """Runtime-only budget and provider usage state for the active session."""
-
-    latest_estimate: ContextBudgetSnapshot | None = None
-    latest_preflight: ContextPreflightResult | None = None
-    latest_actual_usage: UsageStats | None = None
-
-    def reset_request(self) -> None:
-        """Clear request-local observations before a new session run."""
-        self.latest_estimate = None
-        self.latest_preflight = None
-        self.latest_actual_usage = None
-
-    def record_estimate(self, snapshot: ContextBudgetSnapshot) -> None:
-        self.latest_estimate = snapshot
-
-    def record_preflight(self, result: ContextPreflightResult) -> None:
-        self.latest_preflight = result
-
-    def record_actual_usage(self, payload: dict[str, Any]) -> None:
-        self.latest_actual_usage = UsageStats(
-            input_tokens=int(payload.get("input_tokens", 0) or 0),
-            output_tokens=int(payload.get("output_tokens", 0) or 0),
-            reasoning_tokens=int(payload.get("reasoning_tokens", 0) or 0),
-            cached_tokens=int(payload.get("cached_tokens", 0) or 0),
-        )
 
 
 __all__ = [

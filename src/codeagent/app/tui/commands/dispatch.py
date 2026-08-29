@@ -11,7 +11,8 @@ class TuiCommandDispatcher:
         handler = {
             "help": self._cmd_help, "ask": self._cmd_ask, "plan": self._cmd_plan,
             "code": self._cmd_code, "mode": self._cmd_mode, "clear": self._cmd_clear,
-            "status": self._cmd_status, "tools": self._cmd_tools, "sessions": self._cmd_sessions,
+            "status": self._cmd_status, "context": self._cmd_context,
+            "tools": self._cmd_tools, "sessions": self._cmd_sessions,
             "tree": self._cmd_tree, "fork": self._cmd_fork, "compact": self._cmd_compact,
             "output": self._cmd_output, "retry": self._cmd_retry, "continue": self._cmd_continue,
             "skills": self._cmd_skills, "mcp": self._cmd_mcp, "provider": self._cmd_provider,

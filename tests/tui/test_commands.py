@@ -56,6 +56,7 @@ def test_registry_covers_expected_commands():
         "help",
         "clear",
         "status",
+        "context",
         "sessions",
         "tools",
         "provider",
@@ -91,6 +92,12 @@ def test_compact_command_registered_and_parsed():
     assert REGISTRY["compact"].available is True
     cmd = parse("/compact", REGISTRY)
     assert isinstance(cmd, Command) and cmd.name == "compact" and cmd.args == ()
+
+
+def test_context_command_registered_and_parsed():
+    """/context 注册、解析(只读上下文诊断)。"""
+    assert REGISTRY["context"].available is True
+    assert parse("/context", REGISTRY) == Command("context")
 
 
 def test_help_text_covers_all_commands():

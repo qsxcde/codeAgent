@@ -10,6 +10,7 @@ from typing import Any
 
 from codeagent.core.context.budget import ContextBudgetSnapshot
 from codeagent.core.context.contracts import TransformContext
+from codeagent.core.context.diagnostics import ContextDiagnostics
 from codeagent.core.context.preflight import ContextPreflightResult
 from codeagent.core.contracts.ports import ApprovalPolicy
 from codeagent.core.contracts.messages import Message
@@ -153,6 +154,18 @@ class AgentSession(
     @property
     def context_budget(self) -> ContextBudgetSnapshot | None:
         return self._budget_state.latest_estimate
+
+    @property
+    def context_diagnostics(self) -> ContextDiagnostics:
+        """Return the latest runtime-only context diagnostic snapshot."""
+        return self._budget_state.diagnostics
+
+    @property
+    def model_id(self) -> str | None:
+        """Return the configured model id for diagnostic labeling."""
+        model = getattr(self._config, "model", None)
+        value = getattr(model, "model_id", None) or getattr(model, "id", None)
+        return str(value) if value else None
 
     @property
     def context_preflight(self) -> ContextPreflightResult | None:

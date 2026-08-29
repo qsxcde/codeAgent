@@ -274,14 +274,14 @@ class SessionCompactionMixin(SessionCompactionBudgetMixin, SessionCompactionEven
         )
 
     def _on_internal_event(self, event: AgentEvent) -> None:
-        from codeagent.core.context.preflight import ContextPreflightResult
-
         if event.type == EventType.CONTEXT_BUDGET:
             if isinstance(event.payload, ContextBudgetSnapshot):
-                self._budget_state.record_estimate(event.payload)
+                self._budget_state.record_estimate(
+                    event.payload,
+                    model_id=getattr(self, "model_id", None),
+                )
         elif event.type == EventType.CONTEXT_PREFLIGHT:
-            if isinstance(event.payload, ContextPreflightResult):
-                self._budget_state.record_preflight(event.payload)
+            self._budget_state.record_preflight(event.payload)
         elif event.type == EventType.USAGE:
             payload: dict[str, Any] = event.payload or {}
             self._budget_state.record_actual_usage(payload)
@@ -289,6 +289,12 @@ class SessionCompactionMixin(SessionCompactionBudgetMixin, SessionCompactionEven
             if tokens:
                 self._last_input_tokens = int(tokens)
             self._runtime.record_usage(payload)
+        elif event.type == EventType.COMPACTION_FINISHED:
+            self._budget_state.record_compaction(dict(event.metadata or {}))
+        elif event.type == EventType.TOOL_RESULT:
+            self._budget_state.record_tool_result(dict(event.metadata or {}))
+        elif event.type == EventType.ERROR:
+            self._budget_state.record_failure(dict(event.metadata or {}))
 
 
 __all__ = ["SessionCompactionMixin"]

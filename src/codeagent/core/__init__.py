@@ -14,6 +14,7 @@ from codeagent.core.context.budget import (
     estimate_context_budget,
     govern_tool_messages,
 )
+from codeagent.core.context.diagnostics import ContextDiagnostics
 from codeagent.core.context.preflight import (
     ContextPreflightConfig,
     ContextPreflightResult,
@@ -110,5 +111,6 @@ __all__ = [
     "PreflightStatus",
     "evaluate_context_preflight",
     "estimate_context_budget",
+    "ContextDiagnostics",
     "govern_tool_messages",
 ]

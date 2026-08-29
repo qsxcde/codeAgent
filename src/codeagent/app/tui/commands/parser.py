@@ -94,6 +94,7 @@ def default_registry() -> dict[str, CommandSpec]:
         ),
         "clear": CommandSpec("clear", "清空聊天区"),
         "status": CommandSpec("status", "显示会话状态"),
+        "context": CommandSpec("context", "显示上下文预算与治理诊断"),
         "sessions": CommandSpec(
             "sessions",
             "列出 / 新建 / 切换 / 恢复会话(recent = 最近)",

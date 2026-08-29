@@ -9,6 +9,7 @@ from typing import Any
 from codeagent.app.errors.reporting import report_unexpected_error
 from ..state.model import TuiModel
 from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.context.diagnostics import ContextDiagnostics
 
 
 @dataclass(frozen=True)
@@ -136,9 +137,13 @@ class SessionRestoreMixin:
             self.model.status.context_tokens = None
             self.model.status.context_window = None
             self.model.set_context_status(None, None)
+            self.model.set_context_diagnostics(ContextDiagnostics.empty())
             return
         tokens = getattr(session, "context_tokens", None)
         window = getattr(session, "context_window", None)
         self.model.status.context_tokens = tokens
         self.model.status.context_window = window
         self.model.set_context_status(tokens, window)
+        diagnostics = getattr(session, "context_diagnostics", None)
+        if isinstance(diagnostics, ContextDiagnostics):
+            self.model.set_context_diagnostics(diagnostics)

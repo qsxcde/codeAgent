@@ -61,6 +61,7 @@ async def test_session_exposes_latest_preflight_and_resets_it_per_run():
     await session.run("first")
     assert session.context_preflight is not None
     assert session.context_preflight.status == "near_limit"
+    assert session.context_diagnostics.preflight_status == "near_limit"
 
     model.headroom = -1
     events = []
@@ -69,6 +70,9 @@ async def test_session_exposes_latest_preflight_and_resets_it_per_run():
 
     assert session.context_preflight is not None
     assert session.context_preflight.status == "over_limit"
+    assert session.context_diagnostics.preflight_status == "over_limit"
+    assert session.context_diagnostics.last_failure is not None
+    assert session.context_diagnostics.last_failure["code"] == "context_budget_exceeded"
     assert model.stream_calls == 1
     error = next(event for event in events if event.type == EventType.ERROR)
     assert error.metadata["error_code"] == "context_budget_exceeded"

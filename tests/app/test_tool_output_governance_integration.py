@@ -69,6 +69,10 @@ async def test_tool_result_facts_survive_pipeline_and_request_budget(tmp_path) -
 
     await session.run("inspect reports")
 
+    governed = session.context_diagnostics.tool_results
+    assert len(governed) == 2
+    assert all(item.action == "tool_lines" for item in governed)
+
     history = session.history
     tool_messages = [message for message in history if message.role == "tool"]
     assert [message.tool_call_id for message in tool_messages] == ["call-a", "call-b"]

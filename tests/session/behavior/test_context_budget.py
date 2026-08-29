@@ -99,6 +99,8 @@ async def test_context_preparation_failure_preserves_budget_diagnostics_and_erro
     assert error.metadata["error_code"] == "context_preparation_failed"
     assert error.metadata["phase"] == "context_preparation"
     assert error.metadata["retryable"] is False
+    assert session.context_diagnostics.last_failure is not None
+    assert session.context_diagnostics.last_failure["code"] == "context_preparation_failed"
 
 
 async def test_session_initial_window_follows_model_metadata_without_override():

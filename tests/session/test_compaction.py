@@ -202,6 +202,32 @@ def test_compaction_plan_reports_oversized_required_turn() -> None:
     assert plan.reason_code == "oversized_turn"
 
 
+async def test_compaction_result_reports_summarized_and_kept_entry_ranges() -> None:
+    appended = []
+
+    class Summarizer:
+        async def summarize(self, messages, previous_summary):
+            return "summary"
+
+    async def append_entry(entry):
+        appended.append(entry)
+        return "entry-1"
+
+    messages = [*_turn("u1", "a1"), *_turn("u2", "a2")]
+    service = CompactionService(
+        Summarizer(),
+        2,
+        append_entry,
+        candidate_budget=lambda summary, kept: _budget(1, input_budget=2),
+    )
+
+    result = await service.compact(messages, None, None, {})
+
+    assert result.status == "compacted"
+    assert result.summarized_entry_ids == tuple(message.id for message in messages[:2])
+    assert result.kept_entry_ids == tuple(message.id for message in messages[2:])
+
+
 def test_compaction_policy_requires_at_least_one_recent_turn() -> None:
     with pytest.raises(ValueError, match="min_recent_turns"):
         CompactionPolicyConfig(min_recent_turns=0)

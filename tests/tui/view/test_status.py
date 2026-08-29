@@ -14,6 +14,39 @@ def test_status_usage_formatter_is_independent_of_command_dispatch() -> None:
     assert TuiStatusCommandCoordinator._usage_line(None) == "(无)"
 
 
+def test_context_command_shows_full_diagnostics_without_running_session() -> None:
+    from codeagent.core.context.budget import ContextBudgetSnapshot
+    from codeagent.core.context.diagnostics import ContextDiagnostics
+
+    app, backend, manager = _make_app()
+    manager.current.context_diagnostics = ContextDiagnostics.from_budget(
+        ContextBudgetSnapshot(
+            context_window=20_000,
+            output_reserve=1_000,
+            reserve_tokens=500,
+            input_budget=18_500,
+            system_prompt_tokens=100,
+            tool_definitions_tokens=200,
+            conversation_tokens=2_000,
+            tool_result_tokens=300,
+            input_tokens=2_600,
+            headroom=15_900,
+            status="estimate",
+            window_source="catalog",
+        ),
+        model_id="demo",
+    )
+    before = (list(manager.current.run_texts), list(manager.current.history))
+
+    backend.submit("/context")
+
+    text = "\n".join(app.model.transcript.all_lines(120))
+    assert "上下文诊断:" in text
+    assert "窗口: 20,000" in text
+    assert "system_prompt: 100" in text
+    assert (manager.current.run_texts, manager.current.history) == before
+
+
 async def test_footer_rich_line_seeded_and_passed():
     """装配数据(model/effort/cwd)经注入进状态栏并以富样式传给后端(design D5)。"""
     backend = StubBackend()

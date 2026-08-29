@@ -214,6 +214,8 @@ async def test_compaction_failure_keeps_committed_turn_and_does_not_duplicate_us
     assert session.last_outcome.commit_status is CommitStatus.COMMITTED
     assert session.last_outcome.phase is RunPhase.COMPLETED
     assert session.last_outcome.post_commit_status == "compaction_failed"
+    assert session.context_diagnostics.compaction is not None
+    assert session.context_diagnostics.compaction.status == "failed"
     assert any(
         event.type == EventType.ERROR
         and event.metadata.get("error_code") == "compaction_failed"
@@ -255,6 +257,8 @@ async def test_cancellation_during_post_commit_compaction_preserves_turn():
     assert session.last_outcome.phase is RunPhase.COMPLETED
     assert session.last_outcome.commit_status is CommitStatus.COMMITTED
     assert session.last_outcome.post_commit_status == "compaction_cancelled"
+    assert session.context_diagnostics.compaction is not None
+    assert session.context_diagnostics.compaction.status == "cancelled"
 
     model.steps = [
         {
@@ -339,6 +343,8 @@ async def test_compaction_persistence_uncertain_keeps_committed_turn(monkeypatch
         and event.metadata.get("status") == "persistence_uncertain"
         for event in seen
     )
+    assert session.context_diagnostics.compaction is not None
+    assert session.context_diagnostics.compaction.status == "persistence_uncertain"
 
 
 async def test_successful_turn_has_one_terminal_event_and_can_continue():

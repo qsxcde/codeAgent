@@ -82,11 +82,13 @@ class SessionLifecycleMixin:
         model_window = getattr(getattr(config, "model", None), "context_window", None)
         if type(model_window) is int and model_window > 0:
             self._context_window = model_window
+        self._budget_state.reset_for_model(self.model_id)
 
     def set_context_window(self, context_window: int) -> None:
         if type(context_window) is not int or context_window < 1:
             raise ValueError("context_window must be positive")
         self._context_window = context_window
+        self._budget_state.reset_for_model(self.model_id)
 
     def run_sync(self, text: str) -> None:
         try:
