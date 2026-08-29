@@ -36,12 +36,18 @@ from codeagent.core.contracts.errors import (
 )
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.hooks import (
+    HookDiagnostic,
+    HookFailureStage,
     HookPhase,
     HookScope,
     LifecycleHook,
     LifecycleHookEvent,
     classify_core_event,
     classify_session_event,
+    core_event_scope_phase,
+    hook_name,
+    make_hook_diagnostic,
+    session_event_phase,
     to_lifecycle_hook_event,
 )
 from codeagent.core.execution.runtime import (
@@ -79,6 +85,8 @@ __all__ = [
     "AgentEvent",
     "HookPhase",
     "HookScope",
+    "HookDiagnostic",
+    "HookFailureStage",
     "LifecycleHook",
     "LifecycleHookEvent",
     "AgentContext",
@@ -128,5 +136,9 @@ __all__ = [
     "govern_tool_messages",
     "classify_core_event",
     "classify_session_event",
+    "core_event_scope_phase",
+    "hook_name",
+    "make_hook_diagnostic",
+    "session_event_phase",
     "to_lifecycle_hook_event",
 ]

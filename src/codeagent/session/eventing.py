@@ -8,7 +8,17 @@ from dataclasses import replace
 from typing import Any
 
 from codeagent.core.contracts.events import AgentEvent
-from codeagent.core.contracts.hooks import classify_session_event
+from codeagent.core.contracts.hooks import (
+    HookDiagnostic,
+    HookFailureStage,
+    HookPhase,
+    HookScope,
+    LifecycleHook,
+    LifecycleHookEvent,
+    classify_session_event,
+    make_hook_diagnostic,
+    session_event_phase,
+)
 
 
 class SessionEventMixin:
@@ -58,7 +68,17 @@ class SessionEventMixin:
         self._bus.emit(normalized)
 
     def _notify_lifecycle_hooks(self, event: AgentEvent) -> None:
-        lifecycle = classify_session_event(event)
+        try:
+            lifecycle = classify_session_event(event)
+        except Exception as exc:  # noqa: BLE001 - observer snapshot is isolated
+            self._record_lifecycle_hook_failure(
+                event,
+                exc,
+                stage="snapshot",
+                scope="session",
+                phase=session_event_phase(event),
+            )
+            return
         hooks = self._lifecycle_hooks
         if hooks is None:
             hooks = tuple(getattr(self._config, "lifecycle_hooks", ()))
@@ -66,21 +86,74 @@ class SessionEventMixin:
             try:
                 result = hook(lifecycle)
             except Exception as exc:  # noqa: BLE001 - isolated observer
-                self._lifecycle_hook_errors.append((event, exc))
+                self._record_lifecycle_hook_failure(
+                    event,
+                    exc,
+                    stage="invoke",
+                    hook=hook,
+                    lifecycle=lifecycle,
+                )
                 continue
             if inspect.isawaitable(result):
-                task = asyncio.create_task(self._consume_lifecycle_hook(result, event))
+                task = asyncio.ensure_future(result)
                 self._lifecycle_hook_tasks.add(task)
-                task.add_done_callback(self._lifecycle_hook_tasks.discard)
+                task.add_done_callback(
+                    lambda completed: self._finish_lifecycle_hook(
+                        completed, event, lifecycle, hook
+                    )
+                )
 
-    async def _consume_lifecycle_hook(self, result: Any, event: AgentEvent) -> None:
-        try:
-            await result
-        except Exception as exc:  # noqa: BLE001 - diagnostics are isolated
-            self._lifecycle_hook_errors.append((event, exc))
+    def _finish_lifecycle_hook(
+        self,
+        task: asyncio.Future[Any],
+        event: AgentEvent,
+        lifecycle: LifecycleHookEvent,
+        hook: LifecycleHook,
+    ) -> None:
+        self._lifecycle_hook_tasks.discard(task)
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is not None:
+            self._record_lifecycle_hook_failure(
+                event,
+                exception,
+                stage="await",
+                hook=hook,
+                lifecycle=lifecycle,
+            )
+
+    def _record_lifecycle_hook_failure(
+        self,
+        event: AgentEvent,
+        exception: Exception,
+        *,
+        stage: HookFailureStage,
+        hook: LifecycleHook | None = None,
+        lifecycle: LifecycleHookEvent | None = None,
+        scope: HookScope | None = None,
+        phase: HookPhase | None = None,
+    ) -> None:
+        self._lifecycle_hook_diagnostics.append(
+            make_hook_diagnostic(
+                event,
+                exception,
+                stage=stage,
+                hook=hook,
+                scope=lifecycle.scope if lifecycle is not None else scope,
+                phase=lifecycle.phase if lifecycle is not None else phase,
+            )
+        )
+        # Keep the V4-28 compatibility surface populated as well.
+        self._lifecycle_hook_errors.append((event, exception))
 
     async def _drain_lifecycle_hooks(self) -> None:
         tasks = tuple(self._lifecycle_hook_tasks)
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

@@ -1,7 +1,15 @@
 """Provider-neutral domain contracts and value types."""
 from .output import OutputCompleteness, ToolOutputMetadata
 from .tool_status import ToolLifecycleStatus, ToolStatusSnapshot
-from .hooks import HookPhase, HookScope, LifecycleHook, LifecycleHookEvent
+from .hooks import (
+    HookDiagnostic,
+    HookFailureStage,
+    HookPhase,
+    HookScope,
+    LifecycleHook,
+    LifecycleHookEvent,
+    session_event_phase,
+)
 
 __all__ = [
     "OutputCompleteness",
@@ -10,6 +18,9 @@ __all__ = [
     "ToolStatusSnapshot",
     "HookPhase",
     "HookScope",
+    "HookDiagnostic",
+    "HookFailureStage",
     "LifecycleHook",
     "LifecycleHookEvent",
+    "session_event_phase",
 ]

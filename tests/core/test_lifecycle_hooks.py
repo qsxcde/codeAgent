@@ -14,6 +14,7 @@ from codeagent.core import (
     run_agent_loop,
 )
 from codeagent.core.contracts.hooks import (
+    HookDiagnostic,
     LifecycleHookEvent,
     to_lifecycle_hook_event,
 )
@@ -107,6 +108,106 @@ async def test_configured_hooks_are_ordered_and_return_values_are_ignored() -> N
     assert ("first", "model", "finished") in seen
     assert ("second", "turn", "finished") in seen
     assert [message.content for message in agent.context.messages] == ["hello", "reply"]
+
+
+async def test_hook_failures_are_structured_and_do_not_affect_agent_run() -> None:
+    observed: list[tuple[str, str]] = []
+
+    def broken_sync(event: LifecycleHookEvent) -> None:
+        if event.event_type == "turn_start":
+            raise ValueError("sync observer failed")
+
+    async def broken_async(event: LifecycleHookEvent) -> None:
+        if event.event_type == "turn_start":
+            raise RuntimeError("async observer failed")
+
+    def healthy(event: LifecycleHookEvent) -> None:
+        observed.append((event.event_type, event.phase))
+
+    agent = Agent(
+        AgentContext(),
+        AgentLoopConfig(
+            model=_Model(),
+            lifecycle_hooks=[broken_sync, broken_async, healthy],
+        ),
+        run_id="run-hook-failure",
+    )
+
+    await agent.prompt("hello")
+
+    assert [message.content for message in agent.context.messages] == ["hello", "reply"]
+    assert ("turn_start", "started") in observed
+    diagnostics = [
+        item for item in agent.hook_diagnostics if item.event_type == "turn_start"
+    ]
+    assert len(diagnostics) == 2
+    assert all(isinstance(item, HookDiagnostic) for item in diagnostics)
+    assert {item.stage for item in diagnostics} == {"invoke", "await"}
+    assert {item.error_type for item in diagnostics} == {"ValueError", "RuntimeError"}
+    assert all(item.scope == "turn" for item in diagnostics)
+    assert all(item.phase == "started" for item in diagnostics)
+    assert all(item.run_id == "run-hook-failure" for item in diagnostics)
+    assert all(item.hook_name != "<unknown>" for item in diagnostics)
+    assert diagnostics[0].as_metadata()["code"] == "hook_failed"
+
+
+async def test_uncopyable_hook_snapshot_isolated_from_agent_events() -> None:
+    class Uncopyable:
+        def __deepcopy__(self, memo):
+            raise TypeError("payload cannot be copied")
+
+    observed: list[LifecycleHookEvent] = []
+    received: list[AgentEvent] = []
+    agent = Agent(
+        AgentContext(),
+        AgentLoopConfig(model=_Model(), lifecycle_hooks=[observed.append]),
+        run_id="run-snapshot-failure",
+    )
+    agent.subscribe(received.append)
+
+    event = AgentEvent("message_update", payload=Uncopyable())
+    agent._emit(event)
+
+    assert received
+    assert observed == []
+    assert len(agent.hook_diagnostics) == 1
+    diagnostic = agent.hook_diagnostics[0]
+    assert diagnostic.stage == "snapshot"
+    assert diagnostic.hook_name == "event_snapshot"
+    assert diagnostic.event_type == "message_update"
+    assert diagnostic.scope == "model"
+    assert diagnostic.phase == "updated"
+
+
+async def test_cancelled_hook_is_not_reported_as_failure() -> None:
+    async def cancelled(_event: LifecycleHookEvent) -> None:
+        raise asyncio.CancelledError
+
+    agent = Agent(
+        AgentContext(),
+        AgentLoopConfig(model=_Model(), lifecycle_hooks=[cancelled]),
+    )
+
+    await agent.prompt("hello")
+
+    assert agent.hook_diagnostics == []
+
+
+async def test_hook_failure_does_not_mask_agent_failure() -> None:
+    def broken(_event: LifecycleHookEvent) -> None:
+        raise RuntimeError("observer failed")
+
+    agent = Agent(
+        AgentContext(),
+        AgentLoopConfig(model=_FailingModel(), lifecycle_hooks=[broken]),
+        run_id="run-failed-with-hook",
+    )
+
+    with pytest.raises(RuntimeError, match="model unavailable"):
+        await agent.prompt("hello")
+
+    assert agent.hook_diagnostics
+    assert all(item.error_type == "RuntimeError" for item in agent.hook_diagnostics)
 
 
 @pytest.mark.parametrize(

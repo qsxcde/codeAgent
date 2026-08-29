@@ -11,7 +11,7 @@ from typing import Any
 from codeagent.core.context.model import AgentContext
 from codeagent.core.contracts.errors import AgentRuntimeError
 from codeagent.core.contracts.events import AgentEvent
-from codeagent.core.contracts.hooks import LifecycleHook, classify_core_event
+from codeagent.core.contracts.hooks import LifecycleHook
 from codeagent.core.execution.runtime import ToolExecutionRuntime
 from codeagent.core.orchestration.loop import (
     DEFAULT_RECURSION_LIMIT,
@@ -20,11 +20,12 @@ from codeagent.core.orchestration.loop import (
 )
 from codeagent.core.contracts.messages import Message
 from codeagent.core.orchestration.config import AgentLoopConfig
+from codeagent.core.observation import LifecycleHookObservationMixin
 
 EventListener = Callable[[AgentEvent], Any]
 
 
-class Agent:
+class Agent(LifecycleHookObservationMixin):
     """Own mutable runtime context without persistence or application policy.
 
     The loop works on a copy of the context.  A completed run is committed to
@@ -54,7 +55,8 @@ class Agent:
             config.lifecycle_hooks
         )
         self._listener_errors: list[tuple[AgentEvent, Exception]] = []
-        self._listener_tasks: set[asyncio.Task[Any]] = set()
+        self._hook_diagnostics = []
+        self._listener_tasks: set[asyncio.Future[Any]] = set()
         self._task: asyncio.Task[list[Message]] | None = None
         self._follow_ups: list[tuple[str, asyncio.Future[list[Message]]]] = []
 
@@ -111,19 +113,7 @@ class Agent:
                 task = asyncio.create_task(self._consume_listener(result, event))
                 self._listener_tasks.add(task)
                 task.add_done_callback(self._listener_tasks.discard)
-        lifecycle = classify_core_event(event)
-        if lifecycle is None:
-            return
-        for hook in self._lifecycle_hooks:
-            try:
-                result = hook(lifecycle)
-            except Exception as exc:  # noqa: BLE001 - observers are isolated
-                self._listener_errors.append((event, exc))
-                continue
-            if inspect.isawaitable(result):
-                task = asyncio.create_task(self._consume_listener(result, event))
-                self._listener_tasks.add(task)
-                task.add_done_callback(self._listener_tasks.discard)
+        self._notify_lifecycle_hooks(event)
 
     async def _consume_listener(self, result: Any, event: AgentEvent) -> None:
         try:

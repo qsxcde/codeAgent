@@ -168,6 +168,7 @@ codeagent/
     │
     ├── core/                    # [Agent Runtime] 纯内存,不 import config/tools/ai/session
     │   ├── agent.py             #   Agent:prompt / continue / abort / steer / follow-up
+    │   ├── observation.py       #   生命周期 Hook 分发、异常隔离与运行期诊断
     │   ├── contracts/           #   messages / events / hooks / errors / 外部 ports
     │   ├── context/             #   AgentContext、预算、preflight 与上下文契约
     │   ├── model/               #   请求准备与模型流归一化
@@ -193,7 +194,7 @@ codeagent/
     │
     └── resources/               # [资源层] 内建 skills / prompts（Skills 已启用）
 
-tests/                          # 按行为域分包，1348 passed（2026-08-29）
+tests/                          # 按行为域分包，1452 passed（2026-08-30）
 ├── conftest.py / fixtures/     #   marker、隔离环境和共享离线夹具
 ├── contracts/                  #   跨实现公共契约与分层边界
 ├── ai/ / core/ / mcp/          #   模型、编排和 MCP 行为
@@ -212,7 +213,7 @@ tests/                          # 按行为域分包，1348 passed（2026-08-29�
 
 v0.3.0 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。当前未实现且已明确移出本版本的能力包括：费用估算、Web / HTTP 事件订阅、轻量记忆、插件系统、多智能体和自动化任务；它们在出现真实需求后重新评估。
 
-工程后续优先级是完成 CI 性能基线和阈值决策、补齐 Hook 异常隔离与 ContextTransformer 契约，再推进工具和 Provider 稳定性。性能基线在数据稳定前保持非阻塞。
+工程后续优先级是完成 CI 性能基线和阈值决策、补齐 ContextTransformer 契约，再推进工具和 Provider 稳定性。性能基线在数据稳定前保持非阻塞。
 
 ## 参考
 

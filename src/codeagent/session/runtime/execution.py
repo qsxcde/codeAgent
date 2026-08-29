@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 import asyncio
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import Any
 
 from codeagent.core import Agent, AgentContext, ToolDecision
@@ -49,7 +49,13 @@ class SessionExecutionMixin:
         for steer in pending_steer:
             self.agent.steer(steer)
         self.agent.subscribe(lambda event: self._handle_event(event, run_id))
-        return await self.agent.prompt(text)
+        try:
+            return await self.agent.prompt(text)
+        finally:
+            for diagnostic in getattr(self.agent, "hook_diagnostics", ()):
+                if diagnostic.session_id is None:
+                    diagnostic = replace(diagnostic, session_id=self._session_id)
+                self._hook_diagnostics.append(diagnostic)
 
     def _take_pending_steer(self) -> list[str]:
         pending: list[str] = []

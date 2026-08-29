@@ -41,7 +41,7 @@
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 仅存 `llm_provider`。
 - `ai/` 层:模型基础设施(provider / catalog / model / transport),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);provider/model/effort 选择位于 `app/composition/model/selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security.py` 提供执行前安全分类器(deny > ask > allow)。
-- `core/` Agent Runtime:根级 `agent.py` 为运行时外壳，`contracts/`、`context/`、`model/`、`execution/`、`orchestration/` 和 `support/` 按职责组织纯内存、全异步实现；模块顶层零副作用。
+- `core/` Agent Runtime:根级 `agent.py` 为运行时外壳，`contracts/`、`context/`、`model/`、`execution/`、`orchestration/`、`observation.py` 和 `support/` 按职责组织纯内存、全异步实现；模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;会话标题支持自动派生和 append-only `name` 元数据重命名;`SessionQuery` 统一标题/id、模型、时间、运行状态和归档范围筛选,管理器为驻留会话叠加只读运行态;归档使用 append-only 元数据,删除由存储边界完成路径保护和索引清理;恢复报告区分 healthy/degraded/unavailable,有效损坏记录局部降级,结构性错误携带可操作建议;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
 - 事件按消息、模型请求、工具生命周期和运行控制分组；模型请求显式发布 `model_request_started / model_request_finished`，工具生命周期包含 `tool_queued / tool_started / tool_progress / tool_finished / tool_result`，core 对应 `tool_execution_queued / tool_execution_start / tool_execution_update / tool_execution_end`，事件通过 `run_id`、`tool_call_id`、`operation_id` 和结构化状态字段关联。
@@ -263,7 +263,7 @@ class AgentSession:
 - **成功才落盘**:本轮工作在局部历史副本上,`self._history` 仅成功时重赋值,store 循环在其后;失败/取消时内存回滚(历史从未被就地修改,回滚是空操作)。
 - **会话历史**:自研 `Message`(role/content/tool_calls/tool_call_id/id/parentId),`id` 用 uuid7;归约按 tool_call_id 归属、按 id 删除。
 - **事件类型**按生命周期分组：会话/消息事件、工具生命周期事件（排队、开始、进度、结束、结果）、确认与运行控制事件；工具事件保留类型化状态和 metadata 双重兼容字段。
-- **观察 Hook**按注册顺序接收 turn、model、tool、session 的 started/updated/finished 快照；core 与 session 通过 `AgentLoopConfig.lifecycle_hooks` 注入，具体实现仍由组合根提供。
+- **观察 Hook**按注册顺序接收 turn、model、tool、session 的 started/updated/finished 快照；core 与 session 通过 `AgentLoopConfig.lifecycle_hooks` 注入，具体实现仍由组合根提供。同步/异步 Hook 失败和快照复制失败均隔离为运行期 `HookDiagnostic`，可由 `Agent.hook_diagnostics` 与 `AgentSession.lifecycle_hook_diagnostics` 查询，不进入事件递归或会话持久化。
 - **上下文压缩**:`summarizer` 端口(session-compaction),自动/手动触发窗口摘要。
 
 ### 5.4 SessionManager / SessionStore —— 会话生命周期与持久化

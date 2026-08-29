@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from codeagent.core import Agent
+from codeagent.core.contracts.hooks import HookDiagnostic
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.context.model import AgentContext
 from codeagent.core.orchestration.config import AgentLoopConfig
@@ -58,6 +59,7 @@ class SessionRuntime(RuntimeEventMixin, SessionExecutionMixin):
         self.last_outcome: RunOutcome | None = None
         self.turn_usage = UsageStats()
         self.agent: Agent | None = None
+        self._hook_diagnostics: list[HookDiagnostic] = []
 
     @property
     def agent_factory(self) -> AgentFactory:
@@ -94,6 +96,11 @@ class SessionRuntime(RuntimeEventMixin, SessionExecutionMixin):
     @property
     def cleanup_status(self) -> str:
         return self._side_effects.cleanup_status
+
+    @property
+    def hook_diagnostics(self) -> list[HookDiagnostic]:
+        """Return core Hook failures retained after the temporary Agent ends."""
+        return list(self._hook_diagnostics)
 
     def set_event_handler(self, handler: Callable[[AgentEvent, str], None]) -> None:
         self._event_handler = handler
