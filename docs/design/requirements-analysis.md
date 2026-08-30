@@ -1,8 +1,8 @@
 # codeagent 需求分析文档(完整版)
 
-> 版本: v0.3.0(完整版,含 §0.1 状态勘误)
-> 更新日期: 2026-08-28(当前状态与测试/CI 门禁复核;正文中的历史需求分析数据保留为历史快照)
-> 编制口径: 以 `docs/design/` 下四份文档(需求分析报告 v0.1、架构设计、功能表 GAP 分析、编排自研蓝图)为需求来源综合而成,并对照 **2026-08-28 当前代码树**校准(校准明细见 §0.1 与附录 B)。**架构现状以 §0.1 勘误 + architecture.md(v0.3.0) 为准**。
+> 版本: v0.4 当前代码树同步版(保留 v0.3 需求基线与历史快照)
+> 更新日期: 2026-08-30(当前状态、测试/CI 门禁和发布检查复核;正文中的历史需求分析数据保留为历史快照)
+> 编制口径: 以 `docs/design/` 下四份文档(需求分析报告 v0.1、架构设计、功能表 GAP 分析、编排自研蓝图)为需求来源综合而成,并对照 **2026-08-30 当前代码树**校准(校准明细见 §0.1、§0.2 与附录 B)。**当前架构现状以 §0.2 + architecture.md(v0.4) 为准**。
 > 本版本与 `requirements-analysis.md`(v0.1)的关系:本文为完整合并版,新增架构需求(AR)、数据需求(DR)、接口需求(IR)、验收标准、需求追踪矩阵等章节,并吸收功能表 GAP 分析的修订功能清单(F-01~F-28)与编排自研蓝图的演进路线。v0.1 报告已由本文完全取代并于 2026-08-13 归档删除(原文可从 git 历史提交 5b137b4 恢复)。
 
 ---
@@ -11,6 +11,7 @@
 
 | 章节 | 内容 | 主要来源 |
 |---|---|---|
+| 0.1 / 0.2 状态校准 | 历史勘误与当前代码树验证状态 | 当前代码树、v0.4 迭代记录 |
 | 1 引言 | 目的 / 范围 / 术语 / 参考 | — |
 | 2 项目概述与产品定位 | 背景、愿景、设计哲学、定位、目标用户 | 需求分析 §1、§6 |
 | 3 市场与竞品分析 | 竞品画像、2026 年中动态、功能矩阵、机会空间 | 需求分析 §2、GAP 分析 §2~3、§6 |
@@ -20,7 +21,7 @@
 | 7 数据需求(DR) | 会话状态、事件模型、配置数据、存储规划 | 架构文档、自研蓝图 |
 | 8 接口需求(IR) | 端口契约、会话接口、事件接口、CLI、平台入口 | 架构文档 §5~§7 |
 | 9 可行性分析 | 技术 / 市场 / 资源三维度 | 需求分析 §5 |
-| 10 版本规划与里程碑 | v0.1~v0.3 路线图、节奏建议、现状校准 | GAP 分析 §7、架构文档 §11 |
+| 10 版本规划与里程碑 | v0.1~v0.4 路线图、节奏建议、现状校准 | GAP 分析 §7、架构文档 §11 |
 | 11 风险分析 | 技术/市场/进度/质量风险汇总与对策 | 需求分析 §5、自研蓝图 §5 |
 | 12 验收标准 | 分版本验收 + 全局验收基线 | 综合 |
 | 附录 A | 需求追踪矩阵(需求 → 出处 → 状态) | 综合 |
@@ -39,9 +40,9 @@
 
 ---
 
-## 0.1 状态勘误(2026-08-28,自研编排与 v0.3.0 已落地)
+## 0.1 历史状态勘误(2026-08-28,自研编排与 v0.3.0 已落地)
 
-> 本文档编制于 2026-08-13(彼时编排自研仍处"第二步暂缓")。2026-08-14 `self-built-orchestration` 落地后,**编排层已全面自研**；2026-08-22 v0.3.0 功能范围完成验收。本节统一勘误:后续工作以本节 + [architecture.md](./architecture.md)(v0.3.0) 为架构事实源,以 `docs/iteration/v0.1.md` ~ `v0.3.md` 为演进记录;文中竞品对比 / GAP 分析 / 决策记录里的历史提及保留原貌(历史快照),不再逐条改动。
+> 本文档编制于 2026-08-13(彼时编排自研仍处"第二步暂缓")。2026-08-14 `self-built-orchestration` 落地后,**编排层已全面自研**；2026-08-22 v0.3.0 功能范围完成验收。本节保留当时的统一勘误；当前事实以 §0.2 + [architecture.md](./architecture.md)(v0.4) 为准,以 `docs/iteration/v0.4.md` 为当前演进记录,文中竞品对比 / GAP 分析 / 决策记录里的历史提及保留原貌(历史快照),不再逐条改动。
 
 ### 现状口径(2026-08-27 代码树复核)
 
@@ -58,20 +59,30 @@
 | 安全确认环(FR-8.2 / NFR-S3) | 🔲 v0.2 | ✅ 已落地(`security-permissions`:ApprovalPolicy + tools/security.py 三档分类器,headless 缺省 fail closed) |
 | AGENTS.md 分层(F-16) | 🔲 v0.2 规划 | ✅ 已落地(`app/agents.py`,全局→项目→子目录分层注入) |
 | 平台部署 `langgraph.json`(F-24 / IR-10) | 📝 P2 | **永久调整**:随自研编排改写为 HTTP/事件订阅入口(F-27);**2026-08-22 定案:Web/HTTP 入口移出 v0.3(E12)**——平台向无真实消费者,价值被 CLI/TUI 事件流订阅覆盖,推迟远期按需重估 |
-| 测试基线(附录 B) | 336(2026-08-14) | **1000 passed**(2026-08-28 Windows 复核；测试零网络零密钥；既有 CI quality-fast 846 passed，三平台矩阵各 114 passed) |
+| 测试基线(附录 B) | 336(2026-08-14) | 当前权威基线见 §0.2：**1532 passed**（2026-08-30，macOS）；测试零网络零密钥，跨平台结果以 CI artifact 为准 |
 | 解耦扫描测试(NFR-M1 / AR-4) | 已移除待恢复 | ✅ 已重写恢复(`tests/test_decoupling.py`,2026-08-14,AST 扫描 + anti-wargaming 守卫) |
 
-> 权威架构描述见 [architecture.md](./architecture.md)(v0.3);迭代与验收见 `docs/iteration/v0.2.md` / `v0.3.md`;历史审计修复结论见 `docs/iteration/v0.3.md` §6.5。
+> 历史架构描述见 [architecture.md](./architecture.md)(当时为 v0.3);当前权威架构描述见 [architecture.md](./architecture.md)(v0.4)，迭代与验收见 `docs/iteration/v0.4.md`；历史审计修复结论见 `docs/iteration/v0.3.md` §6.5。
 
-### 现阶段工程治理状态(2026-08-28)
+### 历史工程治理状态(2026-08-28)
 
-- 全量离线测试：`uv run pytest -q`，**1000 passed**（2026-08-28，Windows）。
+- 本节历史全量离线测试为 **1000 passed**（2026-08-28，Windows）；当前全量基线见 §0.2，为 **1532 passed**（2026-08-30，macOS）。
 - 静态检查：Ruff 已接入，首阶段阻断语法错误、未定义名称和未使用局部变量。
  - 发布前检查：CI 已配置 release check，统一验证 wheel/sdist 构建、产物内容、版本、敏感文件、干净虚拟环境安装、fake provider CLI 和内建 resources，并上传机器可读报告与完整日志。
-- 跨平台检查：CI 已配置 Ubuntu、Windows、macOS 矩阵，统一使用离线测试集；本轮三平台各 114 passed，均无 failure/error/skip。
- - 覆盖率/性能：quality-fast 覆盖率观测值为 78.90%，硬下限为 77.9%；TUI 正式基线为 Linux/Python 3.12 四场景 JSON，性能暂只告警。
+- 跨平台检查：CI 已配置 Ubuntu、Windows、macOS 矩阵，统一使用离线测试集；当前三平台的具体结果以对应 CI artifact 为准。
+ - 覆盖率/性能：当前快速质量集覆盖率为 **83.61%**，硬下限为 77.9%；TUI schema v1 JSON 为历史基线，schema v2 候选由 CI 生成，性能暂只告警。
 
 ---
+
+## 0.2 当前代码树与 v0.4 验证状态(2026-08-30)
+
+> 本节覆盖并 supersede §0.1 中的当前性描述；§0.1、附录 B 及正文中的旧测试数量、旧覆盖率和旧 CI 结果均为带日期的历史快照，不作为当前验收口径。
+
+- v0.4 的 V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 管理、生命周期 Hook、工具与 Provider 稳定性。
+- 本地全量离线测试：`uv run pytest -q` 为 **1532 passed**（macOS，2026-08-30）；快速质量集为 **1391 passed，141 deselected**，覆盖率为 **83.61%**。
+- 规格与发布检查：`openspec validate --specs` 为 **20/20**；release check 已验证 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI。
+- 包版本仍为 `0.3.0`，v0.4.0 尚未创建版本标签；正式发布前需要更新版本元数据、变更说明并在发布提交上重新执行 CI。
+- TUI 性能：仓库内 [`docs/benchmarks/tui-baseline.json`](../benchmarks/tui-baseline.json) 保留 schema v1 历史基线；schema v2 的 Linux/Python 3.12 候选由 CI artifact 生成并经人工复核后再提交，性能当前仍为非阻塞告警。
 
 ## 1. 引言
 
@@ -110,10 +121,10 @@
 | 文档 | 说明 |
 |---|---|
 | `requirements-analysis.md`(v0.1,已归档) | 需求分析报告 v0.1(2026-08-10),内容已并入本文档;原文可从 git 历史(提交 5b137b4)恢复 |
-| [architecture.md](architecture.md) | 架构设计文档 v0.3.0(2026-08-28) |
+| [architecture.md](architecture.md) | 架构设计文档 v0.4(2026-08-30) |
 | 本文 §4.10~§4.11 | 功能表全面分析 / 竞品对标 GAP 的合并结果 |
-| [self-built-orchestration-blueprint.md](self-built-orchestration-blueprint.md) | 编排引擎自研决策与收益记录(第二步已落地,2026-08-28 校准) |
-| README.md / pyproject.toml / src/codeagent/ | 项目现状(2026-08-28 复核) |
+| [self-built-orchestration-blueprint.md](self-built-orchestration-blueprint.md) | 编排引擎自研决策与收益记录(第二步已落地,2026-08-30 校准) |
+| README.md / pyproject.toml / src/codeagent/ | 项目现状(2026-08-30 复核) |
 
 ---
 
@@ -413,7 +424,7 @@ Loop 双层(无状态循环 / 有状态 Agent)是另一条正交结构:**自研 
 | F-25 | 多智能体协作 | Teams 级;事件流天然适配 |
 | F-26 | Automations 定时任务 | 后台触发 agent |
 | F-27 | Web / HTTP API | 事件流订阅暴露;**2026-08-22 从 v0.3 移出(E12),远期按需重估** |
-| F-28 | Windows 验证 | ✅ 已闭环:bash 探测链适配 + fix-bash-test-assertions 断言修复(2026-08-13)+ WSL 转发器探测修复(2026-08-14);历史 2026-08-27 Windows 复核 938 passed，当前 2026-08-28 复核 **1000 passed**，CI 矩阵已覆盖三平台 |
+| F-28 | Windows 验证 | ✅ 已闭环:bash 探测链适配 + fix-bash-test-assertions 断言修复(2026-08-13)+ WSL 转发器探测修复(2026-08-14);Windows 历史复核已通过，CI 矩阵持续覆盖 Ubuntu/Windows/macOS，当前总体验收基线见 §0.2 |
 
 ### 4.11 GAP 差距分析结论(合并 GAP 分析 §4)
 
@@ -576,7 +587,7 @@ class AgentSession:
 | 编号 | 指标 | 要求 | 验收口径 | 状态 |
 |---|---|---|---|---|
 | NFR-M1 | 分层解耦 | 跨层 import 仅发生在 `app/container.py` / `app/main.py` | `tests/test_decoupling.py` AST 强制校验(2026-08-14 重写,70 项断言) | ✅ |
- | NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;最新本地质量集覆盖率 79.05%,全量测试 1000 passed | ⚠️(硬下限 77.9% 已接入，长期目标仍为 80%) |
+ | NFR-M2 | 测试覆盖 | 核心编排层 100% 离线可测,总体覆盖率 ≥ 80% | `FakeClient` 注入;当前本地质量集覆盖率 **83.61%**，全量测试 **1532 passed** | ✅（超过 80% 目标；CI 硬下限为 77.9%） |
 | NFR-M3 | 可替换性 | provider/工具/存储更换不动编排层 | 端口-适配器契约(`AgentLoopConfig` / `AgentClient`) | ✅ |
 | NFR-M4 | 代码规范 | 类型注解完整、中文 docstring | 分层职责单一,无循环 import | ✅ |
 | NFR-M5 | 变更影响面 | 新增 provider=1 文件;新增工具=0 处 core 改动 | AR-4 判据 | ✅ |
@@ -598,7 +609,7 @@ class AgentSession:
 |---|---|---|---|
 | NFR-C1 | Python | ≥ 3.12 | pyproject 声明;类型注解使用 `from __future__` |
 | NFR-C2 | 终端 | 支持真彩/ANSI 的现代终端 | TUI 恢复时生效 |
-| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ bash 含 Git for Windows / WSL 探测链;Windows 本地复核 1000 passed;Ubuntu/Windows/macOS CI 矩阵各 114 passed |
+| NFR-C3 | 平台 | macOS / Linux 优先 | ✅ bash 含 Git for Windows / WSL 探测链；Windows 复核已闭环，Ubuntu/Windows/macOS CI 矩阵持续覆盖，具体结果以 artifact 为准 |
 | NFR-C4 | 安装 | 无系统级污染 | uv 虚拟环境隔离 |
 
 ### 6.8 可观测性(NFR-O)
@@ -667,7 +678,7 @@ class AgentSession:
 | 工具安全边界 | 中 | 危险命令黑名单已落地;确认机制 + 文件边界白名单 v0.2 |
 | 长会话上下文膨胀 | 中 | compaction(v0.2)按手动→阈值渐进落地 |
 | 多平台验证成本 | 低~中 | ✅ 已闭环:bash 含 Git for Windows / WSL 探测链,环境差异经断言修复与 WSL 转发器排除(2026-08-14) |
-| 编排自研(第二步) | 中(暂缓) | 三未决问题回答后启动;消息归约先行 spike |
+| 编排自研(第二步) | 低 | ✅ 已落地；消息归约 spike、平台部署取舍和 JSONL 树形格式均已完成验证 |
 
 **结论**:核心依赖全部成熟稳定,架构文档已定稿,编排层契约(AgentLoopConfig / run_agent_loop / AgentSession)已落地(自研版)。**技术风险可控,无颠覆性难点。**
 
@@ -684,15 +695,16 @@ class AgentSession:
 | v0.1 | tools + core + session + container + 模型层自研(ModelRuntime) | ✅ 已落地 | headless CLI 可对话、可调用 read/write/edit/bash、事件流可订阅 |
 | v0.2 | store + manager + compaction + 安全确认 + undo + AGENTS.md + TUI 恢复 + 解耦测试恢复 | 2–3 周(较 v0.1 报告上调,新增 TUI 恢复/undo/AGENTS.md) | 会话可恢复、可切换、可压缩、可回滚 |
 | v0.3 | Skills + MCP + token 用量透明 + 会话树 | 阶段 1~4 已落地，阶段 6 验收已完成 | 扩展工具、用量可见、会话树导航 |
+| v0.4 | Runtime 可靠性 + 上下文治理 + TUI / Session + Hook + 工具/Provider 稳定性 | V4-01～V4-38 已完成实现；包版本仍为 0.3.0 | 发布准备、持续回归和证据维护 |
 
 **成本结构**:全部依赖开源,无新增付费;主要成本为人力时间 + 模型 API 按量付费(可选,fake 可离线开发);风险集中点:单人维护可持续性、社区获取、文档与示例投入。
 
 **投入优先级建议**:
-1. v0.2 会话完善(持久化/undo/安全确认):从"可用"到"好用";
-2. 恢复 TUI 交互形态与解耦扫描测试(当前缺口);
-3. 再补安全确认机制(bash 确认/白名单):上线前必须;
-4. 后做生态(skills/插件/Web):验证核心价值后再投入;
-5. 全程保持测试全绿作为回归底线(当前 4 项环境敏感失败需先回归确认)。
+1. 完成 v0.4 发布准备：更新版本元数据、发布说明和版本标签，并在发布提交上重新执行 release check 与 CI;
+2. 持续维护全量测试、覆盖率门禁、OpenSpec 校验和跨平台 CI 证据;
+3. 审查 TUI schema v2 候选基线，满足同平台、同 Python、同视口和同 fixture 条件后再更新正式基线;
+4. 继续保持工具安全、会话恢复、生命周期清理和 Provider 错误分类的回归覆盖;
+5. 只有在真实消费者出现后，再评估插件、轻量记忆、Web/HTTP、多智能体和自动化任务。
 
 ---
 
@@ -705,6 +717,7 @@ v0.1(✅ 已落地 2026-08-10): F-01~F-10   tools+core+session+container → 可
      后续演进(2026-08-13 现状): 模型客户端自研落地(ModelRuntime)、TUI 移除、headless 为当前唯一形态
 v0.2(2–3 周):                F-11~F-17b  持久化+undo+安全+AGENTS.md+TUI恢复 → 可恢复、可回滚、好用
 v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透明+fork+平台部署 → 生态成型
+v0.4(✅ 功能范围完成 2026-08-30): V4-01~V4-38 Runtime 可靠性+上下文治理+TUI/Session+Hook+工具/Provider 稳定性 → 发布准备
 远期:                         F-25~F-28   多智能体/自动化/Web/Windows 全验证
 (并行评估):                   编排自研第二步(蓝图存档,三未决问题回答后启动)
 ```
@@ -724,7 +737,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 |---|---|---|---|---|---|
 | R1 | 技术 | ~~编排自研中断 langgraph 平台部署入口~~ | 中 | 高 | ✅ 已消解(2026-08-14 定案:平台部署非刚需,F-24 改写为 HTTP/事件订阅入口 F-27);**2026-08-22 Web/HTTP 入口移出 v0.3(E12),远期按需重估** |
 | R2 | 技术 | 自研消息归约(工具结果按 tool_call_id 归属)写错 → 工具链断裂 | 中 | 高 | ✅ 已消解(2026-08-14 spike 5 场景双跑 diff ALL PASS) |
-| R3 | 技术 | Windows 平台 bash 行为差异(路径显示、PIPESTATUS) | 高 | 低~中 | ✅ 已闭环;2026-08-28 Windows 全量 **1000 passed**，Ubuntu/macOS 矩阵各 114 passed |
+| R3 | 技术 | Windows 平台 bash 行为差异(路径显示、PIPESTATUS) | 高 | 低~中 | ✅ 已闭环；Windows 复核通过，CI 持续覆盖 Ubuntu/Windows/macOS，具体结果以 artifact 为准 |
 | R4 | 质量 | 解耦扫描测试缺失,分层泄漏回归无法自动发现 | 中 | 中 | ✅ 已重写恢复(2026-08-14,AST 扫描 70+ 断言) |
 | R5 | 质量 | 文档与代码漂移(219 vs 304 vs 204 测试、TUI 状态、provider 数) | 已发生 | 中 | 以本文档为基线,版本更新时同步校准(附录 B 机制) |
 | R6 | 市场 | 无自研模型,受第三方 API 制约;头部放开多供应商则差异化压缩 | 中 | 中 | 强化"工程底座"定位;成本透明(F-22)对冲信任赤字 |
@@ -738,7 +751,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 
 ### 12.1 全局验收基线(每个版本发布前必须满足)
 
-1. **测试无失败**:`uv run pytest -q` 全量通过（2026-08-28 Windows 复核 **1000 passed**）;核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
+1. **测试无失败**:`uv run pytest -q` 当前全量基线为 **1532 passed**（2026-08-30，macOS）;核心编排层零网络、零密钥(`FakeClient`)可跑通全量;
 2. **解耦判据**:解耦扫描测试强制校验跨层 import 仅出现在 `app/container.py` / `app/main.py`(2026-08-14 已重写恢复);
 3. **离线可体验**:无任何 API Key 时以 `fake` provider 完整跑通"对话→工具调用→事件流"闭环;
 4. **配置隔离**:全部配置类 `extra="ignore"`,防回归测试通过;
@@ -754,7 +767,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 - ✅ TUI 增强:斜杠命令/模糊补全/选择器、Markdown 渲染与滚动交互已落地(T-44/T-45);`/login` 于 v0.3 追加;
 - ✅ 解耦扫描测试恢复并通过(AST 扫描,70+ 断言)。
 
-### 12.3 v0.3 验收(F-18~F-24)
+### 12.3 v0.3 验收(F-18~F-24，历史范围)
 
 - ✅ Skills 按需加载:`resources/skills/` 渐进式披露生效(2026-08-19 阶段 1 落地,590/590 基线);
 - 📝 插件两阶段(注册→绑定)已移出 v0.3，待生态成熟后重估;
@@ -763,7 +776,16 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 - ✅ 成本透明:token 用量归一、会话级落库与 `/status` / CLI 可见；费用估算按范围调整移出;
 - ✅ 分支会话 fork(v0.2)与会话树导航(v0.3)可用;Web/HTTP 入口(F-27)已于 2026-08-22 移出 v0.3(E12),远期按需重估。
 
-### 12.4 远期验收(F-25~F-28)
+### 12.4 v0.4 验收(V4-01~V4-38)
+
+- ✅ Runtime 可靠性、取消与资源清理、最终化契约及观察 Hook 已落地。
+- ✅ 上下文预算、自动压缩、工具结果治理、完整工具状态和恢复回归已落地。
+- ✅ TUI 提交反馈、输入响应性、状态栏、长会话渲染、性能 schema v2 和完整状态展示已落地。
+- ✅ Session 标题、搜索筛选、归档删除、恢复诊断和列表索引性能已落地。
+- ✅ 工具能力、资源保护、外部检索器 fallback、Provider 错误分类、安全模型重试和模型能力诊断已落地。
+- ✅ 当前代码树验证：全量测试 **1532 passed**、快速质量集 **1391 passed，141 deselected**、覆盖率 **83.61%**、OpenSpec **20/20**；包版本仍为 `0.3.0`，正式发布准备尚未完成。
+
+### 12.5 远期验收(F-25~F-28)
 
 - 多智能体协作原型;Automations 定时触发;Web/HTTP 订阅事件流。Windows 平台验证已闭环，后续仅需保持回归。
 
@@ -807,7 +829,7 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 | NFR-R1~R5 | 可靠性 | ✅ abort/steer/followup 落地;JSONL 持久化落地 | R §4.4 |
 | NFR-M1~M6 | 可维护性 | ✅ 解耦扫描测试已重写恢复(2026-08-14,70+ 断言) | R §4.5; C |
 | NFR-E1~E5 | 可扩展性 | 契约已落地;E4 事件流订阅已满足(F-27 入口 2026-08-22 移出 v0.3,E12) | R §4.6 |
-| NFR-C1~C4 | 兼容性 | ✅ Windows bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions);2026-08-28 Windows 全量回归 1000 passed，Ubuntu/Windows/macOS 矩阵各 114 passed | R §4.7; C |
+| NFR-C1~C4 | 兼容性 | ✅ Windows bash 测试已修复(标记文件法,2026-08-13 fix-bash-test-assertions);Windows 复核已闭环，Ubuntu/Windows/macOS 矩阵持续覆盖，具体结果以 CI artifact 为准 | R §4.7; C |
 | NFR-O1~O3 | 可观测性 | 11 类事件已落地 | R §4.8; C |
 
 ---
@@ -861,6 +883,14 @@ v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透�
 - package smoke：已生成 `codeagent-0.3.0-py3-none-any.whl` 与 sdist；安装后 smoke 的 stdout 不在 artifact 中，最终结果以 Job 日志为准。
  - TUI 性能：history / restore / stream / tool-output 四场景均已生成 JSON，并以 `docs/benchmarks/tui-baseline.json` 作为 Linux/Python 3.12 正式比较基线；当前性能仍为非阻塞告警。
 
+### B.5 2026-08-30 当前代码树基线
+
+- 本地 macOS 全量：`uv run pytest -q` **1532 passed**（35.50s）。
+- 本地快速质量集：**1391 passed，141 deselected**，覆盖率 **83.61%**；CI 覆盖率硬下限为 77.9%。
+- OpenSpec：`openspec validate --specs` **20/20**；release check 已验证 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI。
+- TUI 性能：schema v1 JSON 继续作为仓库内历史基线；schema v2 候选由 CI artifact 生成并经人工复核，尚未替换正式基线。
+- 发布状态：代码功能已覆盖 v0.4 的 V4-01～V4-38，但包版本仍为 `0.3.0`，v0.4.0 尚未创建标签。
+
 ---
 
-*本文档合并自 docs/design/ 四份文档并经 2026-08-13 代码实测校准(2026-08-21 追加 §0.1 勘误与附录 B.3 复核);对原文的引用以编号(R/A/G/B/C)标注于附录 A。架构现状以 §0.1 勘误 + architecture.md(v0.3) 为准。*
+*本文档合并自 docs/design/ 四份文档并经 2026-08-13 代码实测校准(2026-08-21 追加 §0.1 勘误与附录 B.3 复核，2026-08-30 追加 §0.2 与附录 B.5);对原文的引用以编号(R/A/G/B/C)标注于附录 A。架构现状以 §0.2 + architecture.md(v0.4) 为准。*

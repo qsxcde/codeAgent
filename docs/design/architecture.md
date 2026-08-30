@@ -1,8 +1,8 @@
 # codeagent 架构设计文档
 
-> 版本: v0.3(阶段 1~4 落地后校准)
+> 版本: v0.4(当前功能范围完成后的架构校准)
 > 适用范围: 自研编排(2026-08-14 起,已弃用 langgraph/langchain)的 Code Agent 项目
-> 更新日期: 2026-08-30(校准至当前树:自研 ReAct 主循环、JSONL 树形会话、安全确认环、Skills / MCP / token 用量 / 会话树、测试分层与 CI 质量门禁)
+> 更新日期: 2026-08-30(校准至当前树:Runtime 可靠性、上下文治理、TUI / Session 交互、生命周期 Hook、工具与 Provider 诊断、测试分层与 CI 质量门禁)
 > 事实来源: 本文描述当前代码树;演进决策见 [self-built-orchestration-blueprint.md](./self-built-orchestration-blueprint.md)(决策与收益记录)、迭代记录 `docs/iteration/v0.1.md` / `v0.2.md` / `v0.3.md` / `v0.4.md`
 
 ## 1. 背景与目标
@@ -37,7 +37,7 @@
 - 工具链:`uv` + `src` 布局,Python 3.12。
 - 依赖:`httpx`、`mcp`、`pydantic`、`pydantic-settings`、`pyyaml`、`textual`;dev 依赖 `pytest`。**无 langchain/langgraph**。
 - 入口:`pyproject.toml` 中 `codeagent = "codeagent.app.main:main"`。
-- **已完成(v0.1~v0.3 阶段 1~4)**:
+- **已完成(v0.1~v0.4 功能范围)**:
 - 密钥外置:固定目录 `~/.codeagent/.env`(首次启动幂等生成模板),**不读取 CWD 下 `.env`**(安全决策 H10);全局 `Settings` 保存 provider 选择和工具资源限制，工具资源由组合根解析为不可变 `ToolResourceLimits`。
 - `ai/` 层:模型基础设施(provider / catalog / model / transport / errors),**不负责应用装配**;支持 6 个真实 provider(deepseek / openai / qwen / glm / kimi / minimax)+ 离线 `fake`;模型客户端自研(httpx + 自研 SSE 解析,thinking / usage 全量透传);`errors.py` 统一分类网络、超时、限流、认证、参数、服务端和未知失败并提供脱敏诊断;provider/model/effort 选择位于 `app/composition/model/selection.py`,适配自研循环的 `ChatModelPort` 在组合根。
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;`ToolResourceLimits` 在组合根统一注入并发、超时、输出字节/行、预览内存和清理等待上限；`grep`/`find` 只把 `rg`/`fd` 作为不经 shell 的可选加速，失败时回退纯 Python；bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security/` 提供执行前安全分类器(deny > ask > allow)，`tools/capabilities.py` 在组合根生成只读环境能力快照。
@@ -55,7 +55,7 @@
  - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1532 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
  - TUI 性能验收:`benchmark/` 使用 schema v2 的固定离线 fixture 测量提交首帧、首 token、帧 p50/p95、控制延迟、峰值 Python 分配和协调器的 dropped/over-budget 计数；`compare_benchmark.py` 只在 schema、平台、Python、视口和 fixture 一致时比较，`update_tui_baseline.py` 负责生成受约束的 Linux/Python 3.12 候选基线。
 
-**v0.3.0 验收与远期**:阶段 1~4 已落地，阶段 6 全量验收已完成。插件系统、轻量记忆及 Web/HTTP 事件流订阅均已移出 v0.3，待出现真实消费者或价值域扩大时重估。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；覆盖率与性能硬阈值仍待稳定 CI 数据后评估。
+**v0.4 当前状态与远期**:V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 管理、生命周期 Hook、工具与 Provider 稳定性；发布包版本仍为 `0.3.0`，v0.4.0 尚未打版本标签。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；TUI schema v2 的正式 Linux/Python 3.12 基线仍按 CI artifact 与人工复核流程推进，性能暂保持非阻塞。插件系统、轻量记忆及 Web/HTTP 事件流订阅继续作为远期方向，待出现真实消费者或价值域扩大时重估。
 
 ## 4. 总体结构
 
@@ -402,14 +402,15 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | **v0.1 最小可跑** | `config + container + ai + tools + core + session + app(main/tui)` | CLI/TUI 可对话、可调用七个工具(当时集;v0.3 加 skill 后为八工具),事件流可订阅(历史记录) |
 | **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
 | **v0.3 生态成型** | Skills(✅)+ MCP(✅)+ 成本透明(✅)+ 会话树 UI(✅);插件 / 轻量记忆 / Web 经评估移出(见 E5/E4/E12) | 扩展生态、体验差异、平台导航 |
+| **v0.4 Runtime 产品化** | Runtime 可靠性、上下文治理、TUI / Session 交互、生命周期 Hook、工具与 Provider 稳定性 | V4-01～V4-38 已完成实现；发布版本仍待 `0.4.0` 元数据与标签 |
 
- v0.3.0 当前进度:阶段 1~4 已全部落地(Skills / MCP / token 用量透明 / 会话树);阶段 5 Web/HTTP 已移出(E12);阶段 6 全量验收已完成(T-64)。2026-08-28 复核结果:`uv run pytest -q` **1148 passed**、`openspec validate --specs` **13 passed**、`git diff --check` 通过。既有 CI artifact 中 `quality-fast` 为 846 passed，三平台矩阵各 114 passed；本地最新质量集已覆盖应用包布局与旧入口删除契约，release check 和 Linux/Python 3.12 TUI 四场景正式基线已固化，性能暂不启用硬阈值。
+ v0.4 当前进度:V4-01～V4-38 已全部落地；2026-08-30 复核结果为 `uv run pytest -q` **1532 passed**、快速质量集 **1391 passed，141 deselected**、覆盖率 **83.61%**、`openspec validate --specs` **20/20**。release check 已验证 wheel/sdist、干净安装、资源和 fake provider CLI；仓库内 TUI schema v1 基线保留为历史数据，schema v2 候选由 CI 生成并人工复核，性能暂不启用硬阈值。
 
 ## 12. 参考
 
 - 编排自研决策与收益:[`self-built-orchestration-blueprint.md`](./self-built-orchestration-blueprint.md)
 - 需求基线:[`requirements-analysis.md`](./requirements-analysis.md)(FR / NFR / F-xx 编号出处)
-- 迭代记录:[`docs/iteration/v0.1.md`](../iteration/v0.1.md) / [`v0.2.md`](../iteration/v0.2.md) / [`v0.3.md`](../iteration/v0.3.md)(权威)
+- 迭代记录:[`docs/iteration/v0.1.md`](../iteration/v0.1.md) / [`v0.2.md`](../iteration/v0.2.md) / [`v0.3.md`](../iteration/v0.3.md) / [`v0.4.md`](../iteration/v0.4.md)(权威)
 - 历史审计结论:2026-08-21 文档漂移、安全与测试基线审计的修复结论已记录在 `docs/iteration/v0.3.md` §6.5；原始审计文件不在当前工作树中。
 - [earendil-works/pi](https://github.com/earendil-works/pi) — Pi Agent SDK(三层协作 / 双层 loop / 事件驱动 / 会话即状态)
 - [learning-pi-agent](https://github.com/yamsfeer/learning-pi-agent) — 架构深度笔记

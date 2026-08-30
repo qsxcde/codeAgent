@@ -6,7 +6,7 @@
 
 - `uv run pytest -q`：**1532 passed**（2026-08-30，macOS）。测试数量变化来自测试拆分、边界契约补充、工具生命周期状态与事件归约回归、TUI 性能指标/基线契约测试、会话标题重启/分叉回归、会话查询双后端/TUI 回归、归档删除安全回归、恢复诊断回归、会话列表索引失效回归、生命周期 Hook 契约、异常隔离、ContextTransformer 契约、RuntimeExtensions 装配、扩展契约、工具能力探测、工具资源保护、外部检索器 fallback、Provider 错误分类、安全模型重试和模型能力诊断回归。
 - `test-foundation-stability` 与 `test-structure-coverage` 均已归档；当前测试结构和 `last_activity_at` 跨层契约已落地。
-- 既有 CI artifact：`quality-fast` 为 846 passed；Ubuntu、Windows、macOS 矩阵各为 114 passed，均无 failure/error/skip；本地最新质量集为 1037 passed，硬下限为 77.9%。
+- 本地最新快速质量集为 `1391 passed，141 deselected`，覆盖率为 **83.61%**，硬下限为 77.9%；跨平台测试和 CI 质量结果以对应 GitHub Actions artifact 为准。
 - package smoke 已升级为可复跑的 release check：同时检查 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI，并输出 `release-check.json` 及完整日志。
 - TUI 性能五个标准场景均生成 JSON；仓库内 [`docs/benchmarks/tui-baseline.json`](benchmarks/tui-baseline.json) 仍是 schema v1 历史基线，不能直接与 v2 报告比较。Linux/Python 3.12 的 v2 候选基线由 CI artifact 和 `scripts/update_tui_baseline.py` 生成，历史观测详见 [`docs/benchmarks/tui-ci-2026-08-28.md`](benchmarks/tui-ci-2026-08-28.md)。
 

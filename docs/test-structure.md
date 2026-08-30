@@ -2,7 +2,7 @@
 
 ## 当前基线
 
-`test-foundation-stability` 完成后，测试按源码层级组织。经过拆分、契约集中和异步稳定性改造，2026-08-28 当前全量测试为 **1000 passed**。`test-foundation-stability` 与 `test-structure-coverage` 均已归档；大型文件的现状和本变更目标如下：
+`test-foundation-stability` 完成后，测试按源码层级组织。经过拆分、契约集中和异步稳定性改造，2026-08-30 当前全量测试为 **1532 passed**。`test-foundation-stability` 与 `test-structure-coverage` 均已归档；大型文件的现状和本变更目标如下：
 
 | 当前文件 | 当前职责 | 目标拆分 |
 | --- | --- | --- |

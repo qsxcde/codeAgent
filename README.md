@@ -2,9 +2,9 @@
 
 基于**自研编排**(2026-08-14 起,已弃用 langgraph/langchain)的编程 Agent,采用 Pi-Agent 的设计哲学(三层协作 / 双层 loop / 事件驱动 / 会话即状态),配合端口-适配器(hexagonal)做横切解耦。
 
-当前 **v0.3.0 已完成验收**:阶段 1~4（Skills、MCP、token 用量透明、会话树 UI）已落地，阶段 6 全量验收已闭环。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
+当前 **v0.4 功能范围已完成实现，尚未发布**：V4-01～V4-38 已覆盖 Runtime 可靠性、上下文治理、TUI 交互、会话管理、生命周期 Hook、工具与 Provider 稳定性。发布包版本仍为 `0.3.0`，尚未创建 v0.4.0 标签。模型配置层(`ai/`)、自研 Agent 编排(`core/`)、工具层(`tools/`)、会话层(`session/`)与终端交互层(`app/tui/`)均可用；CLI 可对话、可调用 8 个内建工具与按配置加载的 MCP 工具，事件流可订阅，会话可恢复 / 切换 / 压缩 / 分叉 / 树形导航。
 
-当前验收基线（2026-08-30）：`uv run pytest -q` **1466 passed**（macOS，33.69s）。质量集、覆盖率和跨平台结果按 CI 分层报告维护；release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查，TUI 性能正式基线位于 `docs/benchmarks/tui-baseline.json`。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
+当前验收基线（2026-08-30）：`uv run pytest -q` **1532 passed**（macOS，35.50s）；快速质量集为 **1391 passed，141 deselected**，覆盖率 **83.61%**。`openspec validate --specs` 为 **20/20**，release check 已固化 wheel/sdist、干净安装、资源和 fake provider CLI 检查；仓库内 `docs/benchmarks/tui-baseline.json` 仍是 schema v1 历史基线，schema v2 候选基线由 CI 生成并经人工复核后再更新。Ruff 首阶段只检查阻塞级正确性问题，不把历史风格债务混入本次变更。
 
 ## 项目介绍
 
@@ -17,7 +17,7 @@
 
 设计参考:[earendil-works/pi](https://github.com/earendil-works/pi) 的"三层协作 / 双层 loop / 事件驱动 / 会话即状态"思想。架构设计见 [`docs/design/architecture.md`](docs/design/architecture.md),需求基线见 [`docs/design/requirements-analysis.md`](docs/design/requirements-analysis.md),迭代记录见 [`docs/iteration/v0.1.md`](docs/iteration/v0.1.md) / [`v0.2.md`](docs/iteration/v0.2.md) / [`v0.3.md`](docs/iteration/v0.3.md) / [`v0.4.md`](docs/iteration/v0.4.md)。
 
-### 当前能力(v0.3.0)
+### 当前能力(v0.4 实现范围，发布版本仍为 v0.3.0)
 
 - **交互式 TUI**(`--tui` 进入):Codex 风格终端界面——无边框多行 composer(Enter 提交 / Shift+Enter 换行,1~4 行自动增高)、全宽用户消息块、圆点前缀的流式 Agent 正文、隐藏原始思维链与低频"思考中"提示、人类可读的工具摘要及可展开 edit/write 意图差异、model/effort/cwd 状态栏、斜杠命令体系(含 `/provider` `/model` `/effort` `/login` `/skills` `/mcp` `/sessions` `/sessions search` `/sessions filter` `/sessions archive` `/sessions archived` `/sessions recovery` `/sessions delete ... confirm` `/tree` `/tools` `/status` `/quit`)与模糊补全 / 选择器、Markdown 渲染、Esc 运行中打断 / 空闲退出并打印完整文档。
 - **Headless CLI**(默认形态):`--prompt` 一次性输入或 stdin 逐行读取,事件聚合输出最终回复。
@@ -194,7 +194,7 @@ codeagent/
     │
     └── resources/               # [资源层] 内建 skills / prompts（Skills 已启用）
 
-tests/                          # 按行为域分包，1466 passed（2026-08-30）
+tests/                          # 按行为域分包，1532 passed（2026-08-30）
 ├── conftest.py / fixtures/     #   marker、隔离环境和共享离线夹具
 ├── contracts/                  #   跨实现公共契约与分层边界
 ├── ai/ / core/ / mcp/          #   模型、编排和 MCP 行为
@@ -211,9 +211,9 @@ tests/                          # 按行为域分包，1466 passed（2026-08-30�
 
 ## 当前状态与后续
 
-v0.3.0 已完成 Skills、MCP、token 用量透明、会话树导航及全量验收，详见 [`docs/iteration/v0.3.md`](docs/iteration/v0.3.md)。当前未实现且已明确移出本版本的能力包括：费用估算、Web / HTTP 事件订阅、轻量记忆、插件系统、多智能体和自动化任务；它们在出现真实需求后重新评估。
+v0.4 功能范围已完成实现，详见 [`docs/iteration/v0.4.md`](docs/iteration/v0.4.md)；发布包版本仍为 `0.3.0`，正式发布前还需要更新版本元数据、变更日志和发布标签。当前未实现且已移出本版本的能力包括：费用估算、Web / HTTP 事件订阅、轻量记忆、插件系统、多智能体和自动化任务；它们在出现真实需求后重新评估。
 
-工程后续优先级是完成 CI 性能基线和阈值决策、落实 Hook 装配边界，再推进工具和 Provider 稳定性。ContextTransformer 已具备输入输出隔离、超时、取消和失败诊断契约；性能基线在数据稳定前保持非阻塞。
+工程后续优先级是完成 v0.4 发布准备、持续维护 CI 证据和审查 TUI schema v2 基线候选。ContextTransformer、生命周期 Hook、工具资源保护、Provider 错误分类和模型能力诊断契约均已落地；性能报告在正式 Linux/Python 3.12 v2 基线提交前保持非阻塞。
 
 ## 参考
 

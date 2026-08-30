@@ -5,16 +5,26 @@
 
 ## [Unreleased]
 
-### Planned
+### v0.4 implementation status
 
-- Hooks 与任务完成前的验证门禁
+- v0.4 的 V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI 交互、会话管理、生命周期 Hook、工具与 Provider 稳定性。
+- 发布包版本仍为 `0.3.0`；v0.4.0 的版本元数据、标签和正式发布说明尚未建立。
+
+### Added
+
+- Runtime 生命周期、取消、资源清理和最终化契约，以及可观测 Hook 和 Hook 异常隔离。
+- 上下文预算预检、自动压缩、恢复回归、工具结果治理和完整工具状态诊断。
+- TUI 长会话渲染、提交即时反馈、状态栏诊断和交互响应性回归。
+- 会话标题、搜索筛选、归档删除、恢复诊断和列表索引性能能力。
+- 工具能力探测、资源保护、外部检索器 fallback、Provider 错误分类、安全模型重试和模型能力诊断。
 
 ### Engineering updates
 
-- 测试按行为域拆分并集中公共契约，当前全量验证为 `1000 passed`（2026-08-28）；补齐会话 `last_activity_at` 跨层契约。
+- 测试按行为域拆分并集中公共契约；当前全量验证为 `1532 passed`（2026-08-30，macOS），快速质量集为 `1391 passed，141 deselected`，覆盖率为 `83.61%`。
 - CI 增加快速质量检查、Ubuntu/Windows/macOS 离线测试矩阵、release check 和 TUI 性能 artifact。
 - 增加 pytest-cov、Ruff 正确性检查、安装后 fake provider CLI 验证、产物完整性报告和性能相对变化报告。
-- 覆盖率硬下限固化为 77.9%；TUI 性能基线固化为 Linux/Python 3.12 四场景 JSON，当前继续告警而不阻断普通 PR。
+- `openspec validate --specs` 当前为 `20/20`；release check 已验证 wheel/sdist、版本、资源、干净安装和 fake provider CLI。
+- 覆盖率硬下限固化为 77.9%；仓库内 TUI schema v1 JSON 作为历史基线保留，Linux/Python 3.12 的 schema v2 候选由 CI 生成并经人工复核，当前继续告警而不阻断普通 PR。
 
 ## [0.3.0] - 2026-08-22
 
