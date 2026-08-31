@@ -17,3 +17,23 @@ wheels/
 
 .uv-cache
 .pytest_cache
+
+# Local agent state
+.workbuddy/
+.codex/environments/
+
+# Coverage and tooling reports
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pyright/
+.tox/
+.nox/
+
+# Local files and databases
+.DS_Store
+*.log
+*.sqlite
+*.sqlite3
+*.db
