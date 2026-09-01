@@ -30,6 +30,12 @@ from .runner_results import (
     rejected_result,
 )
 from .context import validate_context_items
+from .event_diagnostics import (
+    make_finished_event,
+    make_queued_event,
+    publish_event,
+)
+from .lifecycle import commit_terminal, mark_queued
 from .profiles import profile_for
 
 ChildSessionFactory = Callable[[SubagentRequest], Any]
@@ -76,34 +82,43 @@ class SerialSubagentRunner:
         active.budget = effective_budget(request.budget)
         self._active[request.delegation_id] = active
         result: SubagentResult | None = None
+        re_raise_cancelled = False
+        mark_queued(active)
         try:
-            try:
-                timeout_scope = asyncio.timeout(active.budget.timeout_seconds)
-                async with timeout_scope:
-                    result = await run_active(
-                        self._lock,
-                        self._child_session_factory,
-                        active,
-                        on_event,
-                    )
-            except asyncio.TimeoutError:
-                if not timeout_scope.expired():
-                    raise
-                active.cancel_requested = True
-                active.cancel_reason = SubagentReasonCode.TIMEOUT
-                await cancel_session(active, timeout=self._cleanup_timeout)
-                result = cancellation_result(active)
+            await publish_event(on_event, make_queued_event(active), active)
+            timeout_scope = asyncio.timeout(active.budget.timeout_seconds)
+            async with timeout_scope:
+                result = await run_active(
+                    self._lock,
+                    self._child_session_factory,
+                    active,
+                    on_event,
+                )
+        except asyncio.TimeoutError:
+            if not timeout_scope.expired():
+                raise
+            active.cancel_requested = True
+            active.cancel_reason = SubagentReasonCode.TIMEOUT
+            await cancel_session(active, timeout=self._cleanup_timeout)
+            result = cancellation_result(active)
         except asyncio.CancelledError:
             externally_cancelled = not active.cancel_requested
             active.cancel_requested = True
             active.cancel_reason = active.cancel_reason or SubagentReasonCode.PARENT_CANCELLED
             await cancel_session(active, timeout=self._cleanup_timeout)
-            if externally_cancelled:
-                raise
             result = cancellation_result(active)
+            re_raise_cancelled = externally_cancelled
+        except Exception as exc:  # noqa: BLE001 - normalize runner failures
+            result = failure_result(
+                active,
+                SubagentStatus.FAILED,
+                SubagentReasonCode.EXECUTION_FAILED,
+                SubagentFailurePhase.RUNNING,
+                exc,
+            )
         finally:
+            active.event_forwarding_closed = True
             await close_active(active, timeout=self._cleanup_timeout)
-            self._active.pop(request.delegation_id, None)
         if result is None:  # pragma: no cover - defensive terminal fallback
             result = failure_result(
                 active,
@@ -112,7 +127,15 @@ class SerialSubagentRunner:
                 SubagentFailurePhase.RUNNING,
                 RuntimeError("子 Agent 没有产生终态结果"),
             )
-        return finalize_result(result, active)
+        result = finalize_result(result, active)
+        result = commit_terminal(active, result)
+        try:
+            await publish_event(on_event, make_finished_event(active, result), active)
+        finally:
+            self._active.pop(request.delegation_id, None)
+        if re_raise_cancelled:
+            raise asyncio.CancelledError
+        return result
 
     async def cancel(self, delegation_id: str) -> bool:
         active = self._active.get(delegation_id)

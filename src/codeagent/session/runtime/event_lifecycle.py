@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.events import (
+    SUBAGENT_EVENT_TYPES,
+    AgentEvent,
+    EventType,
+)
 from codeagent.session.runtime.event_mapper import EventMapper
 from codeagent.session.runtime.state import RunPhase
 
@@ -16,11 +20,20 @@ class RuntimeEventMixin:
         if self._state.phase is RunPhase.IDLE or self._state.run_id != run_id:
             return
         for item in EventMapper.map_agent_event(event):
-            if item.run_id is not None and item.run_id != run_id:
+            is_subagent_event = self._is_correlated_subagent_event(item, run_id)
+            if item.run_id is not None and item.run_id != run_id and not is_subagent_event:
                 continue
             metadata = dict(item.metadata or {})
-            metadata.setdefault("run_id", run_id)
+            metadata.setdefault("run_id", item.run_id or run_id)
+            if is_subagent_event and item.parent_sequence is None:
+                parent_sequence = self._state.next_sequence()
+                metadata["parent_sequence"] = parent_sequence
+                item = replace(item, parent_sequence=parent_sequence)
             item = replace(item, metadata=metadata, run_id=item.run_id or run_id)
+            if is_subagent_event:
+                if self._event_handler is not None:
+                    self._event_handler(item, run_id)
+                continue
             self.observe_event(item)
             metadata = dict(item.metadata or {})
             metadata.setdefault("phase", self.phase.value)
@@ -30,6 +43,14 @@ class RuntimeEventMixin:
                 continue
             if self._event_handler is not None:
                 self._event_handler(item, run_id)
+
+    @staticmethod
+    def _is_correlated_subagent_event(event: AgentEvent, parent_run_id: str) -> bool:
+        if event.type not in SUBAGENT_EVENT_TYPES:
+            return False
+        metadata = dict(event.metadata or {})
+        linked_parent = event.parent_run_id or metadata.get("parent_run_id")
+        return str(linked_parent or "") == str(parent_run_id)
 
     @staticmethod
     def _map_agent_event(event: AgentEvent) -> list[AgentEvent]:

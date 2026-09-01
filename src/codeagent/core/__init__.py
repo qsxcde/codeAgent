@@ -40,7 +40,7 @@ from codeagent.core.contracts.errors import (
     SubagentRequestError,
     SubagentStateError,
 )
-from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.events import SUBAGENT_EVENT_TYPES, AgentEvent, EventType
 from codeagent.core.contracts.hooks import (
     HookDiagnostic,
     HookFailureStage,
@@ -106,6 +106,7 @@ from codeagent.core.orchestration.config import AgentLoopConfig
 
 __all__ = [
     "AgentEvent",
+    "SUBAGENT_EVENT_TYPES",
     "HookPhase",
     "HookScope",
     "HookDiagnostic",

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Any
 
 from codeagent.core.contracts.events import AgentEvent, EventType
@@ -33,6 +32,12 @@ from .runner_results import (
     failure_result,
 )
 from .context import render_subagent_prompt
+from .event_diagnostics import (
+    make_progress_event,
+    make_started_event,
+    publish_event,
+)
+from .lifecycle import mark_running, mark_starting, observe_child_event
 from .result_extraction import extract_child_facts
 
 ChildSessionFactory = Callable[[SubagentRequest], Any]
@@ -48,6 +53,7 @@ async def run_active(
     async with lock:
         if active.cancel_requested:
             return cancellation_result(active)
+        mark_starting(active)
         started = await _start_child(child_session_factory, active, on_event)
         if isinstance(started, SubagentResult):
             return started
@@ -76,6 +82,8 @@ async def _start_child(
         )
     active.session = child
     active.unsubscribe = subscribe_child(active, on_event)
+    mark_running(active)
+    await publish_event(on_event, make_started_event(active), active)
     active.task = asyncio.create_task(
         child.run(
             render_subagent_prompt(
@@ -88,6 +96,7 @@ async def _start_child(
     )
     await asyncio.sleep(0)
     active.child_run_id = child_run_id(child) or active.child_run_id
+    mark_running(active)
     return child
 
 
@@ -158,38 +167,22 @@ def subscribe_child(
         return None
 
     def handle(event: AgentEvent) -> None:
+        if not observe_child_event(active, event):
+            return
         event_child_run_id = getattr(event, "run_id", None) or child_run_id(active.session)
         if event_child_run_id:
             active.child_run_id = event_child_run_id
         observe_budget(active, event)
         if on_event is None:
             return
-        metadata = dict(getattr(event, "metadata", {}) or {})
-        metadata.update(
-            {
-                "delegation_id": active.request.delegation_id,
-                "parent_run_id": active.request.parent_run_id,
-                "child_run_id": event_child_run_id,
-                "attempt_id": active.attempt_id,
-                "depth": active.request.depth,
-            }
-        )
-        enriched = replace(
-            event,
-            metadata=metadata,
-            delegation_id=active.request.delegation_id,
-            parent_run_id=active.request.parent_run_id,
-            child_run_id=event_child_run_id,
-            attempt_id=active.attempt_id,
-            depth=active.request.depth,
-        )
+        enriched = make_progress_event(active, event)
         try:
             result = on_event(enriched)
         except Exception as exc:  # noqa: BLE001 - observers are isolated
             record_diagnostic(active, diagnostic("子事件回调", exc))
         else:
             if inspect.isawaitable(result):
-                task = asyncio.create_task(observe_event(result, active))
+                task = asyncio.create_task(_observe_child_callback(result, active))
                 active.event_tasks.add(task)
                 task.add_done_callback(active.event_tasks.discard)
 
@@ -243,6 +236,10 @@ def request_budget_cancel(active: ActiveDelegation, detail: str) -> None:
     task = active.task
     if task is not None and not task.done():
         task.cancel()
+
+
+async def _observe_child_callback(result: Any, active: ActiveDelegation) -> None:
+    await observe_event(result, active)
 
 
 __all__ = [

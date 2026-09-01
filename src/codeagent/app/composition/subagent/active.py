@@ -8,7 +8,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from codeagent.core.contracts.subagents import SubagentReasonCode, SubagentRequest
+from codeagent.core.contracts.subagent_state import SubagentState
+from codeagent.core.contracts.subagents import (
+    SubagentReasonCode,
+    SubagentRequest,
+    SubagentResult,
+)
 
 from .budget import EffectiveSubagentBudget
 from .runner_support import DEFAULT_CLEANUP_TIMEOUT
@@ -24,6 +29,7 @@ class ActiveDelegation:
     task: asyncio.Task[Any] | None = None
     execution_task: asyncio.Task[Any] | None = None
     child_run_id: str | None = None
+    child_sequence: int | None = None
     cancel_requested: bool = False
     cancel_reason: SubagentReasonCode | None = None
     unsubscribe: Callable[[], None] | None = None
@@ -37,6 +43,16 @@ class ActiveDelegation:
     turn_count: int = 0
     tool_call_count: int = 0
     seen_tool_call_ids: set[str] = field(default_factory=set)
+    state: SubagentState = field(init=False)
+    event_forwarding_closed: bool = False
+
+    def __post_init__(self) -> None:
+        self.state = SubagentState(self.request)
+
+    @property
+    def terminal_result(self) -> SubagentResult | None:
+        """Return the result committed by the delegation state machine."""
+        return self.state.terminal_result
 
 
 __all__ = ["ActiveDelegation"]

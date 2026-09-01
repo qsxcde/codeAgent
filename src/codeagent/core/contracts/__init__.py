@@ -27,6 +27,7 @@ from .subagents import (
     SubagentUsage,
 )
 from .subagent_state import SubagentState
+from .events import SUBAGENT_EVENT_TYPES, AgentEvent, EventType
 
 __all__ = [
     "OutputCompleteness",
@@ -54,5 +55,8 @@ __all__ = [
     "SubagentRunner",
     "SubagentState",
     "SubagentStatus",
+    "AgentEvent",
+    "EventType",
+    "SUBAGENT_EVENT_TYPES",
     "SubagentUsage",
 ]

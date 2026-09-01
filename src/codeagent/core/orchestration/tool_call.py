@@ -8,7 +8,11 @@ from typing import Any
 from codeagent.core.support.awaiting import await_if_needed
 from codeagent.core.context.model import AgentContext
 from codeagent.core.contracts.errors import AgentRuntimeError
-from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.events import (
+    SUBAGENT_EVENT_TYPES,
+    AgentEvent,
+    EventType,
+)
 from codeagent.core.contracts.messages import ToolCall, ToolExecutionStatus, ToolResult
 from codeagent.core.contracts.ports import AgentTool, ToolDecision
 from codeagent.core.orchestration.config import AgentLoopConfig
@@ -92,6 +96,9 @@ async def _execute_tool(
         raise AgentRuntimeError("工具运行时未配置")
 
     async def on_update(update: Any) -> None:
+        if isinstance(update, AgentEvent) and update.type in SUBAGENT_EVENT_TYPES:
+            emit(update)
+            return
         elapsed_ms = 0
         if isinstance(update, dict) and update.get("elapsed_ms") is not None:
             try:

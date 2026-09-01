@@ -51,6 +51,20 @@ class EventType:
     RESTORE_FINISHED = "restore_finished"              # 会话恢复结束
     CANCELLING = "cancelling"                          # 用户请求取消
     RETRY_STARTED = "retry_started"                    # 失败后安全重试
+    SUBAGENT_QUEUED = "subagent_queued"                # 子 Agent 进入等待队列
+    SUBAGENT_STARTED = "subagent_started"              # 子 Agent 已建立执行边界
+    SUBAGENT_PROGRESS = "subagent_progress"            # 子 Agent 的有限进度摘要
+    SUBAGENT_FINISHED = "subagent_finished"            # 子 Agent 唯一终态事件
+
+
+SUBAGENT_EVENT_TYPES = frozenset(
+    {
+        EventType.SUBAGENT_QUEUED,
+        EventType.SUBAGENT_STARTED,
+        EventType.SUBAGENT_PROGRESS,
+        EventType.SUBAGENT_FINISHED,
+    }
+)
 
 
 @dataclass
@@ -86,6 +100,9 @@ class AgentEvent:
     depth: int | None = None
     subagent_status: str | None = None
     child_phase: str | None = None
+    child_event_type: str | None = None
+    child_sequence: int | None = None
+    parent_sequence: int | None = None
 
     def __post_init__(self) -> None:
         """Keep new typed correlation fields readable through legacy metadata."""
@@ -98,6 +115,9 @@ class AgentEvent:
             "depth",
             "subagent_status",
             "child_phase",
+            "child_event_type",
+            "child_sequence",
+            "parent_sequence",
         )
         for name in fields:
             value = getattr(self, name)
