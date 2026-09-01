@@ -55,7 +55,7 @@
  - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1532 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
  - TUI 性能验收:`benchmark/` 使用 schema v2 的固定离线 fixture 测量提交首帧、首 token、帧 p50/p95、控制延迟、峰值 Python 分配和协调器的 dropped/over-budget 计数；`compare_benchmark.py` 只在 schema、平台、Python、视口和 fixture 一致时比较，`update_tui_baseline.py` 负责生成受约束的 Linux/Python 3.12 候选基线。
 
-**v0.4 当前状态与远期**:V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 管理、生命周期 Hook、工具与 Provider 稳定性；发布包版本已统一为 `0.4.0`，v0.4.0 标签待最终发布提交创建。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；TUI schema v2 的正式 Linux/Python 3.12 基线仍按 CI artifact 与人工复核流程推进，性能暂保持非阻塞。插件系统、轻量记忆及 Web/HTTP 事件流订阅继续作为远期方向，待出现真实消费者或价值域扩大时重估。
+**v0.4 当前状态与远期**:V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 管理、生命周期 Hook、工具与 Provider 稳定性；发布包版本已统一为 `0.4.0`，annotated `v0.4.0` 标签已固定指向纯 v0.4 提交 `b981534`。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；TUI schema v2 的正式 Linux/Python 3.12 基线仍按 CI artifact 与人工复核流程推进，性能暂保持非阻塞。Subagent 是当前 v0.5 的实现方向，插件系统、轻量记忆及 Web/HTTP 事件流订阅继续作为远期方向，待出现真实消费者或价值域扩大时重估。
 
 ## 4. 总体结构
 
@@ -402,7 +402,7 @@ TUI:    app/main.py --tui → create_tui_app() → TuiApp.start()
 | **v0.1 最小可跑** | `config + container + ai + tools + core + session + app(main/tui)` | CLI/TUI 可对话、可调用七个工具(当时集;v0.3 加 skill 后为八工具),事件流可订阅(历史记录) |
 | **v0.2 会话完善** | 编排自研 + JSONL 树形 `SessionStore` + `SessionManager` + `compaction` + 安全确认环 + AGENTS.md + `/fork` + TUI 命令体系 | 会话可恢复、可切换、可压缩、可分叉;安全确认;命令/补全/选择器 |
 | **v0.3 生态成型** | Skills(✅)+ MCP(✅)+ 成本透明(✅)+ 会话树 UI(✅);插件 / 轻量记忆 / Web 经评估移出(见 E5/E4/E12) | 扩展生态、体验差异、平台导航 |
-| **v0.4 Runtime 产品化** | Runtime 可靠性、上下文治理、TUI / Session 交互、生命周期 Hook、工具与 Provider 稳定性 | V4-01～V4-38 已完成实现；发布版本仍待 `0.4.0` 元数据与标签 |
+| **v0.4 Runtime 产品化** | Runtime 可靠性、上下文治理、TUI / Session 交互、生命周期 Hook、工具与 Provider 稳定性 | V4-01～V4-38 已完成实现；`0.4.0` 元数据和 `v0.4.0` 标签已固定 |
 
  v0.4 当前进度:V4-01～V4-38 已全部落地；2026-08-30 复核结果为 `uv run pytest -q` **1532 passed**、快速质量集 **1391 passed，141 deselected**、覆盖率 **83.61%**、`openspec validate --specs` **20/20**。release check 已验证 wheel/sdist、干净安装、资源和 fake provider CLI；仓库内 TUI schema v1 基线保留为历史数据，schema v2 候选由 CI 生成并人工复核，性能暂不启用硬阈值。
 

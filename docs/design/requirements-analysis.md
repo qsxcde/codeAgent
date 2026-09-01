@@ -695,7 +695,7 @@ class AgentSession:
 | v0.1 | tools + core + session + container + 模型层自研(ModelRuntime) | ✅ 已落地 | headless CLI 可对话、可调用 read/write/edit/bash、事件流可订阅 |
 | v0.2 | store + manager + compaction + 安全确认 + undo + AGENTS.md + TUI 恢复 + 解耦测试恢复 | 2–3 周(较 v0.1 报告上调,新增 TUI 恢复/undo/AGENTS.md) | 会话可恢复、可切换、可压缩、可回滚 |
 | v0.3 | Skills + MCP + token 用量透明 + 会话树 | 阶段 1~4 已落地，阶段 6 验收已完成 | 扩展工具、用量可见、会话树导航 |
-| v0.4 | Runtime 可靠性 + 上下文治理 + TUI / Session + Hook + 工具/Provider 稳定性 | V4-01～V4-38 已完成实现；包版本已统一为 0.4.0，发布说明已固定 | 最终发布提交、版本标签、持续回归和证据维护 |
+| v0.4 | Runtime 可靠性 + 上下文治理 + TUI / Session + Hook + 工具/Provider 稳定性 | V4-01～V4-38 已完成实现；包版本、发布说明和 `v0.4.0` 标签已固定 | 持续回归和证据维护 |
 
 **成本结构**:全部依赖开源,无新增付费;主要成本为人力时间 + 模型 API 按量付费(可选,fake 可离线开发);风险集中点:单人维护可持续性、社区获取、文档与示例投入。
 
@@ -717,7 +717,7 @@ v0.1(✅ 已落地 2026-08-10): F-01~F-10   tools+core+session+container → 可
      后续演进(2026-08-13 现状): 模型客户端自研落地(ModelRuntime)、TUI 移除、headless 为当前唯一形态
 v0.2(2–3 周):                F-11~F-17b  持久化+undo+安全+AGENTS.md+TUI恢复 → 可恢复、可回滚、好用
 v0.3(2–3 周):                F-18~F-24   skills+插件+MCP+记忆+成本透明+fork+平台部署 → 生态成型
-v0.4(✅ 功能范围完成 2026-08-30): V4-01~V4-38 Runtime 可靠性+上下文治理+TUI/Session+Hook+工具/Provider 稳定性 → 发布准备
+v0.4(✅ 已发布基线 2026-09-02): V4-01~V4-38 Runtime 可靠性+上下文治理+TUI/Session+Hook+工具/Provider 稳定性 → `v0.4.0` 标签
 远期:                         F-25~F-28   多智能体/自动化/Web/Windows 全验证
 (并行评估):                   编排自研第二步(蓝图存档,三未决问题回答后启动)
 ```
