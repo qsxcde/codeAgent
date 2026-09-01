@@ -36,6 +36,9 @@ from codeagent.core.contracts.errors import (
     ContextPreparationError,
     ContextPreflightError,
     ContextTransformTimeoutError,
+    SubagentContractError,
+    SubagentRequestError,
+    SubagentStateError,
 )
 from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.hooks import (
@@ -82,6 +85,19 @@ from codeagent.core.contracts.ports import (
     ToolCleanupPort,
     ToolDecision,
 )
+from codeagent.core.contracts.subagents import (
+    SubagentBudget,
+    SubagentContextItem,
+    SubagentEventSink,
+    SubagentFailure,
+    SubagentFailurePhase,
+    SubagentReasonCode,
+    SubagentRequest,
+    SubagentResult,
+    SubagentRunner,
+    SubagentStatus,
+)
+from codeagent.core.contracts.subagent_state import SubagentState
 from codeagent.core.orchestration.config import AgentLoopConfig
 
 __all__ = [
@@ -97,6 +113,9 @@ __all__ = [
     "AgentContinueError",
     "AgentLoopConfig",
     "AgentRuntimeError",
+    "SubagentContractError",
+    "SubagentRequestError",
+    "SubagentStateError",
     "ContextBudgetInput",
     "ContextBudgetPort",
     "ContextBudgetSnapshot",
@@ -135,6 +154,17 @@ __all__ = [
     "ToolOutputMetadata",
     "ToolOperation",
     "ToolResult",
+    "SubagentBudget",
+    "SubagentContextItem",
+    "SubagentEventSink",
+    "SubagentFailure",
+    "SubagentFailurePhase",
+    "SubagentReasonCode",
+    "SubagentRequest",
+    "SubagentResult",
+    "SubagentRunner",
+    "SubagentState",
+    "SubagentStatus",
     "PreflightStatus",
     "evaluate_context_preflight",
     "estimate_context_budget",

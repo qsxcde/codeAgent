@@ -10,11 +10,36 @@ __all__ = [
     "ContextPreparationError",
     "ContextPreflightError",
     "ContextTransformTimeoutError",
+    "SubagentContractError",
+    "SubagentRequestError",
+    "SubagentStateError",
 ]
 
 
 class AgentRuntimeError(RuntimeError):
     """Base error for failures owned by the Agent Runtime."""
+
+
+class SubagentContractError(AgentRuntimeError, ValueError):
+    """Base error for invalid provider-neutral Subagent values."""
+
+    code = "subagent_contract_error"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        self.code = code or self.code
+        super().__init__(message)
+
+
+class SubagentRequestError(SubagentContractError):
+    """A Subagent request cannot be admitted as constructed."""
+
+    code = "invalid_request"
+
+
+class SubagentStateError(SubagentContractError):
+    """A Subagent lifecycle transition violates its state contract."""
+
+    code = "invalid_subagent_transition"
 
 
 class AgentContinueError(AgentRuntimeError, ValueError):

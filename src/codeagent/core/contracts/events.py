@@ -79,6 +79,33 @@ class AgentEvent:
     status: str | None = None
     tool_name: str | None = None
     queue_position: int | None = None
+    delegation_id: str | None = None
+    parent_run_id: str | None = None
+    child_run_id: str | None = None
+    attempt_id: str | None = None
+    depth: int | None = None
+    subagent_status: str | None = None
+    child_phase: str | None = None
+
+    def __post_init__(self) -> None:
+        """Keep new typed correlation fields readable through legacy metadata."""
+        metadata = dict(self.metadata or {})
+        fields = (
+            "delegation_id",
+            "parent_run_id",
+            "child_run_id",
+            "attempt_id",
+            "depth",
+            "subagent_status",
+            "child_phase",
+        )
+        for name in fields:
+            value = getattr(self, name)
+            if value is None and name in metadata:
+                setattr(self, name, metadata[name])
+            elif value is not None:
+                metadata[name] = getattr(value, "value", value)
+        self.metadata = metadata
 
     def __repr__(self) -> str:  # pragma: no cover - 仅调试展示
         return f"AgentEvent({self.type}, {self.payload!r})"

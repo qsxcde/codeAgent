@@ -13,6 +13,8 @@ EXPECTED_FILES = {
     "contracts/events.py",
     "contracts/messages.py",
     "contracts/ports.py",
+    "contracts/subagent_state.py",
+    "contracts/subagents.py",
     "context/__init__.py",
     "context/budget.py",
     "context/contracts.py",
@@ -95,6 +97,13 @@ def test_core_facade_preserves_public_object_identity() -> None:
     from codeagent.core.contracts.events import AgentEvent
     from codeagent.core.contracts.messages import Message
     from codeagent.core.contracts.ports import AgentTool, ModelPort
+    from codeagent.core.contracts.subagent_state import SubagentState
+    from codeagent.core.contracts.subagents import (
+        SubagentRequest,
+        SubagentResult,
+        SubagentRunner,
+        SubagentStatus,
+    )
     from codeagent.core.execution.runtime import ToolExecutionRuntime
     from codeagent.core.orchestration.config import AgentLoopConfig
 
@@ -113,6 +122,11 @@ def test_core_facade_preserves_public_object_identity() -> None:
         "Message": Message,
         "ModelPort": ModelPort,
         "ToolExecutionRuntime": ToolExecutionRuntime,
+        "SubagentRequest": SubagentRequest,
+        "SubagentResult": SubagentResult,
+        "SubagentRunner": SubagentRunner,
+        "SubagentState": SubagentState,
+        "SubagentStatus": SubagentStatus,
     }
 
     assert all(name in public.__all__ for name in expected)
