@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
@@ -12,11 +13,15 @@ import pytest
 from codeagent.ai.providers.fake import FakeClient
 from codeagent.core.contracts.messages import Message, ToolResult
 from codeagent.core.contracts.subagents import (
+    SubagentArtifact,
+    SubagentEvidence,
     SubagentFailure,
+    SubagentFinding,
     SubagentReasonCode,
     SubagentRequest,
     SubagentResult,
     SubagentStatus,
+    SubagentUsage,
 )
 from codeagent.core.contracts.events import AgentEvent
 
@@ -99,6 +104,70 @@ async def test_delegate_tool_maps_subagent_result_to_tool_result(status, error, 
     assert request.profile == "read_only"
     assert request.depth == 1
     assert request.max_depth == 1
+
+
+async def test_delegate_tool_exposes_structured_result_details_as_json_safe_values():
+    from codeagent.app.composition.subagent.delegate_tool import DelegateTool
+
+    evidence = SubagentEvidence(
+        evidence_id="evidence-1",
+        source="tool:read",
+        summary="observed fact",
+        locator="src/app.py:1-2",
+        excerpt="value = 1",
+        completeness="complete",
+    )
+    result = SubagentResult(
+        delegation_id="delegation-1",
+        status=SubagentStatus.COMPLETED,
+        child_run_id="child-run-1",
+        summary="child summary",
+        findings=(SubagentFinding("finding", ("evidence-1",)),),
+        evidence=(evidence,),
+        usage=SubagentUsage(input_tokens=10, output_tokens=2),
+        artifact=SubagentArtifact(ref="artifact-1", kind="tool_output", label="report"),
+    )
+
+    mapped = await DelegateTool(_RecordingRunner(result)).bind_parent_run_id(
+        "parent-run-1"
+    ).execute("call-1", {"task": "inspect files"})
+
+    assert mapped.details["summary"] == "child summary"
+    assert mapped.details["findings"] == [
+        {"summary": "finding", "evidence_ids": ["evidence-1"]}
+    ]
+    assert mapped.details["evidence"] == [evidence.to_dict()]
+    assert mapped.details["usage"] == {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
+    }
+    assert mapped.details["artifact"] == {
+        "ref": "artifact-1",
+        "kind": "tool_output",
+        "label": "report",
+    }
+    json.dumps(mapped.details, ensure_ascii=False)
+
+
+async def test_delegate_tool_keeps_empty_structured_details_for_legacy_result():
+    from codeagent.app.composition.subagent.delegate_tool import DelegateTool
+
+    result = await DelegateTool(
+        _RecordingRunner(
+            SubagentResult(
+                delegation_id="delegation-1",
+                status=SubagentStatus.COMPLETED,
+                summary="legacy",
+            )
+        )
+    ).bind_parent_run_id("parent-run-1").execute("call-1", {"task": "inspect"})
+
+    assert result.details["findings"] == []
+    assert result.details["evidence"] == []
+    assert result.details["usage"] is None
+    assert result.details["artifact"] is None
 
 
 async def test_delegate_tool_rejects_invalid_arguments_without_starting_child():

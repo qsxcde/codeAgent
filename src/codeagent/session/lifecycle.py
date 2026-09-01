@@ -11,6 +11,7 @@ from codeagent.core.contracts.events import AgentEvent, EventType
 from codeagent.core.contracts.ports import ApprovalPolicy
 from codeagent.core.orchestration.config import AgentLoopConfig
 from codeagent.session.contracts import SessionCloser
+from codeagent.session.persistence.models import UsageStats
 
 
 class SessionLifecycleMixin:
@@ -39,6 +40,11 @@ class SessionLifecycleMixin:
 
     async def cancel_and_wait(self, timeout: float | None = None) -> bool:
         return await self._runtime.cancel_and_wait(timeout)
+
+    @property
+    def run_usage(self) -> UsageStats:
+        """Return the cumulative usage observed during the current/last run."""
+        return self._runtime.turn_usage
 
     async def close(self) -> None:
         if self._close_task is None:

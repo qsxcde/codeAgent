@@ -11,16 +11,20 @@ from .hooks import (
     session_event_phase,
 )
 from .subagents import (
+    SubagentArtifact,
     SubagentBudget,
     SubagentContextItem,
+    SubagentEvidence,
     SubagentEventSink,
     SubagentFailure,
     SubagentFailurePhase,
+    SubagentFinding,
     SubagentReasonCode,
     SubagentRequest,
     SubagentResult,
     SubagentRunner,
     SubagentStatus,
+    SubagentUsage,
 )
 from .subagent_state import SubagentState
 
@@ -36,15 +40,19 @@ __all__ = [
     "LifecycleHook",
     "LifecycleHookEvent",
     "session_event_phase",
+    "SubagentArtifact",
     "SubagentBudget",
     "SubagentContextItem",
+    "SubagentEvidence",
     "SubagentEventSink",
     "SubagentFailure",
     "SubagentFailurePhase",
+    "SubagentFinding",
     "SubagentReasonCode",
     "SubagentRequest",
     "SubagentResult",
     "SubagentRunner",
     "SubagentState",
     "SubagentStatus",
+    "SubagentUsage",
 ]

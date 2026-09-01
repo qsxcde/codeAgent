@@ -134,6 +134,146 @@ def test_result_requires_terminal_status_and_structured_failure() -> None:
 
 
 @pytest.mark.unit
+def test_structured_result_values_are_immutable_and_json_safe() -> None:
+    finding_type = _public("SubagentFinding")
+    evidence_type = _public("SubagentEvidence")
+    usage_type = _public("SubagentUsage")
+    artifact_type = _public("SubagentArtifact")
+    result_type = _public("SubagentResult")
+    status_type = _public("SubagentStatus")
+
+    evidence = evidence_type(
+        evidence_id="evidence-1",
+        source="tool:read",
+        summary="发现配置文件中的超时值",
+        locator="config.toml:10-12",
+        excerpt="timeout = 120",
+        completeness="complete",
+        continuation="offset=12",
+    )
+    finding = finding_type(
+        summary="默认超时为 120 秒",
+        evidence_ids=("evidence-1",),
+    )
+    usage = usage_type(
+        input_tokens=10,
+        output_tokens=20,
+        reasoning_tokens=3,
+        cached_tokens=4,
+    )
+    artifact = artifact_type(ref="artifact-1", kind="report", label="检查报告")
+    result = result_type(
+        delegation_id="delegation-1",
+        status=status_type.COMPLETED,
+        summary="检查完成",
+        findings=(finding,),
+        evidence=(evidence,),
+        usage=usage,
+        artifact=artifact,
+    )
+
+    assert result.findings == (finding,)
+    assert result.evidence == (evidence,)
+    assert result.to_dict()["findings"] == [
+        {"summary": "默认超时为 120 秒", "evidence_ids": ["evidence-1"]}
+    ]
+    assert result.to_dict()["evidence"][0]["locator"] == "config.toml:10-12"
+    assert result.to_dict()["usage"] == {
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "reasoning_tokens": 3,
+        "cached_tokens": 4,
+    }
+    assert result.to_dict()["artifact"] == {
+        "ref": "artifact-1",
+        "kind": "report",
+        "label": "检查报告",
+    }
+
+    with pytest.raises(AttributeError):
+        evidence.summary = "changed"
+
+
+@pytest.mark.unit
+def test_structured_result_defaults_keep_legacy_callers_compatible() -> None:
+    request = _request()
+    result = _public("SubagentResult")(
+        delegation_id=request.delegation_id,
+        status=_public("SubagentStatus").COMPLETED,
+        summary="done",
+    )
+
+    assert result.findings == ()
+    assert result.evidence == ()
+    assert result.usage is None
+    assert result.artifact is None
+    assert result.to_dict()["findings"] == []
+    assert result.to_dict()["evidence"] == []
+    assert result.to_dict()["usage"] is None
+    assert result.to_dict()["artifact"] is None
+
+
+@pytest.mark.unit
+def test_structured_result_rejects_bounds_duplicate_ids_and_unknown_references() -> None:
+    finding_type = _public("SubagentFinding")
+    evidence_type = _public("SubagentEvidence")
+    usage_type = _public("SubagentUsage")
+    artifact_type = _public("SubagentArtifact")
+    result_type = _public("SubagentResult")
+    status_type = _public("SubagentStatus")
+    contract_error = _public("SubagentContractError")
+
+    with pytest.raises(contract_error) as raised:
+        finding_type(summary="x", evidence_ids=("evidence-1",) * 33)
+    assert raised.value.code == "invalid_result"
+
+    evidence = evidence_type(evidence_id="evidence-1", source="tool:read", summary="x")
+    with pytest.raises(contract_error) as raised:
+        result_type(
+            delegation_id="delegation-1",
+            status=status_type.COMPLETED,
+            evidence=(evidence, evidence_type(evidence_id="evidence-1", source="tool:grep", summary="y")),
+        )
+    assert raised.value.code == "invalid_result"
+
+    with pytest.raises(contract_error) as raised:
+        result_type(
+            delegation_id="delegation-1",
+            status=status_type.COMPLETED,
+            findings=(finding_type(summary="x", evidence_ids=("missing",)),),
+        )
+    assert raised.value.code == "invalid_result"
+
+    with pytest.raises(contract_error) as raised:
+        result_type(
+            delegation_id="delegation-1",
+            status=status_type.COMPLETED,
+            summary="x" * 16_001,
+        )
+    assert raised.value.code == "invalid_result"
+
+    with pytest.raises(contract_error) as raised:
+        result_type(
+            delegation_id="delegation-1",
+            status=status_type.COMPLETED,
+            findings=tuple(finding_type(summary=str(index)) for index in range(17)),
+        )
+    assert raised.value.code == "invalid_result"
+
+    with pytest.raises(contract_error) as raised:
+        usage_type(input_tokens=-1)
+    assert raised.value.code == "invalid_result"
+
+    with pytest.raises(contract_error) as raised:
+        usage_type(input_tokens=True)  # type: ignore[arg-type]
+    assert raised.value.code == "invalid_result"
+
+    with pytest.raises(contract_error) as raised:
+        artifact_type(ref="x" * 513)
+    assert raised.value.code == "invalid_result"
+
+
+@pytest.mark.unit
 def test_state_accepts_happy_path_and_keeps_child_identity() -> None:
     request = _request()
     state_type = _public("SubagentState")

@@ -21,7 +21,12 @@ def tool_result(tool_call_id: str, result: SubagentResult) -> ToolResult:
         "child_run_id": result.child_run_id,
         "attempt_id": result.attempt_id,
         "subagent_status": result.status.value,
+        "summary": bounded(result.summary),
         "diagnostics": list(result.diagnostics),
+        "findings": [item.to_dict() for item in result.findings],
+        "evidence": [item.to_dict() for item in result.evidence],
+        "usage": result.usage.to_dict() if result.usage is not None else None,
+        "artifact": result.artifact.to_dict() if result.artifact is not None else None,
     }
     if result.failure is not None:
         details.update(result.failure.as_metadata())

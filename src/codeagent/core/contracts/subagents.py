@@ -5,83 +5,47 @@ from __future__ import annotations
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from codeagent.core.contracts.errors import (
-    SubagentContractError,
-    SubagentRequestError,
-)
+from codeagent.core.contracts.errors import SubagentRequestError
 from codeagent.core.contracts.events import AgentEvent
 
+from .subagent_lifecycle import (
+    SubagentFailure,
+    SubagentFailurePhase,
+    SubagentReasonCode,
+    SubagentStatus,
+)
+from .subagent_result import SubagentResult
+from .subagent_results import (
+    MAX_SUBAGENT_EVIDENCE,
+    MAX_SUBAGENT_FINDINGS,
+    MAX_SUBAGENT_SUMMARY_CHARS,
+    SubagentArtifact,
+    SubagentEvidence,
+    SubagentFinding,
+    SubagentUsage,
+)
+
 __all__ = [
+    "MAX_SUBAGENT_EVIDENCE",
+    "MAX_SUBAGENT_FINDINGS",
+    "MAX_SUBAGENT_SUMMARY_CHARS",
+    "SubagentArtifact",
     "SubagentBudget",
     "SubagentContextItem",
+    "SubagentEvidence",
     "SubagentFailure",
     "SubagentFailurePhase",
+    "SubagentFinding",
     "SubagentReasonCode",
     "SubagentRequest",
     "SubagentResult",
     "SubagentRunner",
     "SubagentStatus",
     "SubagentEventSink",
+    "SubagentUsage",
 ]
-
-
-class SubagentStatus(StrEnum):
-    """Lifecycle status of one parent-to-child delegation."""
-
-    CREATED = "created"
-    QUEUED = "queued"
-    STARTING = "starting"
-    RUNNING = "running"
-    WAITING_CONFIRMATION = "waiting_confirmation"
-    CANCELLING = "cancelling"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    TIMED_OUT = "timed_out"
-    CANCELLED = "cancelled"
-    REJECTED = "rejected"
-
-    @property
-    def is_terminal(self) -> bool:
-        return self in _TERMINAL_STATUSES
-
-
-class SubagentReasonCode(StrEnum):
-    """Stable reasons orthogonal to the top-level lifecycle status."""
-
-    INVALID_REQUEST = "invalid_request"
-    PERMISSION_DENIED = "permission_denied"
-    DEPTH_EXCEEDED = "depth_exceeded"
-    BUDGET_EXCEEDED = "budget_exceeded"
-    TIMEOUT = "timeout"
-    PARENT_CANCELLED = "parent_cancelled"
-    CONFIRMATION_REJECTED = "confirmation_rejected"
-    STARTUP_FAILED = "startup_failed"
-    EXECUTION_FAILED = "execution_failed"
-
-
-class SubagentFailurePhase(StrEnum):
-    """Lifecycle points at which a structured failure can be observed."""
-
-    VALIDATION = "validation"
-    QUEUE = "queue"
-    STARTING = "starting"
-    RUNNING = "running"
-    WAITING_CONFIRMATION = "waiting_confirmation"
-    CANCELLING = "cancelling"
-
-
-_TERMINAL_STATUSES = frozenset(
-    {
-        SubagentStatus.COMPLETED,
-        SubagentStatus.FAILED,
-        SubagentStatus.TIMED_OUT,
-        SubagentStatus.CANCELLED,
-        SubagentStatus.REJECTED,
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -146,89 +110,6 @@ class SubagentRequest:
             object.__setattr__(self, "context", tuple(self.context))
         if not all(isinstance(item, SubagentContextItem) for item in self.context):
             raise SubagentRequestError("context must contain SubagentContextItem values")
-
-
-@dataclass(frozen=True)
-class SubagentFailure:
-    """Safe, machine-readable failure information for a child run."""
-
-    reason_code: str
-    message: str
-    phase: str
-    retryable: bool = False
-    side_effect_state: str = "none"
-    cleanup_uncertain: bool = False
-
-    def __post_init__(self) -> None:
-        _require_text(self.reason_code, "reason_code")
-        _require_text(self.message, "failure message")
-        _require_text(self.phase, "failure phase")
-        _require_text(self.side_effect_state, "side_effect_state")
-        if not isinstance(self.retryable, bool):
-            raise SubagentContractError("retryable must be a bool", code="invalid_failure")
-        if not isinstance(self.cleanup_uncertain, bool):
-            raise SubagentContractError(
-                "cleanup_uncertain must be a bool", code="invalid_failure"
-            )
-
-    def as_metadata(self) -> dict[str, object]:
-        return {
-            "reason_code": self.reason_code,
-            "error": self.message,
-            "error_message": self.message,
-            "phase": self.phase,
-            "retryable": self.retryable,
-            "side_effect_state": self.side_effect_state,
-            "cleanup_uncertain": self.cleanup_uncertain,
-        }
-
-
-@dataclass(frozen=True)
-class SubagentResult:
-    """Immutable terminal result returned to the parent run."""
-
-    delegation_id: str
-    status: SubagentStatus
-    child_run_id: str | None = None
-    attempt_id: str | None = None
-    summary: str = ""
-    failure: SubagentFailure | None = None
-    diagnostics: tuple[str, ...] = ()
-    cleanup_uncertain: bool = False
-
-    def __post_init__(self) -> None:
-        _require_text(self.delegation_id, "delegation_id")
-        try:
-            status = SubagentStatus(self.status)
-        except (TypeError, ValueError) as exc:
-            raise SubagentContractError(
-                f"unknown Subagent status: {self.status!r}", code="invalid_result"
-            ) from exc
-        object.__setattr__(self, "status", status)
-        if not status.is_terminal:
-            raise SubagentContractError(
-                "SubagentResult status must be terminal", code="invalid_result"
-            )
-        if status is SubagentStatus.COMPLETED and self.failure is not None:
-            raise SubagentContractError(
-                "completed SubagentResult cannot contain a failure", code="invalid_result"
-            )
-        if status is not SubagentStatus.COMPLETED and self.failure is None:
-            raise SubagentContractError(
-                "non-completed SubagentResult requires a failure", code="invalid_result"
-            )
-        for name in ("child_run_id", "attempt_id"):
-            value = getattr(self, name)
-            if value is not None:
-                _require_text(value, name)
-        if not isinstance(self.diagnostics, tuple):
-            object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
-        if not all(isinstance(item, str) for item in self.diagnostics):
-            raise SubagentContractError("diagnostics must contain strings", code="invalid_result")
-        if not isinstance(self.cleanup_uncertain, bool):
-            raise SubagentContractError(
-                "cleanup_uncertain must be a bool", code="invalid_result"
-            )
 
 
 SubagentEventSink = Callable[[AgentEvent], Awaitable[None] | None]

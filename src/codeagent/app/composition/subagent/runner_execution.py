@@ -33,6 +33,7 @@ from .runner_results import (
     failure_result,
 )
 from .context import render_subagent_prompt
+from .result_extraction import extract_child_facts
 
 ChildSessionFactory = Callable[[SubagentRequest], Any]
 
@@ -132,6 +133,7 @@ def _result_from_child(
             RuntimeError(outcome_error or "子 Agent 运行失败"),
         )
     assert active.budget is not None
+    facts = extract_child_facts(child)
     return SubagentResult(
         delegation_id=active.request.delegation_id,
         status=SubagentStatus.COMPLETED,
@@ -139,6 +141,10 @@ def _result_from_child(
         attempt_id=active.attempt_id,
         summary=child_summary(child, returned, limit=active.budget.max_output_chars),
         diagnostics=tuple(active.diagnostics),
+        findings=facts.findings,
+        evidence=facts.evidence,
+        usage=facts.usage,
+        artifact=facts.artifact,
     )
 
 

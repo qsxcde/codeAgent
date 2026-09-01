@@ -48,6 +48,11 @@ async def test_session_separates_budget_estimate_actual_and_committed_usage():
         output_tokens=20,
         cached_tokens=60,
     )
+    assert session.run_usage == UsageStats(
+        input_tokens=100,
+        output_tokens=20,
+        cached_tokens=60,
+    )
     assert session.committed_usage == UsageStats(
         input_tokens=100,
         output_tokens=20,
