@@ -97,6 +97,33 @@ def test_json_store_reports_bad_records_and_keeps_valid_messages(tmp_path) -> No
     assert [message.content for message in store.load_messages("s1")] == ["有效"]
 
 
+def test_json_store_reports_invalid_subagent_records_without_breaking_history(tmp_path) -> None:
+    store = JsonFileStore(tmp_path / "sessions")
+    store.create("s1")
+    store.append_message("s1", Message(role="user", content="有效"))
+    path = tmp_path / "sessions" / "s1.jsonl"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "type": "subagent",
+                    "delegationId": "delegation-1",
+                    "parentRunId": "parent-1",
+                    "status": "not-a-status",
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+
+    report = store.recovery_report("s1")
+
+    assert report.status == "degraded"
+    assert any(item.code == "invalid_subagent_record" for item in report.diagnostics)
+    assert report.valid_message_count == 1
+    assert store.load_subagent_records("s1") == []
+
+
 def test_json_store_reports_missing_compaction_cut_and_falls_back_to_valid_history(tmp_path) -> None:
     store = JsonFileStore(tmp_path / "sessions")
     store.create("s1")

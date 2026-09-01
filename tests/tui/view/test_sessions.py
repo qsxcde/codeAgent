@@ -3,6 +3,7 @@
 from tests.tui.view.fixtures import *  # noqa: F401,F403
 
 from codeagent.session.persistence import RecoveryDiagnostic, SessionRecoveryError, SessionRecoveryReport
+from codeagent.app.tui.presentation.blocks import SubagentBlock
 
 
 def test_session_switch_refreshes_skill_registry_and_diagnostics():
@@ -62,6 +63,33 @@ async def test_large_restore_drops_result_after_session_switch(monkeypatch):
     await (scenario())
 
     assert not any("old-" in line for line in app.model.transcript.all_lines(80))
+
+
+async def test_large_restore_moves_persisted_subagent_projection_with_history():
+    app, _, manager = _make_app()
+    session = manager.current
+    session.history = [Message(role="user", content=f"old-{i}") for i in range(1001)]
+    from codeagent.session.persistence import SubagentRunRecord
+
+    session.subagent_records = [
+        SubagentRunRecord(
+            delegation_id="delegation-large-restore",
+            parent_run_id="old-parent-run",
+            status="abandoned",
+            phase="recovered",
+            task_label="大历史恢复",
+            reason_code="process_restarted",
+            cleanup_uncertain=True,
+        )
+    ]
+
+    await app._restore_large_session(session)
+
+    blocks = [block for block in app.model.transcript.blocks if isinstance(block, SubagentBlock)]
+    assert len(blocks) == 1
+    assert blocks[0].status == "abandoned"
+    assert blocks[0].reason_code == "process_restarted"
+    assert not app.model.status.subagent_counts
 
 
 async def test_restore_failure_keeps_current_tui_usable(monkeypatch):

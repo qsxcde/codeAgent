@@ -13,8 +13,10 @@ from codeagent.session.persistence.models import (
     CURRENT_VERSION,
     CompactionEntry,
     SessionRef,
+    SubagentRunRecord,
     UsageStats,
 )
+from codeagent.session.persistence.subagent_records import record_to_entry
 
 
 class JsonlWritingMixin:
@@ -137,6 +139,12 @@ class JsonlWritingMixin:
             },
         )
         return entry.id
+
+    def append_subagent_record(self, session_id: str, record: SubagentRunRecord) -> None:
+        """Append a parent-owned record without touching the derived activity index."""
+        if not isinstance(record, SubagentRunRecord):
+            raise TypeError("record must be a SubagentRunRecord")
+        self._append(session_id, record_to_entry(record, timestamp=self._now()))
 
     def append_model_change(
         self,

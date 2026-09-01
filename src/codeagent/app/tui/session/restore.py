@@ -51,10 +51,15 @@ class SessionRestoreMixin:
         self.model.apply(AgentEvent(EventType.RESTORE_STARTED, metadata={"session_id": session_id}))
         history = list(getattr(session, "history", []) or [])
         summary = getattr(session, "summary", None)
+        subagent_records = list(getattr(session, "subagent_records", []) or [])
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            self.model.hydrate_history(history, summary=summary)
+            self.model.hydrate_history(
+                history,
+                summary=summary,
+                subagent_records=subagent_records,
+            )
         else:
             if self._restore_cost(history).requires_background:
                 if self._restore_task is not None and not self._restore_task.done():
@@ -64,7 +69,11 @@ class SessionRestoreMixin:
                 )
                 self._sync_context_status()
                 return
-            self.model.hydrate_history(history, summary=summary)
+            self.model.hydrate_history(
+                history,
+                summary=summary,
+                subagent_records=subagent_records,
+            )
         self._sync_context_status()
         self._show_recovery_report(session, include_healthy=False)
         self.model.apply(AgentEvent(EventType.RESTORE_FINISHED, metadata={"session_id": session_id}))
@@ -72,13 +81,17 @@ class SessionRestoreMixin:
     async def _restore_large_session(self, session: Any) -> None:
         target_id = getattr(session, "session_id", None)
 
-        def load_snapshot() -> tuple[list[Any], str | None]:
-            return list(getattr(session, "history", []) or []), getattr(session, "summary", None)
+        def load_snapshot() -> tuple[list[Any], str | None, list[Any]]:
+            return (
+                list(getattr(session, "history", []) or []),
+                getattr(session, "summary", None),
+                list(getattr(session, "subagent_records", []) or []),
+            )
 
-        def build_model(snapshot: tuple[list[Any], str | None]) -> TuiModel:
-            history, summary = snapshot
+        def build_model(snapshot: tuple[list[Any], str | None, list[Any]]) -> TuiModel:
+            history, summary, subagent_records = snapshot
             restored = TuiModel()
-            restored.hydrate_history(history, summary)
+            restored.hydrate_history(history, summary, subagent_records=subagent_records)
             return restored
 
         try:
@@ -109,6 +122,10 @@ class SessionRestoreMixin:
         self.model._assistant = restored._assistant
         self.model._pending_tools = restored._pending_tools
         self.model._pending_tools_by_id = restored._pending_tools_by_id
+        self.model._tool_blocks_by_id = restored._tool_blocks_by_id
+        self.model._subagent_blocks_by_id = restored._subagent_blocks_by_id
+        self.model._subagent_evicted_ids = restored._subagent_evicted_ids
+        self.model.status.subagent_counts = dict(restored.status.subagent_counts)
         self.model.running = restored.running
         self.model.activity_visible = restored.activity_visible
         self.model.activity_frame = restored.activity_frame

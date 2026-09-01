@@ -26,6 +26,50 @@ class SubagentEventMixin:
     def subagent_block_capacity(self) -> int:
         return _MAX_SUBAGENT_BLOCKS
 
+    def hydrate_subagent_records(self, records: list[Any]) -> None:
+        """Restore compact delegation facts without replaying runtime events."""
+        for record in records:
+            delegation_id = str(_record_value(record, "delegation_id") or "")
+            if not delegation_id or delegation_id in self._subagent_evicted_ids:
+                continue
+            if delegation_id in self._subagent_blocks_by_id:
+                continue
+            status = str(_record_value(record, "status") or "abandoned")
+            if status in _ACTIVE_STATUSES:
+                status = "abandoned"
+            metadata = {
+                "delegation_id": delegation_id,
+                "parent_run_id": str(_record_value(record, "parent_run_id") or ""),
+                "child_run_id": _record_value(record, "child_run_id"),
+                "attempt_id": _record_value(record, "attempt_id"),
+                "profile": str(_record_value(record, "profile") or ""),
+                "task_label": str(_record_value(record, "task_label") or ""),
+                "subagent_status": status,
+                "child_phase": str(_record_value(record, "phase") or status),
+                "reason_code": str(_record_value(record, "reason_code") or ""),
+                "cleanup_uncertain": bool(_record_value(record, "cleanup_uncertain")),
+            }
+            payload = dict(_record_value(record, "result") or {})
+            payload.setdefault("summary", str(_record_value(record, "summary") or ""))
+            diagnostics = list(_record_value(record, "diagnostics") or [])
+            if diagnostics:
+                payload.setdefault("diagnostics", diagnostics)
+            if metadata["reason_code"] and "failure" not in payload:
+                payload["failure"] = {"reason_code": metadata["reason_code"]}
+            if metadata["cleanup_uncertain"]:
+                payload["cleanup_uncertain"] = True
+            block = SubagentBlock(
+                delegation_id,
+                task_label=metadata["task_label"],
+                profile=metadata["profile"],
+            )
+            block.parent_run_id = metadata["parent_run_id"] or None
+            self._subagent_blocks_by_id[delegation_id] = block
+            self.transcript.append(block)
+            block.apply_event(AgentEvent(EventType.SUBAGENT_FINISHED, payload=payload, metadata=metadata))
+            self._trim_subagent_blocks()
+        self._sync_subagent_counts()
+
     def _apply_subagent_event(self, event: AgentEvent) -> None:
         metadata = self._subagent_metadata(event)
         parent_run_id = str(metadata.get("parent_run_id") or "")
@@ -98,6 +142,12 @@ class SubagentEventMixin:
             if block.status in _ACTIVE_STATUSES:
                 block.cancel_from_parent(cleanup_uncertain=cleanup_uncertain)
         self._sync_subagent_counts()
+
+
+def _record_value(record: Any, name: str) -> Any:
+    if isinstance(record, dict):
+        return record.get(name)
+    return getattr(record, name, None)
 
 
 __all__ = ["SubagentEventMixin"]

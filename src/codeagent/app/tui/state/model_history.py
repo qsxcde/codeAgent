@@ -11,7 +11,13 @@ from ..presentation.primitives import _visible_user_content
 class ModelHistoryMixin:
     """把持久化消息转换成当前模型的可见块。"""
 
-    def hydrate_history(self, history: list[Any], summary: str | None = None) -> None:
+    def hydrate_history(
+        self,
+        history: list[Any],
+        summary: str | None = None,
+        *,
+        subagent_records: list[Any] | None = None,
+    ) -> None:
         """从会话快照重建 transcript，不写回会话，也不触发模型调用。"""
         reset_subagents = getattr(self, "_reset_subagent_projection", None)
         if callable(reset_subagents):
@@ -41,6 +47,9 @@ class ModelHistoryMixin:
             elif role == "tool":
                 self._restore_tool_result(message, content)
 
+        hydrate_subagents = getattr(self, "hydrate_subagent_records", None)
+        if callable(hydrate_subagents):
+            hydrate_subagents(subagent_records or [])
         self.transcript.scroll_to_bottom()
 
     def _restore_assistant_message(self, message: Any, content: str) -> None:

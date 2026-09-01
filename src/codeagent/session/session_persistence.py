@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from codeagent.core.contracts.events import AgentEvent
 from codeagent.core.contracts.messages import Message
 from codeagent.session.persistence.async_boundary import AsyncPersistenceBoundary
 from codeagent.session.persistence.commit import SessionCommitter
@@ -12,9 +13,11 @@ from codeagent.session.persistence.models import (
     CompactionEntry,
     SessionStore,
     SessionRecoveryReport,
+    SubagentRunRecord,
     UsageStats,
 )
 from codeagent.session.persistence.errors import SessionRecoveryError
+from codeagent.session.persistence.subagent_runtime import SubagentRecordCoordinator
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class RestoredSessionState:
     summary_entry_id: str | None
     details: dict[str, Any]
     context_tokens: int | None
+    subagent_records: list[SubagentRunRecord] = field(default_factory=list)
 
 
 class SessionPersistence:
@@ -61,6 +65,10 @@ class SessionPersistence:
             else None
         )
         self._recovery_report: SessionRecoveryReport | None = None
+        self._subagent_runtime = SubagentRecordCoordinator(
+            self._append_subagent_record,
+            self._can_append_subagent_record,
+        )
 
     @property
     def persisted(self) -> bool:
@@ -77,11 +85,20 @@ class SessionPersistence:
         """Return the report captured while loading this session."""
         return self._recovery_report or SessionRecoveryReport(self._session_id, "healthy")
 
+    @property
+    def subagent_records(self) -> list[SubagentRunRecord]:
+        """Return the current bounded parent-owned delegation projection."""
+        return self._subagent_runtime.records
+
+    @property
+    def subagent_record_diagnostics(self) -> list[str]:
+        return self._subagent_runtime.diagnostics
+
     def load(self) -> RestoredSessionState:
         """Load persisted context without creating deferred empty sessions."""
         if self._store is None:
             self._recovery_report = SessionRecoveryReport(self._session_id, "healthy")
-            return RestoredSessionState(True, [], None, None, {}, None)
+            return RestoredSessionState(True, [], None, None, {}, None, [])
 
         report = self._recovery_report_for_store()
         missing = (
@@ -108,7 +125,7 @@ class SessionPersistence:
         self._persisted = store_ref is not None
         if not self._persisted:
             self._recovery_report = SessionRecoveryReport(self._session_id, "healthy")
-            return RestoredSessionState(False, [], None, None, {}, None)
+            return RestoredSessionState(False, [], None, None, {}, None, [])
 
         self._recovery_report = report
         if not self._recovery_report.can_continue:
@@ -120,6 +137,9 @@ class SessionPersistence:
             if type(saved_context) is int and saved_context >= 0
             else None
         )
+        loader = getattr(self._store, "load_subagent_records", None)
+        records = list(loader(self._session_id)) if callable(loader) else []
+        self._subagent_runtime.restore(records)
         return RestoredSessionState(
             True,
             state.messages,
@@ -127,6 +147,7 @@ class SessionPersistence:
             state.entry_id,
             state.details,
             context_tokens,
+            self._subagent_runtime.records,
         )
 
     def _recovery_report_for_store(self) -> SessionRecoveryReport:
@@ -185,4 +206,25 @@ class SessionPersistence:
                 usage,
                 context_tokens=context_tokens,
             )
+        )
+
+    async def drain_subagent_records(self) -> None:
+        """Wait for all accepted record writes without blocking the loop."""
+        await self._subagent_runtime.drain()
+
+    def observe_subagent_event(self, event: AgentEvent, parent_run_id: str | None) -> None:
+        """Forward one normalized event to the record coordinator."""
+        self._subagent_runtime.observe(event, parent_run_id)
+
+    def record_subagent_diagnostic(self, message: str) -> None:
+        self._subagent_runtime.record_diagnostic(message)
+
+    def _append_subagent_record(self, record: SubagentRunRecord) -> None:
+        if self._committer is None:
+            return
+        self._committer.subagent(record)
+
+    def _can_append_subagent_record(self) -> bool:
+        return self._committer is not None and callable(
+            getattr(self._store, "append_subagent_record", None)
         )

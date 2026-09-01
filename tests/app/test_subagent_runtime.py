@@ -376,6 +376,43 @@ async def test_real_parent_delegate_runs_isolated_child_and_returns_only_result(
     assert [item.role for item in session.history].count("assistant") == 2
 
 
+@pytest.mark.integration
+async def test_persisted_parent_keeps_bounded_subagent_record_without_child_session(tmp_path):
+    root_client = FakeClient(
+        steps=[
+            {
+                "tool_calls": [
+                    {
+                        "name": "delegate",
+                        "args": {"task": "persist child result", "profile": "read_only"},
+                        "id": "persist-delegate-call",
+                    }
+                ]
+            },
+            {"content": "父 Agent 已保存结果"},
+        ]
+    )
+    child_client = FakeClient(response="可恢复的子结论")
+    from codeagent.session.persistence import JsonFileStore
+
+    store = JsonFileStore(tmp_path / "sessions")
+    with patch(
+        "codeagent.app.composition.model.selection.create_llm",
+        side_effect=[root_client, child_client],
+    ):
+        from codeagent.app.container import create_agent_session
+
+        session = create_agent_session(provider="fake", store=store, session_id="parent")
+        await session.run("父级请求")
+        await session.close()
+
+    records = store.load_subagent_records("parent")
+    assert len(records) == 1
+    assert records[0].status == "completed"
+    assert records[0].summary == "可恢复的子结论"
+    assert [ref.id for ref in store.list()] == ["parent"]
+
+
 async def test_real_child_session_failure_is_not_reported_as_success():
     class FailingClient(FakeClient):
         def _generate(self, messages, **kwargs):

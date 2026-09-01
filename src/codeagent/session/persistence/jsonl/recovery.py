@@ -12,6 +12,7 @@ from codeagent.session.persistence.models import (
     RecoveryDiagnostic,
     SessionRecoveryReport,
 )
+from codeagent.session.persistence.subagent_records import record_from_entry
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,16 @@ class _RecoveryScan:
     latest_cut: str | None
     header_seen: bool
     header_error: RecoveryDiagnostic | None = None
+
+
+@dataclass(frozen=True)
+class _EntryScan:
+    """Effects from inspecting one valid JSONL entry."""
+
+    valid_message_count: int = 0
+    skipped_record_count: int = 0
+    message_id: str | None = None
+    latest_cut: str | None = None
 
 
 class JsonlRecoveryMixin:
@@ -126,36 +137,13 @@ class JsonlRecoveryMixin:
                         break
                     header_seen = True
                     continue
-                entry_type = entry.get("type")
-                if entry_type == "message":
-                    if _message_is_invalid(entry):
-                        diagnostics.append(
-                            _diagnostic(
-                                "invalid_message",
-                                f"第 {line_number} 行消息无法解码",
-                                "该消息未进入恢复上下文",
-                                "请备份文件后继续有效历史，或手工修复该消息",
-                            )
-                        )
-                        skipped_record_count += 1
-                        continue
-                    valid_message_count += 1
-                    message_id = entry.get("id")
-                    if isinstance(message_id, str):
-                        message_ids.add(message_id)
-                elif entry_type == "compaction":
-                    if not _valid_compaction(entry):
-                        diagnostics.append(
-                            _diagnostic(
-                                "invalid_compaction",
-                                f"第 {line_number} 行压缩记录不完整",
-                                "该压缩记录未用于重构上下文",
-                                "请备份文件后继续未压缩的有效历史",
-                            )
-                        )
-                        skipped_record_count += 1
-                    else:
-                        latest_cut = entry.get("firstKeptEntryId") or None
+                result = _scan_entry(entry, line_number, diagnostics)
+                valid_message_count += result.valid_message_count
+                skipped_record_count += result.skipped_record_count
+                if result.message_id is not None:
+                    message_ids.add(result.message_id)
+                if result.latest_cut is not None:
+                    latest_cut = result.latest_cut
         return _RecoveryScan(
             diagnostics,
             valid_message_count,
@@ -219,6 +207,56 @@ def _message_is_invalid(entry: dict[str, Any]) -> bool:
     except (KeyError, TypeError, ValueError):
         return True
     return False
+
+
+def _scan_entry(
+    entry: dict[str, Any],
+    line_number: int,
+    diagnostics: list[RecoveryDiagnostic],
+) -> _EntryScan:
+    entry_type = entry.get("type")
+    if entry_type == "message":
+        if _message_is_invalid(entry):
+            diagnostics.append(
+                _diagnostic(
+                    "invalid_message",
+                    f"第 {line_number} 行消息无法解码",
+                    "该消息未进入恢复上下文",
+                    "请备份文件后继续有效历史，或手工修复该消息",
+                )
+            )
+            return _EntryScan(skipped_record_count=1)
+        message_id = entry.get("id")
+        return _EntryScan(
+            valid_message_count=1,
+            message_id=message_id if isinstance(message_id, str) else None,
+        )
+    if entry_type == "compaction":
+        if not _valid_compaction(entry):
+            diagnostics.append(
+                _diagnostic(
+                    "invalid_compaction",
+                    f"第 {line_number} 行压缩记录不完整",
+                    "该压缩记录未用于重构上下文",
+                    "请备份文件后继续未压缩的有效历史",
+                )
+            )
+            return _EntryScan(skipped_record_count=1)
+        return _EntryScan(latest_cut=entry.get("firstKeptEntryId") or None)
+    if entry_type == "subagent":
+        try:
+            record_from_entry(entry)
+        except (KeyError, TypeError, ValueError):
+            diagnostics.append(
+                _diagnostic(
+                    "invalid_subagent_record",
+                    f"第 {line_number} 行 Subagent 记录不完整",
+                    "该委派记录未参与恢复",
+                    "请备份 JSONL 后继续使用有效会话历史",
+                )
+            )
+            return _EntryScan(skipped_record_count=1)
+    return _EntryScan()
 
 
 def _valid_compaction(entry: dict[str, Any]) -> bool:

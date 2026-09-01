@@ -54,6 +54,9 @@ class SessionLifecycleMixin:
 
     async def _close_resources(self) -> None:
         await self.cancel_and_wait()
+        drain_subagent_records = getattr(self._persistence, "drain_subagent_records", None)
+        if callable(drain_subagent_records):
+            await drain_subagent_records()
         if self._runtime_closer is not None:
             result = self._runtime_closer()
             if isinstance(result, Awaitable):

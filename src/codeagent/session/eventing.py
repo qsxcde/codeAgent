@@ -64,6 +64,14 @@ class SessionEventMixin:
                 else metadata.get("queue_position")
             ),
         )
+        observer = getattr(self._persistence, "observe_subagent_event", None)
+        if callable(observer):
+            try:
+                observer(normalized, run_id)
+            except Exception as exc:  # noqa: BLE001 - persistence is observer-only
+                diagnostics = getattr(self._persistence, "record_subagent_diagnostic", None)
+                if callable(diagnostics):
+                    diagnostics(f"事件观察失败: {exc}")
         self._notify_lifecycle_hooks(normalized)
         self._bus.emit(normalized)
 

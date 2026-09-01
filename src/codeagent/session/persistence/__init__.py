@@ -12,6 +12,7 @@ from codeagent.session.persistence.models import (
     SessionRecoveryReport,
     SessionRef,
     SessionStore,
+    SubagentRunRecord,
     UsageStats,
 )
 from codeagent.session.persistence.errors import SessionRecoveryError
@@ -29,5 +30,6 @@ __all__ = [
     "SessionRecoveryReport",
     "SessionRef",
     "SessionStore",
+    "SubagentRunRecord",
     "UsageStats",
 ]

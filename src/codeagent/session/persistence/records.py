@@ -43,6 +43,25 @@ class UsageRecord(TypedDict):
     cached: int
 
 
+class SubagentRecord(TypedDict):
+    type: str
+    id: str
+    timestamp: str
+    delegationId: str
+    parentRunId: str
+    childRunId: str | None
+    attemptId: str | None
+    profile: str
+    taskLabel: str
+    status: str
+    phase: str
+    summary: str
+    reasonCode: str
+    diagnostics: list[str]
+    cleanupUncertain: bool
+    result: dict[str, Any]
+
+
 class ModelChangeRecord(TypedDict, total=False):
     type: str
     timestamp: str
@@ -66,5 +85,6 @@ __all__ = [
     "MetadataRecord",
     "ModelChangeRecord",
     "SessionHeaderRecord",
+    "SubagentRecord",
     "UsageRecord",
 ]

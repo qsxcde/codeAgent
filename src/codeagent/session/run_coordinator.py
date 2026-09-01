@@ -47,6 +47,7 @@ class SessionRunCoordinator:
             raise
         finally:
             self._finish(run_id, before_ids, outcome)
+            await self._owner._persistence.drain_subagent_records()
             await self._owner._drain_lifecycle_hooks()
 
     def _start(self, text: str) -> tuple[str, list[Message], set[str]]:
@@ -155,6 +156,7 @@ class SessionRunCoordinator:
                     message.parent_id = owner._summary_entry_id
                     break
         new_messages = [message for message in kept_history if message.id not in before_ids]
+        await owner._persistence.drain_subagent_records()
         await owner._persistence.commit_turn_async(
             new_messages,
             owner._runtime.turn_usage,

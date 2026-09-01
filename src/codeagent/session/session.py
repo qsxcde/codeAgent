@@ -39,6 +39,7 @@ from codeagent.session.runtime.state import CommitStatus, RunOutcome, SessionBud
 from codeagent.session.compaction_runtime import SessionCompactionMixin
 from codeagent.session.run_coordinator import SessionRunCoordinator
 from codeagent.session.session_persistence import SessionPersistence
+from codeagent.session.subagent import SessionSubagentMixin
 from codeagent.session.runtime.error_policy import friendly_error
 from codeagent.session.events.bus import EventBus, Subscriber
 
@@ -47,6 +48,7 @@ class AgentSession(
     SessionEventMixin,
     SessionLifecycleMixin,
     SessionCompactionMixin,
+    SessionSubagentMixin,
 ):
     """Public facade for one stateful agent conversation."""
 
@@ -292,9 +294,6 @@ class AgentSession(
 
 
 __all__ = [
-    "AgentSession",
-    "COMPACTION_RESERVE_TOKENS",
-    "DEFAULT_CONTEXT_WINDOW",
-    "SUMMARY_ID_PREFIX",
-    "SUMMARY_PREFIX",
+    "AgentSession", "COMPACTION_RESERVE_TOKENS",
+    "DEFAULT_CONTEXT_WINDOW", "SUMMARY_ID_PREFIX", "SUMMARY_PREFIX",
 ]

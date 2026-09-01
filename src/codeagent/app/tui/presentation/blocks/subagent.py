@@ -27,8 +27,9 @@ _STATUS_LABELS = {
     "timed_out": "已超时",
     "cancelled": "已取消",
     "rejected": "已拒绝",
+    "abandoned": "已中断",
 }
-_TERMINAL = frozenset({"completed", "failed", "timed_out", "cancelled", "rejected"})
+_TERMINAL = frozenset({"completed", "failed", "timed_out", "cancelled", "rejected", "abandoned"})
 _PHASE_LABELS = {
     "starting": "启动中",
     "model_wait": "等待模型",
@@ -37,6 +38,7 @@ _PHASE_LABELS = {
     "awaiting_confirmation": "等待确认",
     "cancelling": "取消中",
     "completed": "完成",
+    "recovered": "重启后不可恢复",
 }
 
 

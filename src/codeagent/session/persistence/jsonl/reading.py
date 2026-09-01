@@ -9,6 +9,11 @@ from typing import Any, Iterator
 from codeagent.core.contracts.messages import Message
 from codeagent.session.persistence.codec import _dict_to_message, _validate_header
 from codeagent.session.persistence.models import CompactionState, SessionRef
+from codeagent.session.persistence.subagent_records import (
+    SubagentRunRecord,
+    fold_records,
+    record_from_entry,
+)
 
 
 class JsonlReadingMixin:
@@ -48,6 +53,21 @@ class JsonlReadingMixin:
             except (KeyError, TypeError, ValueError):
                 continue
         return messages
+
+    def load_subagent_records(self, session_id: str) -> list[SubagentRunRecord]:
+        """Load and fold valid parent-owned records, ignoring local corruption."""
+        path = self._path(session_id)
+        if not path.exists():
+            raise ValueError(f"会话不存在: {session_id}")
+        records: list[SubagentRunRecord] = []
+        for entry in self._iter_entries(path):
+            if entry.get("type") != "subagent":
+                continue
+            try:
+                records.append(record_from_entry(entry))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return fold_records(records)
 
     def load_context(self, session_id: str) -> CompactionState:
         path = self._path(session_id)

@@ -8,6 +8,7 @@ from codeagent.core.contracts.messages import Message
 from codeagent.session.persistence.models import (
     CompactionEntry,
     SessionStore,
+    SubagentRunRecord,
     UsageStats,
 )
 
@@ -29,6 +30,14 @@ class SessionCommitter:
     def compaction(self, entry: CompactionEntry) -> str:
         self._ensure_persisted()
         return self._store.append_compaction(self._session_id, entry)  # type: ignore[return-value]
+
+    def subagent(self, record: SubagentRunRecord) -> None:
+        """Append a bounded parent record when the backend supports the port."""
+        append = getattr(self._store, "append_subagent_record", None)
+        if not callable(append):
+            return
+        self._ensure_persisted()
+        append(self._session_id, record)
 
     def turn(
         self,

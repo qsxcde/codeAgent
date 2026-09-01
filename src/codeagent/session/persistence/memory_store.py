@@ -15,8 +15,10 @@ from codeagent.session.persistence.models import (
     CompactionState,
     SessionQuery,
     SessionRef,
+    SubagentRunRecord,
     UsageStats,
 )
+from codeagent.session.persistence.subagent_records import fold_records
 
 class MemoryStore(MemoryRecoveryMixin, MemoryMetadataMixin):
     """内存后端(测试 / 一次性 headless 用),零文件系统依赖。"""
@@ -27,6 +29,7 @@ class MemoryStore(MemoryRecoveryMixin, MemoryMetadataMixin):
         self._compactions: list[tuple[str, CompactionEntry]] = []
         self._meta: dict[str, dict[str, Any]] = {}
         self._usage: dict[str, UsageStats] = {}
+        self._subagent_records: dict[str, list[SubagentRunRecord]] = {}
     def create(
         self,
         session_id: str,
@@ -50,6 +53,7 @@ class MemoryStore(MemoryRecoveryMixin, MemoryMetadataMixin):
         )
         self._sessions[session_id] = ref
         self._messages[session_id] = []
+        self._subagent_records[session_id] = []
         return ref
     def get(self, session_id: str) -> SessionRef | None:
         if session_id not in self._sessions:
@@ -75,6 +79,7 @@ class MemoryStore(MemoryRecoveryMixin, MemoryMetadataMixin):
         self._messages.pop(session_id, None)
         self._meta.pop(session_id, None)
         self._usage.pop(session_id, None)
+        self._subagent_records.pop(session_id, None)
         self._compactions = [
             (sid, entry) for sid, entry in self._compactions if sid != session_id
         ]
@@ -202,6 +207,18 @@ class MemoryStore(MemoryRecoveryMixin, MemoryMetadataMixin):
             raise ValueError(f"会话不存在: {session_id}")
         return self._usage.get(session_id, UsageStats())
 
+    def append_subagent_record(self, session_id: str, record: SubagentRunRecord) -> None:
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        if not isinstance(record, SubagentRunRecord):
+            raise TypeError("record must be a SubagentRunRecord")
+        self._subagent_records.setdefault(session_id, []).append(record)
+
+    def load_subagent_records(self, session_id: str) -> list[SubagentRunRecord]:
+        if session_id not in self._sessions:
+            raise ValueError(f"会话不存在: {session_id}")
+        return fold_records(self._subagent_records.get(session_id, ()))
+
     def fork(
         self, session_id: str, target_message_id: str, new_session_id: str
     ) -> SessionRef:
@@ -256,4 +273,5 @@ class MemoryStore(MemoryRecoveryMixin, MemoryMetadataMixin):
                 )
             )
         self._messages[new_session_id] = copied
+        self._subagent_records[new_session_id] = []
         return ref

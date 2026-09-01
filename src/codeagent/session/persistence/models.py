@@ -8,6 +8,8 @@ from typing import Any, Literal, Protocol
 
 from codeagent.core.contracts.messages import Message, new_id
 
+from .subagent_records import SubagentRunRecord
+
 CURRENT_VERSION = 1
 
 __all__ = [
@@ -20,6 +22,7 @@ __all__ = [
     "SessionRecoveryReport",
     "SessionRef",
     "SessionStore",
+    "SubagentRunRecord",
     "UsageStats",
 ]
 
@@ -271,6 +274,12 @@ class SessionStore(Protocol):
 
     def load_usage(self, session_id: str) -> UsageStats:
         """返回会话累计用量(所有 usage entry 之和;无记录返回全零)。"""
+
+    def append_subagent_record(
+        self, session_id: str, record: SubagentRunRecord
+    ) -> None: ...
+
+    def load_subagent_records(self, session_id: str) -> list[SubagentRunRecord]: ...
 
     def fork(
         self, session_id: str, target_message_id: str, new_session_id: str
