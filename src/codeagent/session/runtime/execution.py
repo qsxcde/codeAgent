@@ -35,7 +35,6 @@ class SessionExecutionMixin:
             raise RuntimeError("run must be started before execution")
         run_id = self.active_run_id
         self.current_task = asyncio.current_task()
-        context = AgentContext(messages=list(history), tools=list(config.tools))
         pending_steer = self._take_pending_steer()
         agent_config = self._build_agent_config(
             config,
@@ -44,6 +43,7 @@ class SessionExecutionMixin:
             policy,
             transform_context,
         )
+        context = AgentContext(messages=list(history), tools=list(agent_config.tools))
         self.agent = self._agent_factory(context, agent_config, recursion_limit)
         set_run_id = getattr(self.agent, "set_run_id", None)
         if callable(set_run_id):
@@ -76,7 +76,7 @@ class SessionExecutionMixin:
         values = {item.name: getattr(config, item.name) for item in fields(AgentLoopConfig)}
         values.update(
             {
-                "tools": list(values["tools"]),
+                "tools": self._bind_run_tools(values["tools"], run_id),
                 "before_tool_call": self._before_tool_call_factory(
                     run_id, policy, values["before_tool_call"]
                 ),
@@ -87,6 +87,14 @@ class SessionExecutionMixin:
             }
         )
         return AgentLoopConfig(**values)
+
+    @staticmethod
+    def _bind_run_tools(tools: list[Any], run_id: str) -> list[Any]:
+        bound: list[Any] = []
+        for tool in tools:
+            binder = getattr(tool, "bind_parent_run_id", None)
+            bound.append(binder(run_id) if callable(binder) else tool)
+        return bound
 
     def _before_tool_call_factory(
         self,

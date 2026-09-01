@@ -15,11 +15,39 @@ from ..runtime.factory import (
     policy_for_config,
 )
 from ..runtime.extensions import RuntimeExtensions
-from ..session.factory import create_session_manager
+from ..session.factory import create_agent_session, create_session_manager
 from codeagent.tools.shared import ToolResourceLimits
 
 
 class TuiConfigMixin:
+    def _ensure_subagent_runner(self) -> Any:
+        if getattr(self, "subagent_runner", None) is None:
+            from ..subagent.factory import create_serial_subagent_runner
+
+            self.subagent_runner = create_serial_subagent_runner(
+                self._create_child_session
+            )
+        return self.subagent_runner
+
+    def _create_child_session(self, request: Any) -> Any:
+        from ..subagent.profiles import allowed_tool_names_for
+
+        return create_agent_session(
+            self.cfg,
+            registry=self.registry,
+            store=None,
+            reasoning_effort=self.reasoning_effort,
+            provider=self.provider,
+            model=self.model,
+            approval_mode="interactive",
+            uncertain_budget_policy=self.uncertain_budget_policy,
+            context_preflight=self.context_preflight,
+            extensions=self.extensions,
+            resource_limits=self.resource_limits,
+            enable_subagents=False,
+            allowed_tool_names=allowed_tool_names_for(request.profile),
+        )
+
     def _build_summarizer(self) -> Any:
         from ..model.factory import LlmSummarizer
 
@@ -46,6 +74,7 @@ class TuiConfigMixin:
             context_preflight=self.context_preflight,
             extensions=self.extensions,
             resource_limits=self.resource_limits,
+            subagent_runner=self._ensure_subagent_runner(),
         )
 
     def _restore_session_config(self, ref: Any) -> Any:
@@ -72,6 +101,7 @@ class TuiConfigMixin:
             context_preflight=self.context_preflight,
             extensions=self.extensions,
             resource_limits=self.resource_limits,
+            subagent_runner=self._ensure_subagent_runner(),
         )
 
     def _build_manager(self) -> Any:
@@ -94,6 +124,7 @@ class TuiConfigMixin:
             context_preflight=self.context_preflight,
             extensions=self.extensions,
             resource_limits=self.resource_limits,
+            subagent_runner=self._ensure_subagent_runner(),
         )
         return self.manager
 
@@ -122,6 +153,7 @@ class TuiConfigMixin:
             context_preflight=self.context_preflight,
             extensions=self.extensions,
             resource_limits=self.resource_limits,
+            subagent_runner=self._ensure_subagent_runner(),
         )
 
     def _resolved_selection(

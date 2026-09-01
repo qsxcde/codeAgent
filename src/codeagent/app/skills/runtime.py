@@ -33,7 +33,7 @@ class CodeAgentAdapter:
         "find": True,
         "ls": True,
         "skill": True,
-        "subagents": False,
+        "subagents": True,
         "todo": False,
         "web": False,
     }
@@ -47,7 +47,7 @@ class CodeAgentAdapter:
         lines.extend(f"- {action} -> `{tool}`" for action, tool in self._TOOLS)
         lines.extend(
             [
-                "- subagent dispatch -> 当前不可用,按 Skill 中的 inline/fallback 流程执行",
+                "- subagent dispatch -> 使用 `delegate` 委派只读任务给独立子 Agent",
                 "- todo/task tracking -> 当前不可用,使用计划或 TODO 文件降级",
                 "- web fetch/search -> 当前不可用,不得调用不存在的工具",
             ]

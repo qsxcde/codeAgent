@@ -30,7 +30,8 @@ def test_codeagent_adapter_maps_available_and_missing_capabilities():
 
     assert "read" in mapping and "skill" in mapping
     assert capabilities["read"] is True
-    assert capabilities["subagents"] is False
+    assert capabilities["subagents"] is True
+    assert "delegate" in mapping
     assert capabilities["todo"] is False
     assert capabilities["web"] is False
 

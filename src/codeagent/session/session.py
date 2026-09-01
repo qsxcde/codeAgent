@@ -221,6 +221,11 @@ class AgentSession(
         return self._runtime.active_run_id is not None
 
     @property
+    def active_run_id(self) -> str | None:
+        """Return the current run identifier for parent/child correlation."""
+        return self._runtime.active_run_id
+
+    @property
     def context_tokens(self) -> int | None:
         return self._last_input_tokens
 
