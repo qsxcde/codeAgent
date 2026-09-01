@@ -126,6 +126,39 @@ def test_task_terminal_labels_keep_three_zone_boundaries_across_widths() -> None
         assert len({tuple(_divider_cells(text)) for text in bar_texts}) == 1
 
 
+def test_subagent_counts_share_runtime_zone_and_clear_after_completion() -> None:
+    bar = StatusBar(clock=lambda: 12.0)
+    bar.model = "模型"
+    bar.cwd = "/workspace"
+    bar.context_tokens = 1_000
+    bar.context_window = 4_000
+    bar.subagent_counts = {"running": 2, "waiting": 1, "failed": 1}
+
+    text = "".join(span.text for span in bar.render(100)[0])
+
+    assert "子Agent 运2 · 等1 · 失败1" in text
+    assert _cells(text) == 100
+    assert "模型" in text
+    assert "/workspace" in text
+
+    bar.subagent_counts = {}
+    cleared = "".join(span.text for span in bar.render(100)[0])
+    assert "子Agent" not in cleared
+    assert _cells(cleared) == 100
+
+
+def test_subagent_counts_are_bounded_by_existing_status_zones() -> None:
+    widths = (20, 39, 40, 55, 56, 63, 64, 87, 88, 119, 120)
+    for width in widths:
+        bar = StatusBar(clock=lambda: 12.0)
+        bar.model = "模型名称"
+        bar.cwd = "/a/very/long/工作目录"
+        bar.subagent_counts = {"running": 123, "waiting": 45, "failed": 6}
+        text = "".join(span.text for span in bar.render(width)[0])
+
+        assert _cells(text) == width
+
+
 async def test_status_timer_refreshes_without_agent_events() -> None:
     clock = FakeClock()
     model = TuiModel(clock=clock)

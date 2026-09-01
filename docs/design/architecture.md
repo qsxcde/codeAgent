@@ -44,8 +44,8 @@
 - `core/` Agent Runtime:根级 `agent.py` 为运行时外壳，`contracts/`、`context/`、`model/`、`execution/`、`orchestration/`、`observation.py` 和 `support/` 按职责组织纯内存、全异步实现；模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;会话标题支持自动派生和 append-only `name` 元数据重命名;`SessionQuery` 统一标题/id、模型、时间、运行状态和归档范围筛选,管理器为驻留会话叠加只读运行态;归档使用 append-only 元数据,删除由存储边界完成路径保护和索引清理;恢复报告区分 healthy/degraded/unavailable,有效损坏记录局部降级,结构性错误携带可操作建议;`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
-- 事件按消息、模型请求、工具生命周期和运行控制分组；模型请求显式发布 `model_request_started / model_request_finished`，工具生命周期包含 `tool_queued / tool_started / tool_progress / tool_finished / tool_result`，core 对应 `tool_execution_queued / tool_execution_start / tool_execution_update / tool_execution_end`，事件通过 `run_id`、`tool_call_id`、`operation_id` 和结构化状态字段关联。
-- 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)。
+- 事件按消息、模型请求、工具生命周期、运行控制和 Subagent 委派分组；模型请求显式发布 `model_request_started / model_request_finished`，工具生命周期包含 `tool_queued / tool_started / tool_progress / tool_finished / tool_result`，Subagent 使用 `subagent_queued / subagent_started / subagent_progress / subagent_finished`，事件通过 `run_id`、`parent_run_id`、`child_run_id`、`delegation_id`、`tool_call_id` 和结构化状态字段关联。
+- 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)；headless 对 Subagent 输出有界 `子Agent状态:` 行，TUI 使用独立委派块和状态栏聚合，不复制 child transcript。
 - Skills 系统(v0.3 阶段 1~4):SKILL.md 格式 + 三源发现(内建 `resources/skills/` / 个人 `<config_dir>/skills/` / 项目 `<cwd>/.codeagent/skills/`)+ 渐进式披露(名称/描述入 system prompt,**正文经 `skill` 工具按需获取**)+ TUI `/skills` 手动加载。
 - MCP(v0.3 阶段 2):用户级配置发现、工具 schema 适配、权限分类、`/mcp` 可见诊断与分组预算。
 - token 用量透明(v0.3 阶段 3):usage 归一、会话级 append-only 落库、`/status` 与 headless CLI 展示输入 / 输出 / 缓存命中（不做费用估算）。
@@ -78,6 +78,7 @@ codeagent/
 │   │   ├── main.py                   #   CLI 入口:--prompt / stdin / --tui
 │   │   ├── config.py                 #   全局 Settings + ~/.codeagent 模板幂等生成
 │   │   ├── context/agents.py         #   AGENTS.md 分层加载 + 基础提示词
+│   │   ├── subagent_observability.py #   headless 委派状态行投影(无终端依赖)
 │   │   ├── errors/reporting.py       #   安全错误呈现与诊断记录
 │   │   ├── skills/                   #   Skill 发现、提示词、运行时与 Package 生命周期
 │   │   │   └── packages/             #   Package 清单、注册表和安装
@@ -92,8 +93,8 @@ codeagent/
 │   │   └── tui/                      #   [调用层·TUI] 交互式终端 ✅ 已落地
 │   │       ├── ports/backend.py      #     Textual-free TuiBackend 端口
 │   │       ├── adapters/textual/     #     唯一具体 Textual 适配区
-│   │       ├── state/                #     TuiModel、runtime、Transcript 状态
-│   │       ├── presentation/         #     blocks、组件、文本和主题
+│   │       ├── state/                #     TuiModel、runtime、Transcript、委派投影
+│   │       ├── presentation/         #     blocks、状态栏、组件、文本和主题
 │   │       ├── commands/             #     解析、补全、分派、能力诊断和命令协调
 │   │       ├── session/              #     会话动作、对话和恢复
 │   │       ├── rendering/            #     帧调度与渲染协调
@@ -170,10 +171,11 @@ codeagent/
 | `app/context/agents.py` | AGENTS.md 分层加载 + 基础提示词 | 纯函数,可离线测 |
 | `app/skills/` | SKILL.md 三源发现、提示词、运行时和 Package 生命周期 | 不持有全局服务状态;三源同名遮蔽 个人>项目>内建 |
 | `app/tasks/` | 任务模式、监督、结果和验证工作流 | 验证命令结构化执行且禁止变更型命令 |
+| `app/subagent_observability.py` | headless Subagent 状态行的有界投影与终态去重 | 不依赖终端或 core;只消费结构化事件字段 |
 | `app/composition/model/` | AI 客户端端口适配、模型选择、能力快照和上下文预算 | 仅组合根跨越 `ai`/`core`;规范模块为唯一模型装配入口 |
-| `app/tui/state/` | TUI 事件投影、工具生命周期归约、历史恢复和 Transcript 增量视口布局 | 不依赖具体 Textual;后端只通过 `TuiBackend` |
+| `app/tui/state/` | TUI 事件投影、工具/委派生命周期归约、历史恢复和 Transcript 增量视口布局 | Subagent 先校验父 run;不把 child 事件送入父 runtime |
 | `app/tui/session/` | 会话命令、异步动作、对话协调、快照恢复和恢复诊断展示 | 恢复按成本后台化，并校验当前 session，丢弃过期结果；不可恢复目标不替换当前 transcript |
-| `app/tui/presentation/` | blocks、组件、Markdown、状态、输出和主题 | 纯终端表现层不 import Textual |
+| `app/tui/presentation/` | blocks、组件、Markdown、状态栏、输出和主题 | `SubagentBlock` 默认折叠且所有详情有界;不 import Textual |
 | `app/tui/adapters/textual/` | 当前唯一 Textual 引擎实现 | 只能依赖 TUI 端口和纯表现数据 |
 | `ai/` | 模型基础设施:模型契约、provider、transport、catalog、错误分类 | 不 import 应用、工具、编排；模型重试只包围完整模型请求 |
 | `core/` | 纯内存 Agent Runtime:上下文、循环、工具执行、生命周期状态与事件 | 不 import config / ai / tools / session |

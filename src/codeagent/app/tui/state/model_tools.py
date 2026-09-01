@@ -182,6 +182,9 @@ class ToolEventMixin:
         self.activity_visible = False
 
     def _apply_cancelled(self, event: AgentEvent) -> None:
+        cancel_subagents = getattr(self, "_cancel_active_subagents", None)
+        if callable(cancel_subagents):
+            cancel_subagents(event)
         metadata = self._event_metadata(event)
         target_id = str(metadata.get("tool_call_id") or "")
         blocks = list(self._pending_tools)

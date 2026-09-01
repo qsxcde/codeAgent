@@ -2,6 +2,7 @@
 
 from .errors import CancelledBlock, ErrorBlock
 from .message_blocks import ActivityBlock, AssistantBlock, UserBlock
+from .subagent import SubagentBlock
 from .tool_blocks import ToolCallBlock
 from ..primitives import Component, RichLine
 
@@ -13,5 +14,6 @@ __all__ = [
     "ErrorBlock",
     "RichLine",
     "ToolCallBlock",
+    "SubagentBlock",
     "UserBlock",
 ]

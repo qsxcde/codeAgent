@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -40,6 +41,8 @@ class TuiModel(ModelHistoryMixin, ModelEventMixin):
         self._pending_tools_by_id: dict[str, ToolCallBlock] = {}
         self._tool_blocks_by_id: dict[str, ToolCallBlock] = {}
         self._result_event_ids: set[str] = set()
+        self._subagent_blocks_by_id = OrderedDict()
+        self._subagent_evicted_ids: set[str] = set()
         self._pending_user_prompts: list[str] = []
         self.activity_visible = False
         self.activity_frame = 0

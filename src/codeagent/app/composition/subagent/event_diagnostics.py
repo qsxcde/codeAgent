@@ -12,6 +12,7 @@ from codeagent.core.contracts.subagents import SubagentResult, SubagentStatus
 from .runner_support import bounded, record_diagnostic
 
 _MAX_EVENT_DETAIL_CHARS = 512
+_MAX_TASK_LABEL_CHARS = 96
 
 
 def make_queued_event(active: Any) -> AgentEvent:
@@ -83,6 +84,8 @@ def _make_event(
         "child_run_id": child_run_id,
         "attempt_id": active.attempt_id,
         "depth": active.request.depth,
+        "profile": active.request.profile,
+        "task_label": _task_label(active.request.task),
         "subagent_status": status.value,
         "status": status.value,
     }
@@ -216,6 +219,15 @@ def _safe_detail(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return bounded(str(value), _MAX_EVENT_DETAIL_CHARS)
+
+
+def _task_label(value: Any) -> str:
+    """Keep one safe, bounded task label for parent-facing presentation."""
+    first_line = str(value or "").splitlines()[0].strip()
+    normalized = " ".join(first_line.split())
+    if len(normalized) <= _MAX_TASK_LABEL_CHARS:
+        return normalized
+    return normalized[: _MAX_TASK_LABEL_CHARS - 1] + "…"
 
 
 def _nonnegative_int(value: Any) -> int | None:

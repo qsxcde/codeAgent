@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
+from codeagent.app.subagent_observability import SubagentLineProjector
 from codeagent.app.tasks.modes import ModeParseError, TaskMode, parse_mode_input
 from codeagent.app.tasks.supervisor import TaskResult, TaskSupervisor
 
@@ -25,6 +27,7 @@ async def _respond(
     prompt: str,
     *,
     mode: TaskMode = TaskMode.AUTO,
+    on_subagent_line: Callable[[str], None] | None = None,
 ) -> tuple[str, dict[str, int], TaskResult]:
     """运行一轮对话并聚合回复与用量。"""
     queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -37,6 +40,24 @@ async def _respond(
     task = asyncio.create_task(supervisor.run(prompt, mode=mode))
     parts: list[str] = []
     usage: dict[str, int] = {}
+    subagent_projector = SubagentLineProjector()
+
+    def consume(event: Any) -> None:
+        ev_type = getattr(event, "type", None)
+        if ev_type == _EV_TEXT_DELTA:
+            parts.append(getattr(event, "payload", "") or "")
+        elif ev_type == _EV_AGENT_MESSAGE:
+            parts.append(str(getattr(event, "payload", "") or ""))
+        elif ev_type == _EV_TOOL_CALL:
+            parts.clear()
+        elif ev_type == _EV_USAGE:
+            payload = dict(event.payload or {})
+            for key in ("input_tokens", "output_tokens", "cached_tokens"):
+                usage[key] = usage.get(key, 0) + int(payload.get(key, 0) or 0)
+        line = subagent_projector.project(event)
+        if line is not None and on_subagent_line is not None:
+            on_subagent_line(line)
+
     try:
         while True:
             event_task = asyncio.create_task(queue.get())
@@ -44,30 +65,13 @@ async def _respond(
                 {event_task, task}, return_when=asyncio.FIRST_COMPLETED
             )
             if task in done:
+                if event_task in done:
+                    consume(event_task.result())
                 event_task.cancel()
                 break
-            event = event_task.result()
-            ev_type = getattr(event, "type", None)
-            if ev_type == _EV_TEXT_DELTA:
-                parts.append(getattr(event, "payload", "") or "")
-            elif ev_type == _EV_AGENT_MESSAGE:
-                parts.append(str(getattr(event, "payload", "") or ""))
-            elif ev_type == _EV_TOOL_CALL:
-                parts = []
-            elif ev_type == _EV_USAGE:
-                payload = dict(event.payload or {})
-                for key in ("input_tokens", "output_tokens", "cached_tokens"):
-                    usage[key] = usage.get(key, 0) + int(payload.get(key, 0) or 0)
-            elif ev_type in (_EV_TURN_END, _EV_ERROR, _EV_RUN_CANCELLED):
-                # The session turn ending is not the task ending; verification
-                # may still be running, so keep waiting for the supervisor.
-                continue
+            consume(event_task.result())
         while not queue.empty():
-            event = queue.get_nowait()
-            if getattr(event, "type", None) == _EV_TEXT_DELTA:
-                parts.append(getattr(event, "payload", "") or "")
-            elif getattr(event, "type", None) == _EV_AGENT_MESSAGE:
-                parts.append(str(getattr(event, "payload", "") or ""))
+            consume(queue.get_nowait())
     finally:
         unsubscribe()
         if not task.done():
@@ -107,8 +111,16 @@ async def _headless_once(
         print(f"已切换到 {parsed.next_sticky.value} 模式")
         return
     print(f"你: {parsed.text}")
-    text, usage, result = await _respond(session, parsed.text, mode=parsed.mode)
+    subagent_lines: list[str] = []
+    text, usage, result = await _respond(
+        session,
+        parsed.text,
+        mode=parsed.mode,
+        on_subagent_line=subagent_lines.append,
+    )
     print(text)
+    for line in subagent_lines:
+        print(line)
     if result.status.value not in {"no_changes"}:
         print(f"任务: {result.status.value} · {result.message}")
     line = _format_usage_line(usage)
@@ -134,8 +146,16 @@ async def _headless_loop(session: Any, *, show_context: bool = False) -> None:
             print(f"已切换到 {sticky.value} 模式")
             continue
         print(f"你: {parsed.text}")
-        text, usage, result = await _respond(session, parsed.text, mode=parsed.mode)
+        subagent_lines: list[str] = []
+        text, usage, result = await _respond(
+            session,
+            parsed.text,
+            mode=parsed.mode,
+            on_subagent_line=subagent_lines.append,
+        )
         print(text)
+        for line_out in subagent_lines:
+            print(line_out)
         if result.status.value not in {"no_changes"}:
             print(f"任务: {result.status.value} · {result.message}")
         line_out = _format_usage_line(usage)

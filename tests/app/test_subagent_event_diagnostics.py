@@ -332,7 +332,7 @@ async def test_real_fake_parent_receives_top_level_subagent_events_and_continues
 
 
 @pytest.mark.unit
-def test_tui_model_ignores_child_subagent_events_until_dedicated_projection_exists() -> None:
+def test_tui_model_ignores_unregistered_child_subagent_events() -> None:
     model = TuiModel(clock=lambda: 1.0)
     model.apply(
         AgentEvent(
@@ -358,3 +358,4 @@ def test_tui_model_ignores_child_subagent_events_until_dedicated_projection_exis
 
     assert model.runtime == before
     assert model.transcript.block_count == 1
+    assert model.subagent_blocks == []

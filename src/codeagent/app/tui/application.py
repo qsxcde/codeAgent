@@ -14,7 +14,7 @@ from typing import Any
 
 from codeagent.app.skills.models import Skill
 from .ports.backend import TuiBackend
-from .presentation.blocks import ToolCallBlock
+from .presentation.blocks import SubagentBlock, ToolCallBlock
 from .state.model import TuiModel
 from .presentation.status import FooterInfo
 from .rendering.coordinator import TuiEventBuffer, TuiRenderCoordinator
@@ -142,7 +142,7 @@ class TuiApp(
     def _click(self, row: int) -> None:
         """点击 transcript 某行:若命中工具块则切换折叠(design D4)。"""
         block = self.model.transcript.block_at(row)
-        if isinstance(block, ToolCallBlock):
+        if isinstance(block, (ToolCallBlock, SubagentBlock)):
             block.toggle_expand()
             self._schedule_render()
 

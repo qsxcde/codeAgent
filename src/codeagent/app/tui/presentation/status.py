@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 from .primitives import (
     Component, RichLine, _cell_width, _seg, _truncate_spans,
@@ -13,6 +13,8 @@ from ..state.runtime import RuntimePhase, RuntimeSnapshot, phase_label
 from .theme import ACCENT, DIM, STATUS_MODEL, STATUS_PATH, WARNING
 from .status_clock import TaskStatusClock
 from .status_context import render_context_spans
+from .status_footer import FooterInfo
+from .status_subagents import render_subagent_counts
 from .status_tool_counts import render_tool_counts
 
 
@@ -58,6 +60,7 @@ class StatusBar(Component):
         self.task_max_attempts = 0
         self.task_message = ""
         self.mode = ""
+        self.subagent_counts: dict[str, int] = {}
 
     @property
     def task_phase(self) -> str:
@@ -245,6 +248,9 @@ class StatusBar(Component):
         tool_counts = render_tool_counts(runtime.tool_counts)
         if tool_counts:
             details.append(tool_counts)
+        subagent_counts = render_subagent_counts(self.subagent_counts)
+        if subagent_counts:
+            details.append(subagent_counts)
         if runtime.context_stale:
             details.append("上下文同步中")
         if self.new_output_count:
@@ -281,20 +287,3 @@ class StatusBar(Component):
             self.context_window,
             meter_width=self._CONTEXT_BAR_WIDTH,
         )
-
-
-@dataclass(frozen=True)
-class FooterInfo:
-    """底部状态栏装配数据(装配时解析固化,design D5)。
-
-    - ``model`` / ``effort``:状态栏中的模型与思考强度;
-    - ``provider``:当前 provider(选择面板 ✓ 标记用;状态栏不显示);
-    - ``cwd``:状态栏显示的工作目录。
-    """
-
-    model: str = ""
-    effort: str = ""
-    provider: str = ""
-    cwd: str = ""
-    #: app composition 提供的只读模型能力快照。
-    capabilities: object | None = None

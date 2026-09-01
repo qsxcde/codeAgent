@@ -13,6 +13,9 @@ class ModelHistoryMixin:
 
     def hydrate_history(self, history: list[Any], summary: str | None = None) -> None:
         """从会话快照重建 transcript，不写回会话，也不触发模型调用。"""
+        reset_subagents = getattr(self, "_reset_subagent_projection", None)
+        if callable(reset_subagents):
+            reset_subagents()
         self.transcript.clear()
         self.running = False
         self._assistant = None

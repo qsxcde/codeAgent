@@ -5,8 +5,9 @@ from __future__ import annotations
 from ..presentation.blocks import ErrorBlock, UserBlock
 from ..presentation.primitives import _visible_user_content
 from .runtime import RuntimePhase
-from codeagent.core.contracts.events import AgentEvent, EventType
+from codeagent.core.contracts.events import SUBAGENT_EVENT_TYPES, AgentEvent, EventType
 from .model_tools import ToolEventMixin
+from .model_subagents import SubagentEventMixin
 
 
 def _token_label(value: object) -> str:
@@ -19,13 +20,17 @@ def _token_label(value: object) -> str:
         return "—"
 
 
-class ModelEventMixin(ToolEventMixin):
+class ModelEventMixin(SubagentEventMixin, ToolEventMixin):
     """维护运行态、活动提示、工具块和助手块。"""
 
     def apply(self, event: AgentEvent) -> None:
         self._event_count += 1
+        if event.type in SUBAGENT_EVENT_TYPES:
+            self._apply_subagent_event(event)
+            return
         self.runtime = self._runtime_reducer.apply(self.runtime, event)
         self.status.apply_snapshot(self.runtime, now=self._clock())
+        self._sync_subagent_counts()
         self.running = self.runtime.phase in {
             RuntimePhase.WAITING_MODEL,
             RuntimePhase.STREAMING,
