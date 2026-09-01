@@ -8,7 +8,7 @@
 
 ### Requirement: 父 Agent 委派入口
 
-当 Subagent runtime 被装配到父 Agent 时，系统 SHALL 提供名为 `delegate` 的 AgentTool。该工具 SHALL 接受非空的子任务描述、`read_only` 或 `review` profile，以及可选且有界的显式上下文，将调用转换为包含稳定 `delegation_id`、当前父 `run_id`、深度限制、任务文本、profile 和上下文项的 `SubagentRequest`；模型输入不得自行覆盖父运行标识或委派归属，未知 profile 必须失败关闭。
+当 Subagent runtime 被装配到父 Agent 时，系统 SHALL 提供名为 `delegate` 的 AgentTool。该工具 SHALL 接受非空的子任务描述、`read_only` 或 `review` profile、可选且有界的 budget，以及可选且有界的显式上下文，将调用转换为包含稳定 `delegation_id`、当前父 `run_id`、深度限制、任务文本、profile、预算和上下文项的 `SubagentRequest`；模型输入不得自行覆盖父运行标识或委派归属，未知 profile 或越界 budget 必须失败关闭。
 
 #### Scenario: 父 Agent 调用只读委派
 
@@ -22,8 +22,8 @@
 
 #### Scenario: 委派参数无效
 
-- **WHEN** `delegate` 的 task 为空、profile 未知、context 不是合法的有界结构，或当前工具没有绑定父 run_id
-- **THEN** 系统不创建子 Agent，返回带 `invalid_request` 或 `permission_denied` 的错误 ToolResult，父 Agent 仍能继续处理该工具结果
+- **WHEN** `delegate` 的 task 为空、profile 未知、budget 不是合法的有界结构、context 不是合法的有界结构，或当前工具没有绑定父 run_id
+- **THEN** 系统不创建子 Agent，返回带 `invalid_request`、`permission_denied` 或明确预算错误码的错误 ToolResult，父 Agent 仍能继续处理该工具结果
 
 #### Scenario: 未装配 runner 的兼容行为
 
@@ -32,7 +32,7 @@
 
 ### Requirement: 串行独立子运行
 
-系统 SHALL 通过 runner 为每次合法委派创建独立的临时子 Agent。子运行 SHALL 拥有独立的 Session/Run 标识、AgentContext、EventBus、模型/工具资源和关闭边界；不得调用用户 SessionManager 的切换、分叉或当前会话指针。单个 runner 同时 SHALL 至少保证只有一个子运行正在执行，后续委派 SHALL 等待前一个委派结束后再启动。
+系统 SHALL 通过 runner 为每次合法委派创建独立的临时子 Agent。子运行 SHALL 拥有独立的 Session/Run 标识、AgentContext、EventBus、模型/工具资源和关闭边界，并 SHALL 应用该请求解析后的轮数、工具调用数、墙钟时间和摘要长度预算；不得调用用户 SessionManager 的切换、分叉或当前会话指针。单个 runner 同时 SHALL 至少保证只有一个子运行正在执行，后续委派 SHALL 等待前一个委派结束后再启动，等待期间也必须可被取消或超时。
 
 #### Scenario: 子运行不共享父历史
 
@@ -47,12 +47,12 @@
 #### Scenario: 多次委派保持串行
 
 - **WHEN** 同一 runner 在第一个子任务运行期间收到第二个委派
-- **THEN** 第二个委派可以进入等待队列，但任何时刻最多一个子 Agent 执行模型或工具调用，且两个委派分别返回自己的结果和身份
+- **THEN** 第二个委派可以进入等待队列，但任何时刻最多一个子 Agent 执行模型或工具调用，且两个委派分别返回自己的结果和身份，等待期间也受各自墙钟预算约束
 
 #### Scenario: 子运行结束释放资源
 
-- **WHEN** 子 Agent 成功、失败或执行任务被取消
-- **THEN** runner 等待子 Session 收尾并关闭其模型、工具和事件资源，活动委派表不会保留已结束的子任务
+- **WHEN** 子 Agent 成功、失败、预算耗尽、超时或执行任务被取消
+- **THEN** runner 等待子 Session 进入终态并执行有界关闭，其活动委派表不会保留已结束的子任务；无法确认关闭时结果必须保留 `cleanup_uncertain`
 
 ### Requirement: 安全的子 Agent 装配
 
@@ -99,16 +99,16 @@
 
 ### Requirement: 有界结果回传
 
-系统 SHALL 将子 Agent 的终态转换为父 Agent 可消费的 ToolResult。成功结果 SHALL 包含有限的文本摘要及 delegation_id、child_run_id 和子状态；失败、拒绝或取消 SHALL 设置错误/非成功状态并携带稳定 reason code 和可诊断信息。父会话 SHALL 只接收该委派结果，不接收子 Agent 的完整 transcript 或内部任务对象。
+系统 SHALL 将子 Agent 的终态转换为父 Agent 可消费的 ToolResult。成功结果 SHALL 包含不超过有效 `max_output_chars` 的文本摘要及 delegation_id、child_run_id、子状态和清理诊断；失败、拒绝、超时或取消 SHALL 设置错误/非成功状态并携带稳定 reason code 和可诊断信息。父会话 SHALL 只接收该委派结果，不接收子 Agent 的完整 transcript 或内部任务对象；任何 `cleanup_uncertain` SHALL 通过结构化字段或诊断传递，不能被标记为已确认清理。
 
 #### Scenario: 子 Agent 成功返回摘要
 
-- **WHEN** 子 Agent 完成只读任务并产生最终回答
+- **WHEN** 子 Agent 完成只读任务并产生最终回答，且临时资源关闭已确认
 - **THEN** `delegate` 返回非错误 ToolResult，内容为有限摘要，details 保留委派标识、子运行标识和 `completed` 状态，父 Agent 可据此继续请求模型
 
 #### Scenario: 子 Agent 失败可区分
 
-- **WHEN** 子 Agent 在启动或执行阶段失败
+- **WHEN** 子 Agent 在启动、执行或预算治理阶段失败
 - **THEN** `delegate` 返回错误 ToolResult，status 与稳定 failure reason code 可区分失败原因，父 Agent 不会把该结果当作成功摘要
 
 #### Scenario: 终态结果不泄漏完整子历史
@@ -116,9 +116,14 @@
 - **WHEN** 父 Agent 将 delegate ToolResult 写入自己的工作上下文或提交自己的会话
 - **THEN** 结果只包含有界摘要和结构化诊断，不包含子 Agent 的完整消息列表、内部可变上下文或无界工具输出
 
+#### Scenario: 清理不确定不会被伪装成成功收尾
+
+- **WHEN** 子 Agent 已结束但取消、超时或关闭阶段无法确认其模型、工具、事件或子进程资源已经停止
+- **THEN** 结果保留 `cleanup_uncertain=true` 和有限诊断；ToolResult 的 cleanup_confirmed 不得为 true
+
 ### Requirement: 委派取消定位
 
-runner SHALL 支持按 delegation_id 定位活动子运行并请求取消。未知或已结束的 delegation_id SHALL 返回未取消的明确结果，不得影响其它委派或父会话；活动子运行取消后 SHALL 继续执行有限收尾并释放其临时资源。
+runner SHALL 支持按 delegation_id 定位活动子运行并请求取消。未知或已结束的 delegation_id SHALL 返回未取消的明确结果，不得影响其它委派或父会话；活动子运行取消后 SHALL 继续执行有限收尾并释放其临时资源。父级取消、预算耗尽和墙钟超时 SHALL 产生不同的稳定终态与 reason code。
 
 #### Scenario: 取消活动委派
 
@@ -129,3 +134,37 @@ runner SHALL 支持按 delegation_id 定位活动子运行并请求取消。未�
 
 - **WHEN** 调用方按不存在或已经终止的 delegation_id 请求取消
 - **THEN** runner 返回 false/未定位结果，不改变其它委派、父 Session 或历史消息
+
+#### Scenario: 墙钟超时取消委派
+
+- **WHEN** 委派从进入队列开始经过有效 timeout_seconds，仍未完成模型、工具或确认等待
+- **THEN** runner 请求子 Session 取消并执行有界收尾，返回 `timed_out` 与 `timeout`，不把超时误报为父级取消
+
+### Requirement: 子运行预算与有界收尾
+
+系统 SHALL 为每个父运行设置最多 4 个已接受的子任务，并为每个子运行设置有效预算。未提供的 budget 字段 SHALL 使用 `max_turns=8`、`max_tool_calls=32`、`timeout_seconds=120` 和 `max_output_chars=8000`；调用方可请求的硬上限分别为 16、64、300 秒和 16000 字符。预算字段必须是正数且 timeout_seconds 必须为有限数值，超过硬上限的请求在创建子 Session 前拒绝。达到轮数或工具调用数上限时，runner SHALL 停止子运行并返回 `failed + budget_exceeded`。
+
+#### Scenario: 缺省预算受到硬限制
+
+- **WHEN** `delegate` 未提供 budget 或只提供部分字段
+- **THEN** 系统为缺失字段填充上述默认值，子运行最多执行 8 轮和 32 次工具调用，墙钟最多 120 秒，摘要最多 8000 字符
+
+#### Scenario: 父运行子任务数耗尽
+
+- **WHEN** 同一个父 run_id 已经接受 4 个子任务后再次调用 `delegate`
+- **THEN** 第 5 个请求不创建子 Session，返回 `failed + budget_exceeded`，且不影响前 4 个委派和父 Agent
+
+#### Scenario: 子运行轮数或工具调用数耗尽
+
+- **WHEN** 子 Agent 即将开始超过 max_turns 的模型轮次，或即将执行超过 max_tool_calls 的工具调用
+- **THEN** 系统请求子运行进入取消/收尾，返回 `failed + budget_exceeded`，并保留达到的预算边界诊断
+
+#### Scenario: 确认等待也受墙钟预算约束
+
+- **WHEN** 子 Agent 在等待工具确认时父级取消或 timeout_seconds 到期
+- **THEN** 确认等待被唤醒，子 Session、工具任务和 runner 收尾，不留下挂起的确认请求；结果分别使用 `parent_cancelled` 或 `timeout`
+
+#### Scenario: 清理必须有界且诚实
+
+- **WHEN** 子 Session 的 cancel_and_wait、事件观察任务或 close 操作在有限清理窗口内没有结束，或明确报告失败
+- **THEN** runner 停止无限等待，结果设置 cleanup_uncertain=true 并携带截断后的清理诊断；不得声称子资源已确认关闭
