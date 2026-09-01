@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -193,6 +194,7 @@ class SubagentResult:
     summary: str = ""
     failure: SubagentFailure | None = None
     diagnostics: tuple[str, ...] = ()
+    cleanup_uncertain: bool = False
 
     def __post_init__(self) -> None:
         _require_text(self.delegation_id, "delegation_id")
@@ -223,6 +225,10 @@ class SubagentResult:
             object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
         if not all(isinstance(item, str) for item in self.diagnostics):
             raise SubagentContractError("diagnostics must contain strings", code="invalid_result")
+        if not isinstance(self.cleanup_uncertain, bool):
+            raise SubagentContractError(
+                "cleanup_uncertain must be a bool", code="invalid_result"
+            )
 
 
 SubagentEventSink = Callable[[AgentEvent], Awaitable[None] | None]
@@ -262,5 +268,10 @@ def _nonnegative_int(value: int, name: str) -> None:
 def _positive_number(value: float | None, name: str) -> None:
     if value is None:
         return
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or value <= 0
+    ):
         raise SubagentRequestError(f"{name} must be a positive number")

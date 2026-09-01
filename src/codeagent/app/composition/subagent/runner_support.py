@@ -4,60 +4,100 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from typing import Any
 
-from codeagent.core.contracts.subagents import (
-    SubagentFailure,
-    SubagentFailurePhase,
-    SubagentReasonCode,
-    SubagentResult,
-    SubagentStatus,
-)
-
 _MAX_DIAGNOSTIC_CHARS = 2_000
+_MAX_DIAGNOSTICS = 8
+DEFAULT_CLEANUP_TIMEOUT = 10.0
 
 
 async def observe_event(result: Any, active: Any) -> None:
     try:
         await result
     except Exception as exc:  # noqa: BLE001 - observers are isolated
-        active.diagnostics.append(diagnostic("子事件回调", exc))
+        record_diagnostic(active, diagnostic("子事件回调", exc))
 
 
-async def cancel_session(active: Any) -> None:
+async def cancel_session(active: Any, *, timeout: float | None = None) -> None:
+    """Request cancellation and wait for known child work within one deadline."""
+    deadline = time.monotonic() + _cleanup_timeout(active, timeout)
     session = active.session
     if session is not None:
         cancel_and_wait = getattr(session, "cancel_and_wait", None)
         if callable(cancel_and_wait):
-            result = cancel_and_wait()
-            if inspect.isawaitable(result):
-                await result
-            return
-        abort = getattr(session, "abort", None)
-        if callable(abort):
-            abort()
+            try:
+                result = cancel_and_wait(timeout=_remaining(deadline))
+                if inspect.isawaitable(result):
+                    result = await _bounded(result, deadline)
+                if result is False:
+                    mark_cleanup_uncertain(active, "取消子 Session 未进入空闲", None)
+            except asyncio.TimeoutError as exc:
+                mark_cleanup_uncertain(active, "取消子 Session 超时", exc)
+            except Exception as exc:  # noqa: BLE001 - cancellation is diagnostic
+                mark_cleanup_uncertain(active, "取消子 Session", exc)
+        else:
+            abort = getattr(session, "abort", None)
+            if callable(abort):
+                try:
+                    abort()
+                except Exception as exc:  # noqa: BLE001 - cancellation is diagnostic
+                    mark_cleanup_uncertain(active, "中止子 Session", exc)
     task = active.task
     if task is not None and not task.done() and task is not asyncio.current_task():
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        try:
+            await _bounded(asyncio.shield(task), deadline)
+        except asyncio.CancelledError:
+            # The child task reached the requested cancellation boundary.
+            pass
+        except asyncio.TimeoutError as exc:
+            mark_cleanup_uncertain(active, "等待子运行取消", exc)
+    elif session is None:
+        execution = getattr(active, "execution_task", None)
+        if (
+            execution is not None
+            and not execution.done()
+            and execution is not asyncio.current_task()
+        ):
+            execution.cancel()
+            try:
+                await _bounded(asyncio.shield(execution), deadline)
+            except asyncio.CancelledError:
+                pass
+            except asyncio.TimeoutError as exc:
+                mark_cleanup_uncertain(active, "取消排队委派", exc)
 
 
-async def close_active(active: Any) -> None:
+async def close_active(active: Any, *, timeout: float | None = None) -> None:
+    """Unsubscribe and close a child session without unbounded awaits."""
+    deadline = time.monotonic() + _cleanup_timeout(active, timeout)
     if active.unsubscribe is not None:
         try:
             active.unsubscribe()
         except Exception as exc:  # noqa: BLE001 - cleanup is best effort
-            active.diagnostics.append(diagnostic("取消子事件订阅", exc))
+            mark_cleanup_uncertain(active, "取消子事件订阅", exc)
     if active.event_tasks:
-        await asyncio.gather(*active.event_tasks, return_exceptions=True)
+        try:
+            await _bounded(
+                asyncio.gather(*active.event_tasks, return_exceptions=True), deadline
+            )
+        except asyncio.TimeoutError as exc:
+            mark_cleanup_uncertain(active, "等待子事件观察任务", exc)
+            for task in active.event_tasks:
+                if not task.done():
+                    task.cancel()
     close = getattr(active.session, "close", None)
     if callable(close):
         try:
             result = close()
             if inspect.isawaitable(result):
-                await result
+                await _bounded(result, deadline)
         except Exception as exc:  # noqa: BLE001 - preserve primary outcome
-            active.diagnostics.append(diagnostic("关闭子 Session", exc))
+            mark_cleanup_uncertain(active, "关闭子 Session", exc)
+    if active.task is not None and not active.task.done():
+        active.task.cancel()
+        mark_cleanup_uncertain(active, "子运行仍未结束", None)
 
 
 def child_run_id(session: Any) -> str | None:
@@ -69,14 +109,14 @@ def child_run_id(session: Any) -> str | None:
     return str(value) if value else None
 
 
-def child_summary(session: Any, returned: Any) -> str:
+def child_summary(session: Any, returned: Any, *, limit: int = _MAX_DIAGNOSTIC_CHARS) -> str:
     if isinstance(returned, str):
-        return bounded(returned)
+        return bounded(returned, limit)
     history = getattr(session, "history", ())
     for message in reversed(list(history or ())):
         if getattr(message, "role", None) == "assistant":
-            return bounded(str(getattr(message, "content", "") or ""))
-    return bounded(str(returned or ""))
+            return bounded(str(getattr(message, "content", "") or ""), limit)
+    return bounded(str(returned or ""), limit)
 
 
 def child_outcome(session: Any) -> tuple[str | None, str | None]:
@@ -94,53 +134,44 @@ def child_outcome(session: Any) -> tuple[str | None, str | None]:
     return str(phase_value), str(message) if message else None
 
 
-def failure_result(
-    active: Any,
-    status: SubagentStatus,
-    reason: SubagentReasonCode,
-    phase: SubagentFailurePhase,
-    error: Exception,
-) -> SubagentResult:
-    failure = SubagentFailure(
-        reason_code=reason.value,
-        message=bounded(str(error)),
-        phase=phase.value,
-    )
-    return SubagentResult(
-        delegation_id=active.request.delegation_id,
-        status=status,
-        child_run_id=active.child_run_id,
-        attempt_id=active.attempt_id,
-        failure=failure,
-        diagnostics=tuple(active.diagnostics),
-    )
-
-
-def rejected_result(request: Any, reason: str, message: str) -> SubagentResult:
-    delegation_id = getattr(request, "delegation_id", "invalid") or "invalid"
-    return SubagentResult(
-        delegation_id=str(delegation_id),
-        status=SubagentStatus.REJECTED,
-        failure=SubagentFailure(
-            reason_code=reason,
-            message=bounded(message),
-            phase=SubagentFailurePhase.VALIDATION.value,
-        ),
-    )
-
-
-def cancelled_result(active: Any) -> SubagentResult:
-    return failure_result(
-        active,
-        SubagentStatus.CANCELLED,
-        SubagentReasonCode.PARENT_CANCELLED,
-        SubagentFailurePhase.CANCELLING,
-        RuntimeError("父 Agent 已取消子运行"),
-    )
+def child_failure_code(session: Any) -> str | None:
+    """Read a stable child failure code without importing Session."""
+    failure = getattr(session, "last_failure", None)
+    if isinstance(failure, dict):
+        code = failure.get("error_code") or failure.get("code")
+        return str(code) if code else None
+    return None
 
 
 def diagnostic(prefix: str, error: Exception) -> str:
     return bounded(f"{prefix}: {error}")
+
+
+def record_diagnostic(active: Any, value: str) -> None:
+    if len(active.diagnostics) < _MAX_DIAGNOSTICS:
+        active.diagnostics.append(bounded(value))
+
+
+def mark_cleanup_uncertain(active: Any, prefix: str, error: Exception | None) -> None:
+    active.cleanup_uncertain = True
+    if error is not None:
+        active.cleanup_error = bounded(str(error))
+        record_diagnostic(active, diagnostic(prefix, error))
+    else:
+        record_diagnostic(active, bounded(prefix))
+
+
+def _cleanup_timeout(active: Any, timeout: float | None) -> float:
+    value = timeout if timeout is not None else getattr(active, "cleanup_timeout", None)
+    return max(0.001, float(value if value is not None else DEFAULT_CLEANUP_TIMEOUT))
+
+
+def _remaining(deadline: float) -> float:
+    return max(0.001, deadline - time.monotonic())
+
+
+async def _bounded(awaitable: Any, deadline: float) -> Any:
+    return await asyncio.wait_for(awaitable, timeout=_remaining(deadline))
 
 
 def bounded(value: str, limit: int = _MAX_DIAGNOSTIC_CHARS) -> str:
@@ -151,13 +182,13 @@ def bounded(value: str, limit: int = _MAX_DIAGNOSTIC_CHARS) -> str:
 __all__ = [
     "bounded",
     "cancel_session",
-    "cancelled_result",
+    "child_failure_code",
     "child_run_id",
     "child_outcome",
     "child_summary",
     "close_active",
     "diagnostic",
-    "failure_result",
+    "mark_cleanup_uncertain",
     "observe_event",
-    "rejected_result",
+    "record_diagnostic",
 ]

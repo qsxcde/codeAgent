@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from codeagent.core.contracts.events import AgentEvent, EventType
@@ -298,6 +300,28 @@ def test_budget_exhaustion_is_failed_reason_not_a_new_status() -> None:
 
     assert result.status is status_type.FAILED
     assert result.failure.reason_code == _public("SubagentReasonCode").BUDGET_EXCEEDED
+
+
+@pytest.mark.unit
+def test_budget_rejects_non_finite_timeout() -> None:
+    budget_type = _public("SubagentBudget")
+
+    for timeout in (math.inf, math.nan, -math.inf):
+        with pytest.raises(_public("SubagentRequestError")):
+            budget_type(timeout_seconds=timeout)
+
+
+@pytest.mark.unit
+def test_result_retains_cleanup_uncertain_without_breaking_old_constructor() -> None:
+    request = _request()
+    result = _public("SubagentResult")(
+        delegation_id=request.delegation_id,
+        status=_public("SubagentStatus").COMPLETED,
+        summary="done",
+        cleanup_uncertain=True,
+    )
+
+    assert result.cleanup_uncertain is True
 
 
 @pytest.mark.unit

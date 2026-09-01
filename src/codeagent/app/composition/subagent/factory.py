@@ -11,6 +11,7 @@ from codeagent.session.compaction import CompactionPolicyConfig
 from codeagent.tools.shared import ToolResourceLimits
 
 from .runner import ChildSessionFactory, SerialSubagentRunner
+from .budget import effective_budget
 from .profiles import allowed_tool_names_for, instructions_for
 from ..runtime.extensions import RuntimeExtensions
 
@@ -43,6 +44,11 @@ def make_child_session_factory(
 ) -> Callable[[SubagentRequest], Any]:
     """Build a no-recursion, profile-filtered temporary Session factory."""
     def create_child(request: SubagentRequest) -> Any:
+        budget = effective_budget(request.budget)
+        child_recursion_limit = min(
+            recursion_limit or budget.max_turns,
+            budget.max_turns,
+        )
         return session_factory(
             cfg,
             registry=registry,
@@ -50,7 +56,7 @@ def make_child_session_factory(
             reasoning_effort=reasoning_effort,
             provider=provider,
             model=model,
-            recursion_limit=recursion_limit,
+            recursion_limit=child_recursion_limit,
             tool_timeout=tool_timeout,
             resource_limits=resource_limits,
             confirmation_timeout=confirmation_timeout,

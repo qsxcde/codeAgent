@@ -5,11 +5,13 @@ from __future__ import annotations
 import uuid
 import asyncio
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from codeagent.core.contracts.messages import ToolExecutionStatus, ToolResult
 from codeagent.core.contracts.subagents import (
-    SubagentFailure,
+    SubagentBudget,
+    SubagentContextItem,
     SubagentReasonCode,
     SubagentRequest,
     SubagentResult,
@@ -23,8 +25,24 @@ from .context import (
     parse_context,
 )
 from .profiles import profile_for
+from .budget import (
+    DEFAULT_MAX_CHILDREN_PER_RUN,
+    MAX_MAX_OUTPUT_CHARS,
+    MAX_MAX_TOOL_CALLS,
+    MAX_MAX_TURNS,
+    MAX_TIMEOUT_SECONDS,
+    parse_budget,
+)
+from .delegate_result import error_result as _error_result
+from .delegate_result import tool_result as _tool_result
 
-_MAX_RESULT_CHARS = 8_000
+
+@dataclass(frozen=True)
+class _DelegateArguments:
+    task: str
+    profile: str
+    context: tuple[SubagentContextItem, ...]
+    budget: SubagentBudget
 
 
 class DelegateTool:
@@ -67,6 +85,33 @@ class DelegateTool:
                     "additionalProperties": False,
                 },
             },
+            "budget": {
+                "type": "object",
+                "description": "限制子 Agent 的轮数、工具调用数、墙钟时间和摘要长度",
+                "properties": {
+                    "max_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MAX_TURNS,
+                    },
+                    "max_tool_calls": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MAX_TOOL_CALLS,
+                    },
+                    "timeout_seconds": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": MAX_TIMEOUT_SECONDS,
+                    },
+                    "max_output_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_MAX_OUTPUT_CHARS,
+                    },
+                },
+                "additionalProperties": False,
+            },
         },
         "required": ["task"],
         "additionalProperties": False,
@@ -79,13 +124,21 @@ class DelegateTool:
         runner: SubagentRunner,
         *,
         parent_run_id: str | None = None,
+        max_children_per_run: int = DEFAULT_MAX_CHILDREN_PER_RUN,
     ) -> None:
         self._runner = runner
         self._parent_run_id = parent_run_id
+        self._max_children_per_run = max_children_per_run
+        self._quota_lock = asyncio.Lock()
+        self._accepted_children = 0
 
     def bind_parent_run_id(self, run_id: str) -> "DelegateTool":
         """Return a per-run copy without mutating the configured template."""
-        return type(self)(self._runner, parent_run_id=run_id)
+        return type(self)(
+            self._runner,
+            parent_run_id=run_id,
+            max_children_per_run=self._max_children_per_run,
+        )
 
     async def execute(
         self,
@@ -96,6 +149,24 @@ class DelegateTool:
         on_update: Any = None,
     ) -> ToolResult:
         del signal
+        parsed = self._parse_arguments(tool_call_id, arguments)
+        if isinstance(parsed, ToolResult):
+            return parsed
+        if not await self._reserve_child_slot():
+            return _error_result(
+                tool_call_id,
+                SubagentReasonCode.BUDGET_EXCEEDED.value,
+                f"当前父运行最多接受 {self._max_children_per_run} 个子任务",
+                status=ToolExecutionStatus.FAILED,
+            )
+        request = self._build_request(parsed)
+        return await self._execute_request(tool_call_id, request, on_update)
+
+    def _parse_arguments(
+        self,
+        tool_call_id: str,
+        arguments: object,
+    ) -> _DelegateArguments | ToolResult:
         if not isinstance(arguments, Mapping):
             return _error_result(
                 tool_call_id,
@@ -138,6 +209,7 @@ class DelegateTool:
             )
         try:
             context = parse_context(arguments.get("context"))
+            budget = parse_budget(arguments.get("budget"))
         except ValueError as exc:
             return _error_result(
                 tool_call_id,
@@ -145,16 +217,35 @@ class DelegateTool:
                 str(exc),
                 status=ToolExecutionStatus.INVALID_ARGUMENTS,
             )
+        return _DelegateArguments(task.strip(), profile, context, budget)
 
+    async def _reserve_child_slot(self) -> bool:
+        async with self._quota_lock:
+            if self._accepted_children >= self._max_children_per_run:
+                return False
+            self._accepted_children += 1
+            return True
+
+    def _build_request(self, arguments: _DelegateArguments) -> SubagentRequest:
         request = SubagentRequest(
             delegation_id=str(uuid.uuid4()),
             parent_run_id=self._parent_run_id,
-            task=task.strip(),
-            profile=profile,
+            task=arguments.task,
+            profile=arguments.profile,
             depth=1,
             max_depth=1,
-            context=context,
+            budget=arguments.budget,
+            context=arguments.context,
         )
+
+        return request
+
+    async def _execute_request(
+        self,
+        tool_call_id: str,
+        request: SubagentRequest,
+        on_update: Any,
+    ) -> ToolResult:
         try:
             result = await self._runner.execute(request, on_event=on_update)
         except asyncio.CancelledError:
@@ -167,72 +258,6 @@ class DelegateTool:
                 status=ToolExecutionStatus.FAILED,
             )
         return _tool_result(tool_call_id, result)
-
-
-def _tool_result(tool_call_id: str, result: SubagentResult) -> ToolResult:
-    details: dict[str, Any] = {
-        "delegation_id": result.delegation_id,
-        "child_run_id": result.child_run_id,
-        "attempt_id": result.attempt_id,
-        "subagent_status": result.status.value,
-        "diagnostics": list(result.diagnostics),
-    }
-    if result.failure is not None:
-        details.update(result.failure.as_metadata())
-    if result.status is SubagentStatus.COMPLETED:
-        return ToolResult(
-            tool_call_id,
-            _bounded(result.summary),
-            details=details,
-            name="delegate",
-            status=ToolExecutionStatus.COMPLETED,
-            cleanup_confirmed=True,
-        )
-
-    failure = result.failure
-    message = failure.message if failure is not None else "子 Agent 未完成"
-    status = {
-        SubagentStatus.REJECTED: ToolExecutionStatus.REJECTED,
-        SubagentStatus.TIMED_OUT: ToolExecutionStatus.TIMED_OUT,
-        SubagentStatus.CANCELLED: ToolExecutionStatus.CANCELLED,
-    }.get(result.status, ToolExecutionStatus.FAILED)
-    return ToolResult(
-        tool_call_id,
-        f"[子 Agent {result.status.value}] {_bounded(message, 2_000)}",
-        details=details,
-        error=True,
-        name="delegate",
-        rejected=result.status is SubagentStatus.REJECTED,
-        status=status,
-        cleanup_confirmed=True,
-    )
-
-
-def _error_result(
-    tool_call_id: str,
-    reason_code: str,
-    message: str,
-    *,
-    status: str,
-    rejected: bool = False,
-) -> ToolResult:
-    return ToolResult(
-        tool_call_id,
-        f"[委派被拒绝] {message}",
-        details={"reason_code": reason_code, "error_message": message},
-        error=True,
-        name="delegate",
-        rejected=rejected,
-        status=status,
-        cleanup_confirmed=True,
-    )
-
-
-def _bounded(value: str, limit: int = _MAX_RESULT_CHARS) -> str:
-    text = str(value or "")
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n[子 Agent 摘要已截断]"
 
 
 __all__ = ["DelegateTool"]
