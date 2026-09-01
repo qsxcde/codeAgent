@@ -123,7 +123,7 @@ openspec validate --specs
 - `quality-fast`：Ruff、unit/contract、覆盖率报告、版本一致性、补丁格式和 OpenSpec 校验。
 - `test-matrix`：Ubuntu、Windows、macOS 上执行 integration/e2e/platform/compatibility，统一使用 fake provider；失败时保留 JUnit 和跳过原因。
 - `package-smoke`：运行 release check，构建并检查 wheel/sdist，在干净虚拟环境安装后检查 CLI 和内建 resources 可用。
-- `performance`：运行离线 TUI 基准并上传 JSON；性能回归目前只告警，不阻断普通 PR。报告使用 schema v2，包含提交/首 token 延迟、帧 p50/p95、控制事件 p95、峰值 Python 分配和协调器帧计数。
+- `performance`：运行离线 TUI 基准并上传 JSON；性能回归目前只告警，不阻断普通 PR。报告使用 schema v2，包含提交/首 token 延迟、帧 p50/p95、控制事件 p95、峰值 Python 分配和协调器帧计数。硬上限与发布候选判定见 [`TUI 性能边界与回归判定`](benchmarks/tui-performance-policy.md)。
 
 性能结果可用以下命令进行相对比较。正式基线包含四个场景；环境或输入参数不一致时会明确标注 `incomparable`：
 
@@ -153,4 +153,4 @@ done
 `unavailable_metrics`，`not_measured` 则会使比较结果为 `incomplete`。1,000/5,000/10,000
 block 扩展报告用于趋势观察，不与 100 block 的正式 Linux 基线直接比较，也不作为跨机器绝对 SLO。
 
-当前 `quality-fast` 与平台矩阵之间有 25 个兼容性/平台边界测试重复执行；这不影响正确性，但需要后续决定保留边界保护还是调整 marker 分层。覆盖率硬下限当前为 77.9%；性能仍使用 20% 相对回归告警，不启用 `--fail-on-regression`。
+当前 `quality-fast` 与平台矩阵之间有 25 个兼容性/平台边界测试重复执行；这不影响正确性，但需要后续决定保留边界保护还是调整 marker 分层。覆盖率硬下限当前为 77.9%。TUI 性能采用双门槛：帧/控制事件/丢帧使用硬上限，同环境渲染、恢复和内存指标使用 20% 相对回归线；普通 PR 只告警，发布候选使用 `--fail-on-regression`。
