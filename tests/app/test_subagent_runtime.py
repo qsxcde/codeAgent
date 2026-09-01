@@ -297,7 +297,9 @@ async def test_real_parent_delegate_runs_isolated_child_and_returns_only_result(
         "ls",
         "skill",
     }
-    child_contents = [item["content"] for item in child_client.call_history[0]["messages"]]
+    child_contents = "\n".join(
+        item["content"] for item in child_client.call_history[0]["messages"]
+    )
     assert "inspect child-only context" in child_contents
     assert all("父上下文秘密" not in content for content in child_contents)
     assert any(item.content == "子 Agent 的只读结论" for item in session.history)

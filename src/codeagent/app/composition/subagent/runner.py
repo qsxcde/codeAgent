@@ -30,6 +30,8 @@ from .runner_support import (
     observe_event,
     rejected_result,
 )
+from .context import render_subagent_prompt, validate_context_items
+from .profiles import profile_for
 
 ChildSessionFactory = Callable[[SubagentRequest], Any]
 
@@ -96,7 +98,9 @@ class SerialSubagentRunner:
                 active.session = child
                 active.unsubscribe = self._subscribe_child(active, on_event)
                 active.task = asyncio.create_task(
-                    child.run(request.task),
+                    child.run(
+                        render_subagent_prompt(request.task, request.profile, request.context)
+                    ),
                     name=f"subagent:{request.delegation_id}",
                 )
                 await asyncio.sleep(0)
@@ -205,17 +209,27 @@ class SerialSubagentRunner:
                 SubagentReasonCode.INVALID_REQUEST.value,
                 "委派请求类型无效",
             )
-        if request.profile != "read_only":
+        try:
+            profile_for(request.profile)
+        except ValueError:
             return rejected_result(
                 request,
                 SubagentReasonCode.PERMISSION_DENIED.value,
-                "当前 runner 只接受 read_only profile",
+                f"不支持的 Subagent profile: {request.profile}",
             )
         if request.depth > request.max_depth or request.depth > 1:
             return rejected_result(
                 request,
                 SubagentReasonCode.DEPTH_EXCEEDED.value,
                 "子 Agent 深度超过当前 MVP 限制",
+            )
+        try:
+            validate_context_items(request.context)
+        except ValueError as exc:
+            return rejected_result(
+                request,
+                SubagentReasonCode.INVALID_REQUEST.value,
+                str(exc),
             )
         if request.delegation_id in self._active:
             return rejected_result(

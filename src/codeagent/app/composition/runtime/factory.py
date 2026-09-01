@@ -28,7 +28,6 @@ from ..tools.factory import resolve_tool_resource_limits
 from codeagent.tools.shared import ToolResourceLimits
 from .tool_assembly import assemble_runtime_tools
 
-
 class AgentRuntime:
     """一个模型/工具端口集合的资源所有者。"""
 
@@ -151,6 +150,15 @@ def policy_for_config(config: Any) -> Any:
     return _LazyPolicy(config)
 
 
+def _system_prompt_for(
+    cfg: Any,
+    skills: list[Any],
+    suffix: str | None,
+) -> str:
+    prompt = _build_system_prompt(cfg, skills)
+    return f"{prompt}\n\n{suffix}" if suffix else prompt
+
+
 def create_agent_config(
     cfg: Any = None,
     *,
@@ -167,6 +175,7 @@ def create_agent_config(
     resource_limits: ToolResourceLimits | None = None,
     allowed_tool_names: Iterable[str] | None = None,
     subagent_runner: Any = None,
+    system_prompt_suffix: str | None = None,
 ) -> AgentLoopConfig:
     """装配模型、工具执行器和独立安全策略。"""
     resolved_limits = resolve_tool_resource_limits(cfg, resource_limits)
@@ -184,6 +193,7 @@ def create_agent_config(
         model=model,
     )
     skills, _diagnostics = _load_skills(cfg)
+    system_prompt = _system_prompt_for(cfg, skills, system_prompt_suffix)
     adapted_tools, mcp_tools = assemble_runtime_tools(
         cfg,
         skills,
@@ -201,7 +211,7 @@ def create_agent_config(
     config = AgentLoopConfig(
         model=ChatModelPort(
             client,
-            system_prompt=_build_system_prompt(cfg, skills),
+            system_prompt=system_prompt,
             context_window=budget_metadata.context_window,
             output_reserve=budget_metadata.output_reserve,
             reserve_tokens=DEFAULT_RESERVE_TOKENS,
@@ -221,11 +231,9 @@ def create_agent_config(
         after_tool_call=runtime_extensions.after_tool_call,
         lifecycle_hooks=runtime_extensions.lifecycle_hooks,
     )
-    # Tool environment facts belong to the composition boundary.  Keep them
-    # off the core contract so core remains independent of concrete tools.
+    # Keep environment and AI metadata at the composition boundary.
     config.tool_capabilities = detect_tool_capabilities()
     config.tool_resource_limits = resolved_limits
-    # AI metadata is attached at the composition boundary; core stays provider-neutral.
     config.model_capabilities = config.model.capabilities
     AgentRuntime(config, _create_policy(cfg, approval_mode), client, mcp_tools, tool_runtime)
     return config

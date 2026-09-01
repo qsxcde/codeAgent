@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 from codeagent.core.contracts.messages import ToolExecutionStatus, ToolResult
@@ -16,6 +16,13 @@ from codeagent.core.contracts.subagents import (
     SubagentRunner,
     SubagentStatus,
 )
+
+from .context import (
+    MAX_CONTEXT_ITEM_CHARS,
+    MAX_CONTEXT_ITEMS,
+    parse_context,
+)
+from .profiles import profile_for
 
 _MAX_RESULT_CHARS = 8_000
 
@@ -36,8 +43,29 @@ class DelegateTool:
             },
             "profile": {
                 "type": "string",
-                "enum": ["read_only"],
+                "enum": ["read_only", "review"],
                 "default": "read_only",
+            },
+            "context": {
+                "type": "array",
+                "description": "明确选择给子 Agent 的有限事实、约束或输出要求",
+                "maxItems": MAX_CONTEXT_ITEMS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["fact", "constraint", "output_requirement"],
+                        },
+                        "content": {
+                            "type": "string",
+                            "maxLength": MAX_CONTEXT_ITEM_CHARS,
+                        },
+                        "source": {"type": "string"},
+                    },
+                    "required": ["kind", "content"],
+                    "additionalProperties": False,
+                },
             },
         },
         "required": ["task"],
@@ -84,11 +112,20 @@ class DelegateTool:
                 status=ToolExecutionStatus.INVALID_ARGUMENTS,
             )
         profile = arguments.get("profile", "read_only")
-        if profile != "read_only":
+        if not isinstance(profile, str):
+            return _error_result(
+                tool_call_id,
+                SubagentReasonCode.INVALID_REQUEST.value,
+                "delegate.profile 必须是文本",
+                status=ToolExecutionStatus.INVALID_ARGUMENTS,
+            )
+        try:
+            profile_for(profile)
+        except ValueError:
             return _error_result(
                 tool_call_id,
                 SubagentReasonCode.PERMISSION_DENIED.value,
-                "当前只允许使用 read_only Subagent profile",
+                f"不支持的 Subagent profile: {profile}",
                 status=ToolExecutionStatus.REJECTED,
                 rejected=True,
             )
@@ -99,6 +136,15 @@ class DelegateTool:
                 "delegate 未绑定父运行标识",
                 status=ToolExecutionStatus.INVALID_ARGUMENTS,
             )
+        try:
+            context = parse_context(arguments.get("context"))
+        except ValueError as exc:
+            return _error_result(
+                tool_call_id,
+                SubagentReasonCode.INVALID_REQUEST.value,
+                str(exc),
+                status=ToolExecutionStatus.INVALID_ARGUMENTS,
+            )
 
         request = SubagentRequest(
             delegation_id=str(uuid.uuid4()),
@@ -107,6 +153,7 @@ class DelegateTool:
             profile=profile,
             depth=1,
             max_depth=1,
+            context=context,
         )
         try:
             result = await self._runner.execute(request, on_event=on_update)

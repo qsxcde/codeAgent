@@ -81,6 +81,7 @@ def create_agent_session(
     enable_subagents: bool = True,
     allowed_tool_names: Iterable[str] | None = None,
     subagent_runner: Any = None,
+    system_prompt_suffix: str | None = None,
 ) -> Any:
     """创建有状态的 AgentSession。"""
     from codeagent.session import AgentSession, EventBus
@@ -118,6 +119,7 @@ def create_agent_session(
         resource_limits=resource_limits,
         allowed_tool_names=allowed_tool_names,
         subagent_runner=subagent_runner,
+        system_prompt_suffix=system_prompt_suffix,
     )
     runtime = runtime_for_config(config)
     return AgentSession(
