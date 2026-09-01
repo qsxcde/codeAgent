@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "python": "3.12.13",
+  "resources": [
+    "prompts/system.md",
+    "skills/commit-message/SKILL.md",
+    "skills/dependency-audit/SKILL.md"
+  ],
+  "cli_returncode": 0
+}

@@ -81,7 +81,7 @@
 - v0.4 的 V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 管理、生命周期 Hook、工具与 Provider 稳定性。
 - 本地全量离线测试：`uv run pytest -q` 为 **1532 passed**（macOS，2026-08-30）；快速质量集为 **1391 passed，141 deselected**，覆盖率为 **83.61%**。
 - 规格与发布检查：`openspec validate --specs` 为 **20/20**；release check 已验证 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI。
-- 包版本仍为 `0.3.0`，v0.4.0 尚未创建版本标签；正式发布前需要更新版本元数据、变更说明并在发布提交上重新执行 CI。
+- 包版本已统一为 `0.4.0`，v0.4.0 尚未创建版本标签；发布说明已固定，正式发布前仍需在最终发布提交上重新执行 CI。
 - TUI 性能：仓库内 [`docs/benchmarks/tui-baseline.json`](../benchmarks/tui-baseline.json) 保留 schema v1 历史基线；schema v2 的 Linux/Python 3.12 候选由 CI artifact 生成并经人工复核后再提交，性能当前仍为非阻塞告警。
 
 ## 1. 引言
@@ -695,12 +695,12 @@ class AgentSession:
 | v0.1 | tools + core + session + container + 模型层自研(ModelRuntime) | ✅ 已落地 | headless CLI 可对话、可调用 read/write/edit/bash、事件流可订阅 |
 | v0.2 | store + manager + compaction + 安全确认 + undo + AGENTS.md + TUI 恢复 + 解耦测试恢复 | 2–3 周(较 v0.1 报告上调,新增 TUI 恢复/undo/AGENTS.md) | 会话可恢复、可切换、可压缩、可回滚 |
 | v0.3 | Skills + MCP + token 用量透明 + 会话树 | 阶段 1~4 已落地，阶段 6 验收已完成 | 扩展工具、用量可见、会话树导航 |
-| v0.4 | Runtime 可靠性 + 上下文治理 + TUI / Session + Hook + 工具/Provider 稳定性 | V4-01～V4-38 已完成实现；包版本仍为 0.3.0 | 发布准备、持续回归和证据维护 |
+| v0.4 | Runtime 可靠性 + 上下文治理 + TUI / Session + Hook + 工具/Provider 稳定性 | V4-01～V4-38 已完成实现；包版本已统一为 0.4.0，发布说明已固定 | 最终发布提交、版本标签、持续回归和证据维护 |
 
 **成本结构**:全部依赖开源,无新增付费;主要成本为人力时间 + 模型 API 按量付费(可选,fake 可离线开发);风险集中点:单人维护可持续性、社区获取、文档与示例投入。
 
 **投入优先级建议**:
-1. 完成 v0.4 发布准备：更新版本元数据、发布说明和版本标签，并在发布提交上重新执行 release check 与 CI;
+1. 完成 v0.4 发布收尾：创建版本标签，并在最终发布提交上重新执行 release check 与 CI;
 2. 持续维护全量测试、覆盖率门禁、OpenSpec 校验和跨平台 CI 证据;
 3. 审查 TUI schema v2 候选基线，满足同平台、同 Python、同视口和同 fixture 条件后再更新正式基线;
 4. 继续保持工具安全、会话恢复、生命周期清理和 Provider 错误分类的回归覆盖;
@@ -783,7 +783,7 @@ v0.4(✅ 功能范围完成 2026-08-30): V4-01~V4-38 Runtime 可靠性+上下文
 - ✅ TUI 提交反馈、输入响应性、状态栏、长会话渲染、性能 schema v2 和完整状态展示已落地。
 - ✅ Session 标题、搜索筛选、归档删除、恢复诊断和列表索引性能已落地。
 - ✅ 工具能力、资源保护、外部检索器 fallback、Provider 错误分类、安全模型重试和模型能力诊断已落地。
-- ✅ 当前代码树验证：全量测试 **1532 passed**、快速质量集 **1391 passed，141 deselected**、覆盖率 **83.61%**、OpenSpec **20/20**；包版本仍为 `0.3.0`，正式发布准备尚未完成。
+- ✅ 当前代码树验证：全量测试 **1532 passed**、快速质量集 **1391 passed，141 deselected**、覆盖率 **83.61%**、OpenSpec **20/20**；包版本已统一为 `0.4.0`，发布说明已固定，正式标签仍待创建。
 
 ### 12.5 远期验收(F-25~F-28)
 
@@ -889,7 +889,7 @@ v0.4(✅ 功能范围完成 2026-08-30): V4-01~V4-38 Runtime 可靠性+上下文
 - 本地快速质量集：**1391 passed，141 deselected**，覆盖率 **83.61%**；CI 覆盖率硬下限为 77.9%。
 - OpenSpec：`openspec validate --specs` **20/20**；release check 已验证 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI。
 - TUI 性能：schema v1 JSON 继续作为仓库内历史基线；schema v2 候选由 CI artifact 生成并经人工复核，尚未替换正式基线。
-- 发布状态：代码功能已覆盖 v0.4 的 V4-01～V4-38，但包版本仍为 `0.3.0`，v0.4.0 尚未创建标签。
+- 发布状态：代码功能已覆盖 v0.4 的 V4-01～V4-38，包版本已统一为 `0.4.0`，发布说明已固定，v0.4.0 尚未创建标签。
 
 ---
 

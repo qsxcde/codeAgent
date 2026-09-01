@@ -199,7 +199,7 @@ for call in msg.tool_calls:
 
 ## 9. 当前复核（2026-08-30）
 
-- v0.4 的 V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 交互、生命周期 Hook、工具与 Provider 稳定性；发布包版本仍为 `0.3.0`。
+- v0.4 的 V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 交互、生命周期 Hook、工具与 Provider 稳定性；发布包版本已统一为 `0.4.0`，发布说明已固定。
 - `uv run pytest -q`：**1532 passed**（macOS）；本地快速质量集 **1391 passed，141 deselected**、覆盖率 **83.61%**；`openspec validate --specs`：**20/20**；`git diff --check` 通过。
 - release check 已验证 wheel/sdist、版本、资源、敏感文件、干净环境安装和 fake provider CLI；最新 main CI 在本次文档修改前已成功完成。
 - TUI schema v2 性能 artifact 已生成；仓库内 `docs/benchmarks/tui-baseline.json` 仍是 schema v1 历史基线，Linux/Python 3.12 的 v2 候选需经 CI 生成和人工复核后再提交，覆盖率和性能仍按现有非阻塞策略执行。

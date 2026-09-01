@@ -5,10 +5,11 @@
 
 ## [Unreleased]
 
-### v0.4 implementation status
+暂无已归入下一版本的变更。
 
-- v0.4 的 V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI 交互、会话管理、生命周期 Hook、工具与 Provider 稳定性。
-- 发布包版本仍为 `0.3.0`；v0.4.0 的版本元数据、标签和正式发布说明尚未建立。
+## [0.4.0] - 2026-09-01
+
+v0.4.0 完成 V4-01～V4-38，重点将单 Agent Runtime 收敛为可长期使用、可诊断和可扩展的本地运行时。
 
 ### Added
 
@@ -25,6 +26,12 @@
 - 增加 pytest-cov、Ruff 正确性检查、安装后 fake provider CLI 验证、产物完整性报告和性能相对变化报告。
 - `openspec validate --specs` 当前为 `20/20`；release check 已验证 wheel/sdist、版本、资源、干净安装和 fake provider CLI。
 - 覆盖率硬下限固化为 77.9%；仓库内 TUI schema v1 JSON 作为历史基线保留，Linux/Python 3.12 的 schema v2 候选由 CI 生成并经人工复核，当前继续告警而不阻断普通 PR。
+
+### Verification
+
+- 当前 macOS/Python 3.12 全量离线测试为 `1532 passed`；快速质量集为 `1391 passed，141 deselected`，覆盖率为 `83.61%`。
+- 包版本一致性校验通过：`pyproject.toml`、`codeagent.__version__` 和构建产物均为 `0.4.0`。
+- release check 已通过 wheel/sdist 构建、资源与敏感文件检查、干净环境安装和 fake provider CLI 冒烟。
 
 ## [0.3.0] - 2026-08-22
 
@@ -80,4 +87,5 @@
 - 异步 ReAct 对话、工具调用和事件流订阅
 - 危险命令黑名单、Windows bash 探测和离线测试基线
 
-[Unreleased]: https://github.com/qsxcde/codeAgent/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/qsxcde/codeAgent/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/qsxcde/codeAgent/compare/v0.3.0...v0.4.0

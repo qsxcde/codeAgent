@@ -55,7 +55,7 @@
  - 测试基建:`tests/` 按行为域与源码层级分包 + `FakeClient`(离线假模型),`uv run pytest -q` **1532 passed**(2026-08-30, macOS);本地质量集与既有 CI 分层门禁保持独立，并已接入 Ruff、release check 和 TUI 性能基线。
  - TUI 性能验收:`benchmark/` 使用 schema v2 的固定离线 fixture 测量提交首帧、首 token、帧 p50/p95、控制延迟、峰值 Python 分配和协调器的 dropped/over-budget 计数；`compare_benchmark.py` 只在 schema、平台、Python、视口和 fixture 一致时比较，`update_tui_baseline.py` 负责生成受约束的 Linux/Python 3.12 候选基线。
 
-**v0.4 当前状态与远期**:V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 管理、生命周期 Hook、工具与 Provider 稳定性；发布包版本仍为 `0.3.0`，v0.4.0 尚未打版本标签。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；TUI schema v2 的正式 Linux/Python 3.12 基线仍按 CI artifact 与人工复核流程推进，性能暂保持非阻塞。插件系统、轻量记忆及 Web/HTTP 事件流订阅继续作为远期方向，待出现真实消费者或价值域扩大时重估。
+**v0.4 当前状态与远期**:V4-01～V4-38 功能范围已完成实现，覆盖 Runtime 可靠性、上下文治理、TUI / Session 管理、生命周期 Hook、工具与 Provider 稳定性；发布包版本已统一为 `0.4.0`，v0.4.0 标签待最终发布提交创建。当前工程治理已接入覆盖率报告、Ruff、构建安装冒烟和 CI 跨平台矩阵；TUI schema v2 的正式 Linux/Python 3.12 基线仍按 CI artifact 与人工复核流程推进，性能暂保持非阻塞。插件系统、轻量记忆及 Web/HTTP 事件流订阅继续作为远期方向，待出现真实消费者或价值域扩大时重估。
 
 ## 4. 总体结构
 
