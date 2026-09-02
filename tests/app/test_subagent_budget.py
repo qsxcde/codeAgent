@@ -125,9 +125,14 @@ async def test_delegate_enforces_four_accepted_children_per_parent_run() -> None
 
 
 @pytest.mark.integration
-def test_child_factory_applies_effective_max_turns() -> None:
+@pytest.mark.parametrize("profile", ("explore", "review"))
+def test_child_factory_applies_profile_policy_and_effective_max_turns(profile: str) -> None:
     from codeagent.app.composition.runtime.extensions import RuntimeExtensions
     from codeagent.app.composition.subagent.factory import make_child_session_factory
+    from codeagent.app.composition.subagent.profiles import (
+        READ_ONLY_TOOL_NAMES,
+        prompt_for,
+    )
 
     captured = {}
 
@@ -160,11 +165,16 @@ def test_child_factory_applies_effective_max_turns() -> None:
             delegation_id="delegation-factory",
             parent_run_id="parent-run",
             task="inspect",
+            profile=profile,
             budget=SubagentBudget(max_turns=3),
         )
     )
 
     assert captured["recursion_limit"] == 3
+    assert captured["enable_subagents"] is False
+    assert captured["store"] is None
+    assert captured["allowed_tool_names"] == READ_ONLY_TOOL_NAMES
+    assert captured["system_prompt_suffix"] == prompt_for(profile)
 
 
 @pytest.mark.unit

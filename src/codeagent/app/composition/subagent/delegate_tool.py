@@ -24,7 +24,7 @@ from .context import (
     MAX_CONTEXT_ITEMS,
     parse_context,
 )
-from .profiles import profile_for
+from .profiles import DEFAULT_PROFILE, profile_error_message, profile_for, profile_names
 from .budget import (
     DEFAULT_MAX_CHILDREN_PER_RUN,
     MAX_MAX_OUTPUT_CHARS,
@@ -61,8 +61,8 @@ class DelegateTool:
             },
             "profile": {
                 "type": "string",
-                "enum": ["read_only", "review"],
-                "default": "read_only",
+                "enum": list(profile_names()),
+                "default": DEFAULT_PROFILE,
             },
             "context": {
                 "type": "array",
@@ -182,7 +182,7 @@ class DelegateTool:
                 "delegate.task 必须是非空文本",
                 status=ToolExecutionStatus.INVALID_ARGUMENTS,
             )
-        profile = arguments.get("profile", "read_only")
+        profile = arguments.get("profile", DEFAULT_PROFILE)
         if not isinstance(profile, str):
             return _error_result(
                 tool_call_id,
@@ -196,7 +196,7 @@ class DelegateTool:
             return _error_result(
                 tool_call_id,
                 SubagentReasonCode.PERMISSION_DENIED.value,
-                f"不支持的 Subagent profile: {profile}",
+                profile_error_message(profile),
                 status=ToolExecutionStatus.REJECTED,
                 rejected=True,
             )

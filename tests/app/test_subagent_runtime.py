@@ -86,7 +86,7 @@ async def test_delegate_tool_maps_subagent_result_to_tool_result(status, error, 
 
     result = await tool.execute(
         "call-1",
-        {"task": "inspect files", "profile": "read_only"},
+        {"task": "inspect files", "profile": "explore"},
     )
 
     assert isinstance(result, ToolResult)
@@ -101,7 +101,7 @@ async def test_delegate_tool_maps_subagent_result_to_tool_result(status, error, 
     request = runner.requests[0]
     assert request.parent_run_id == "parent-run-1"
     assert request.task == "inspect files"
-    assert request.profile == "read_only"
+    assert request.profile == "explore"
     assert request.depth == 1
     assert request.max_depth == 1
 
@@ -337,7 +337,7 @@ async def test_real_parent_delegate_runs_isolated_child_and_returns_only_result(
                 "tool_calls": [
                     {
                         "name": "delegate",
-                        "args": {"task": "inspect child-only context", "profile": "read_only"},
+                        "args": {"task": "inspect child-only context", "profile": "explore"},
                         "id": "delegate-call",
                     }
                 ]
@@ -384,7 +384,7 @@ async def test_persisted_parent_keeps_bounded_subagent_record_without_child_sess
                 "tool_calls": [
                     {
                         "name": "delegate",
-                        "args": {"task": "persist child result", "profile": "read_only"},
+                        "args": {"task": "persist child result", "profile": "explore"},
                         "id": "persist-delegate-call",
                     }
                 ]
@@ -457,7 +457,7 @@ async def test_session_manager_root_exposes_delegate_and_keeps_child_temporary()
                 "tool_calls": [
                     {
                         "name": "delegate",
-                        "args": {"task": "inspect manager child", "profile": "read_only"},
+                        "args": {"task": "inspect manager child", "profile": "explore"},
                         "id": "manager-delegate-call",
                     }
                 ]

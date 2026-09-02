@@ -31,7 +31,7 @@ class TuiConfigMixin:
 
     def _create_child_session(self, request: Any) -> Any:
         from ..subagent.profiles import allowed_tool_names_for
-        from ..subagent.profiles import instructions_for
+        from ..subagent.profiles import prompt_for
 
         return create_agent_session(
             self.cfg,
@@ -47,7 +47,7 @@ class TuiConfigMixin:
             resource_limits=self.resource_limits,
             enable_subagents=False,
             allowed_tool_names=allowed_tool_names_for(request.profile),
-            system_prompt_suffix=instructions_for(request.profile),
+            system_prompt_suffix=prompt_for(request.profile),
         )
 
     def _build_summarizer(self) -> Any:

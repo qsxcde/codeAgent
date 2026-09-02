@@ -43,6 +43,7 @@
 - 工具层(hexagonal):`AtomicTool` 无状态基类 + `FsOps` 文件系统抽象缝 + cwd 注入;read / write / edit / bash / grep / find / ls / skill 八个内建工具;MCP 客户端可接入 `tools/list` / `tools/call`，以 `mcp__<server>__<tool>` 命名空间化，并实施全局 / 单 server / 描述长度分组预算;`ToolResourceLimits` 在组合根统一注入并发、超时、输出字节/行、预览内存和清理等待上限；`grep`/`find` 只把 `rg`/`fd` 作为不经 shell 的可选加速，失败时回退纯 Python；bash 带危险命令黑名单(字符串正则 + shlex 分词语义级检测)、树级进程击杀、默认 120s 超时(上限 600)、30k 输出截断;`tools/security/` 提供执行前安全分类器(deny > ask > allow)，`tools/capabilities.py` 在组合根生成只读环境能力快照。
 - `core/` Agent Runtime:根级 `agent.py` 为运行时外壳，`contracts/`、`context/`、`model/`、`execution/`、`orchestration/`、`observation.py` 和 `support/` 按职责组织纯内存、全异步实现；模块顶层零副作用。
 - `session/` 会话层:bus + session + manager + store(JSONL 树形,含 usage 与父级 `subagent` entry)+ compaction + tree;`SessionRef.last_activity_at` 在创建时初始化并随成功消息追加更新,最近会话按该值排序;会话标题支持自动派生和 append-only `name` 元数据重命名;`SessionQuery` 统一标题/id、模型、时间、运行状态和归档范围筛选,管理器为驻留会话叠加只读运行态;归档使用 append-only 元数据,删除由存储边界完成路径保护和索引清理;恢复报告区分 healthy/degraded/unavailable,有效损坏记录局部降级,结构性错误携带可操作建议;父会话通过独立且有界的运行记录保留委派事实，非终态记录重启后转为 `abandoned/process_restarted`，不改变普通消息、标题、最近活动、usage、压缩、fork 或 `/sessions` 子会话列表；`abort()` 运行中断、`steer()` 运行中注入、`followup()` 结束后续跑一轮、成功轮次才落盘、失败/取消内存回滚。
+- `app/composition/subagent/` 是 Subagent 的应用装配边界：`profiles.py` 作为唯一 registry 定义 `explore`/`review` 的角色、输出指导和只读工具白名单；`delegate_tool.py` 与 `runner.py` 在创建子 Session 前复用同一校验入口，`factory.py` 和 TUI 组合根复用同一装配策略。`read_only` 只作为历史记录中可能出现的有界文本，不是新的 delegate 输入；`tester` 和命令执行不属于当前能力。
 - 会话列表、搜索、筛选和 `continue_recent` 使用派生索引完成候选元数据读取与排序；单个索引缺失、损坏或过期时只对目标会话回源，其它会话不重复扫描 JSONL，最终目标恢复允许单独检查。
 - 事件按消息、模型请求、工具生命周期、运行控制和 Subagent 委派分组；模型请求显式发布 `model_request_started / model_request_finished`，工具生命周期包含 `tool_queued / tool_started / tool_progress / tool_finished / tool_result`，Subagent 使用 `subagent_queued / subagent_started / subagent_progress / subagent_finished`，事件通过 `run_id`、`parent_run_id`、`child_run_id`、`delegation_id`、`tool_call_id` 和结构化状态字段关联。
 - 入口形态:`app/main.py` headless 双路径(`--prompt` / stdin)+ `--tui` 交互式终端(斜杠命令 / 模糊补全 / 选择器 / Markdown / 滚动 / `/login` / `/skills` / `/mcp` / `/tree` 等命令体系)；headless 对 Subagent 输出有界 `子Agent状态:` 行，TUI 使用独立委派块和状态栏聚合，不复制 child transcript。
@@ -89,6 +90,7 @@ codeagent/
 │   │   │   ├── runtime/              #   Agent runtime 资源所有权
 │   │   │   ├── session/              #   AgentSession / SessionManager 装配
 │   │   │   ├── tools/                #   工具适配与定义
+│   │   │   ├── subagent/             #   Subagent profile、runner、工厂和 delegate 适配
 │   │   │   └── tui/                  #   TUI 配置与工厂
 │   │   └── tui/                      #   [调用层·TUI] 交互式终端 ✅ 已落地
 │   │       ├── ports/backend.py      #     Textual-free TuiBackend 端口
@@ -176,6 +178,7 @@ codeagent/
 | `app/tasks/` | 任务模式、监督、结果和验证工作流 | 验证命令结构化执行且禁止变更型命令 |
 | `app/subagent_observability.py` | headless Subagent 状态行的有界投影与终态去重 | 不依赖终端或 core;只消费结构化事件字段 |
 | `app/composition/model/` | AI 客户端端口适配、模型选择、能力快照和上下文预算 | 仅组合根跨越 `ai`/`core`;规范模块为唯一模型装配入口 |
+| `app/composition/subagent/` | Subagent profile registry、delegate 入口、串行 runner 和子 Session 工厂 | profile 策略只在应用层；Explore/Review 仅允许五个只读工具，子 Session 不递归、不进入普通 store |
 | `app/tui/state/` | TUI 事件投影、工具/委派生命周期归约、历史恢复和 Transcript 增量视口布局 | Subagent 先校验父 run;不把 child 事件送入父 runtime |
 | `app/tui/session/` | 会话命令、异步动作、对话协调、快照恢复和恢复诊断展示 | 恢复按成本后台化，并校验当前 session，丢弃过期结果；不可恢复目标不替换当前 transcript |
 | `app/tui/presentation/` | blocks、组件、Markdown、状态栏、输出和主题 | `SubagentBlock` 默认折叠且所有详情有界;不 import Textual |

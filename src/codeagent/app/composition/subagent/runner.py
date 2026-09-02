@@ -36,7 +36,7 @@ from .event_diagnostics import (
     publish_event,
 )
 from .lifecycle import commit_terminal, mark_queued
-from .profiles import profile_for
+from .profiles import profile_error_message, profile_for
 
 ChildSessionFactory = Callable[[SubagentRequest], Any]
 
@@ -159,7 +159,7 @@ class SerialSubagentRunner:
             return rejected_result(
                 request,
                 SubagentReasonCode.PERMISSION_DENIED.value,
-                f"不支持的 Subagent profile: {request.profile}",
+                profile_error_message(request.profile),
             )
         try:
             effective_budget(request.budget)

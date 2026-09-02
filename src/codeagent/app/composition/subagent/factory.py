@@ -12,7 +12,7 @@ from codeagent.tools.shared import ToolResourceLimits
 
 from .runner import ChildSessionFactory, SerialSubagentRunner
 from .budget import effective_budget
-from .profiles import allowed_tool_names_for, instructions_for
+from .profiles import allowed_tool_names_for, prompt_for
 from ..runtime.extensions import RuntimeExtensions
 
 
@@ -69,7 +69,7 @@ def make_child_session_factory(
             compaction_policy=compaction_policy,
             enable_subagents=False,
             allowed_tool_names=allowed_tool_names_for(request.profile),
-            system_prompt_suffix=instructions_for(request.profile),
+            system_prompt_suffix=prompt_for(request.profile),
         )
 
     return create_child

@@ -22,7 +22,7 @@ def _request(**overrides):
         "delegation_id": "delegation-1",
         "parent_run_id": "parent-run-1",
         "task": "inspect the repository",
-        "profile": "read_only",
+        "profile": "explore",
         "depth": 1,
         "max_depth": 1,
         "budget": budget_type(

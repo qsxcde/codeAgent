@@ -281,7 +281,7 @@ async def test_real_fake_parent_receives_top_level_subagent_events_and_continues
                     {
                         "id": "delegate-call",
                         "name": "delegate",
-                        "args": {"task": "inspect child context", "profile": "read_only"},
+                        "args": {"task": "inspect child context", "profile": "explore"},
                     }
                 ]
             },

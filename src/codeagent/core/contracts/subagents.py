@@ -86,7 +86,7 @@ class SubagentRequest:
     delegation_id: str
     parent_run_id: str
     task: str
-    profile: str = "read_only"
+    profile: str = "explore"
     depth: int = 1
     max_depth: int = 1
     budget: SubagentBudget = field(default_factory=SubagentBudget)
